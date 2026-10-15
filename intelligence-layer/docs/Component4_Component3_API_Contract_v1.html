@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Component 4 to Component 3 - Policy Delivery Contract</title>
+<style>
+@page{size:A4;margin:16mm 17mm}*{box-sizing:border-box}body{margin:0;color:#183044;font:9.5pt/1.38 'Segoe UI',Arial,sans-serif;background:white}.sheet{height:263mm;position:relative;padding-bottom:16mm;break-after:page}.sheet:last-child{break-after:auto}.masthead{display:flex;justify-content:space-between;align-items:center;border-bottom:2px solid #137e76;padding-bottom:12px;margin-bottom:18px;font-size:9pt;color:#617586}.brand{font-weight:750;letter-spacing:1.2px;color:#137e76}.tag{background:#eaf5f2;color:#137e76;padding:4px 9px;border-radius:5px;font-size:8pt}h1{font-size:25pt;line-height:1.12;letter-spacing:-.7px;margin:0 0 12px;color:#17354a}h2{font-size:13pt;color:#137e76;margin:16px 0 8px}h3{font-size:10.5pt;margin:16px 0 7px}p{margin:0 0 10px}.intro{font-size:11pt;color:#546b7b;max-width:620px}.flow{display:flex;gap:9px;align-items:center;margin:18px 0;padding:13px;background:#eff7f5;border:1px solid #d1e7df;border-radius:8px}.flow div{flex:1}.flow strong{display:block;color:#137e76}.flow small{font-size:8.5pt;color:#617586}.arrow{color:#137e76;font-weight:bold;font-size:16pt}table{border-collapse:collapse;width:100%;margin:10px 0 14px;font-size:9pt}th{background:#eaf0f4;text-align:left;font-size:8pt;letter-spacing:.3px;color:#435d70;padding:7px 9px}td{border-bottom:1px solid #dfe7ed;padding:7px 9px;vertical-align:top;overflow-wrap:anywhere}tr{break-inside:avoid}.endpoint{font-family:Consolas,monospace;font-size:9pt;background:#f2f5f8;border:1px solid #dfe7ed;border-radius:6px;padding:10px 12px;margin:8px 0}.method{color:#137e76;font-weight:bold;margin-right:8px}.small{font-size:8.7pt;color:#617586}.note{background:#f3f7fa;border-left:3px solid #89aabd;padding:11px 13px;margin:13px 0;font-size:9pt}.success{background:#eef7f1;border-left-color:#137e76}pre{white-space:pre-wrap;overflow-wrap:anywhere;font:8.2pt/1.32 Consolas,'Courier New',monospace;background:#f3f6f9;border:1px solid #dde6ee;border-radius:7px;padding:12px;margin:9px 0 11px;tab-size:2}code{font-family:Consolas,monospace;font-size:.96em}.compact td{padding:7px 9px}.footer{position:absolute;bottom:0;left:0;right:0;padding-top:10px;border-top:1px solid #dfe7ed;display:flex;justify-content:space-between;color:#748591;font-size:8pt}ul{margin:8px 0 14px;padding-left:19px}li{margin-bottom:6px}.number{display:inline-flex;width:22px;height:22px;align-items:center;justify-content:center;background:#e4f1ed;border-radius:50%;margin-right:7px;font-size:9pt}.callback{font-size:8.3pt;word-break:break-all}.version-row{display:flex;gap:10px;align-items:center;background:#f2f6f8;border:1px solid #dfe7ed;border-radius:6px;padding:11px 13px;margin:12px 0}.version-row code{background:white;padding:4px 8px;border-radius:4px;color:#137e76}
+</style></head><body>
+<section class="sheet">
+<div class="masthead"><span class="brand">RRPE / RESEARCH COMPONENTS</span><span class="tag">API CONTRACT · VERSION 1</span></div>
+<h1>Policy delivery<br>Component 4 → Component 3</h1>
+<p class="intro">A shared integration contract for deadline, Leaky Bucket and retry-budget updates.</p>
+<div class="flow"><div><strong>Component 4</strong><small>Calculate and send policy</small></div><span class="arrow">→</span><div><strong>Component 3</strong><small>Receive and distribute</small></div><span class="arrow">→</span><div><strong>Sidecars</strong><small>Apply and acknowledge</small></div></div>
+<h2><span class="number">1</span>Receiving endpoints</h2>
+<p>Component 3 hosts these endpoints and supplies the reachable host and port.</p>
+<div class="endpoint"><span class="method">POST</span>/api/v1/policies/deadlines</div>
+<div class="endpoint"><span class="method">POST</span>/api/v1/policies/leaky-bucket</div>
+<div class="endpoint"><span class="method">POST</span>/api/v1/policies/retry-budget</div>
+<p class="small">Base URL: <code>http://&lt;COMPONENT3_HOST&gt;:&lt;PORT&gt;</code></p>
+<table><thead><tr><th>POLICY</th><th>ACTION</th><th>TARGET / UNIT</th></tr></thead><tbody>
+<tr><td>Deadline</td><td><code>CHAIN_DEADLINE</code></td><td>Method + normalized route<br><code>milliseconds</code></td></tr>
+<tr><td>Leaky Bucket</td><td><code>LEAKY_BUCKET</code></td><td>Service name<br><code>requests/second</code></td></tr>
+<tr><td>Retry budget</td><td><code>RETRY_BUDGET</code></td><td>Service name<br><code>extra attempts/original request</code></td></tr>
+</tbody></table>
+<h2><span class="number">2</span>Request headers</h2>
+<pre>Content-Type: application/json
+Accept: application/json
+Idempotency-Key: &lt;proposal.id&gt;</pre>
+<p><code>Authorization: Bearer &lt;agreed-token&gt;</code> is optional. Component 4 omits it when no receiver token is configured.</p>
+<div class="note success"><strong>Approval rule:</strong> deadlines are sent only after human approval. Leaky Bucket and retry-budget updates are automatic when required evidence and safety checks pass.</div>
+<div class="footer"><span>Component 4 → Component 3 · 15 October 2026</span><span>01 / 03</span></div>
+</section>
+<section class="sheet">
+<div class="masthead"><span class="brand">POLICY DELIVERY CONTRACT</span><span class="tag">MESSAGE FORMAT</span></div>
+<h1>Shared JSON format</h1>
+<p>All three endpoints receive a <code>PolicyChange</code> message with a nested <code>proposal</code>. This example shows an approved deadline update.</p>
+<pre>{
+  "proposal": {
+    "id": "591fce21-d942-41b5-a24d-821755cc3c62",
+    "target": "POST /api/orders",
+    "action": "CHAIN_DEADLINE",
+    "source": "TEMPO",
+    "baseVersion": "v1",
+    "currentValue": 1000,
+    "proposedValue": 1440,
+    "unit": "milliseconds",
+    "generatedAt": "2026-10-15T10:00:00Z",
+    "expiresAt": "2026-10-15T10:05:00Z",
+    "measurements": {
+      "baselineP99Ms": 1000,
+      "recentP99Ms": 1200,
+      "failureRate": 0.02
+    },
+    "evidence": ["Persistent deadline failures supported this change"]
+  },
+  "decision": "APPROVED",
+  "reviewer": "sarala",
+  "decidedAt": "2026-10-15T10:01:00Z",
+  "delivery": "READY",
+  "detail": "Awaiting delivery and enforcement acknowledgement",
+  "attempts": 0,
+  "lastAttempt": null,
+  "appliedVersion": null
+}</pre>
+<p class="small">Illustrative values only. Every real message uses its own UUID and fresh UTC timestamps. Nullable metadata must be accepted. Measurements vary by action; evidence text is explanatory.</p>
+<h2>Values for the other two endpoints</h2>
+<table class="compact"><thead><tr><th>FIELD</th><th>LEAKY BUCKET EXAMPLE</th><th>RETRY-BUDGET EXAMPLE</th></tr></thead><tbody>
+<tr><td><code>target</code></td><td><code>order</code></td><td><code>order</code></td></tr>
+<tr><td><code>action</code></td><td><code>LEAKY_BUCKET</code></td><td><code>RETRY_BUDGET</code></td></tr>
+<tr><td><code>source</code></td><td><code>PROMETHEUS</code></td><td><code>PROMETHEUS</code></td></tr>
+<tr><td>Current → proposed</td><td><code>120 → 90</code></td><td><code>0.05 → 0.02</code></td></tr>
+<tr><td><code>decision</code></td><td><code>AUTOMATIC</code></td><td><code>AUTOMATIC</code></td></tr>
+</tbody></table>
+<p class="small">Automatic reviewer: <code>adaptive-controller</code>. Use the units on page 1. Leaky Bucket changes the rate, not bucket capacity. Retry ratio <code>0.02</code> means two extra attempts per 100 original requests, not two retries per request.</p>
+<div class="footer"><span>Component 4 → Component 3 · Message examples</span><span>02 / 03</span></div>
+</section>
+<section class="sheet">
+<div class="masthead"><span class="brand">POLICY DELIVERY CONTRACT</span><span class="tag">VERSIONS &amp; CONFIRMATION</span></div>
+<h1>Versioning and delivery</h1>
+<h2><span class="number">3</span>Policy version rules</h2>
+<p><strong>Component 4 sends <code>baseVersion</code>:</strong> the current policy reference used for calculation. <strong>Component 3 returns <code>policyVersion</code>:</strong> a new version after confirmed application.</p>
+<div class="version-row"><span>Current</span><code>v1</code><span>→ recommendation uses <code>v1</code> → apply →</span><code>v2</code></div>
+<p>Maintain versions consistently per target. The next recommendation uses the confirmed version. Initial deadline references may be <code>prometheus-config:1000</code>; verify that startup configuration instead of assuming every first version is <code>v1</code>.</p>
+<p class="small">The URL segment <code>/api/v1/</code> versions the API contract. It is unrelated to applied policy version strings.</p>
+<h2><span class="number">4</span>Acceptance response from Component 3</h2>
+<p>After validation, return <strong>HTTP 202</strong> with:</p>
+<pre>{"status": "ACCEPTED"}</pre>
+<p>Component 4 records <code>SENT</code>. Acceptance does not mean the sidecars have applied the policy.</p>
+<h2><span class="number">5</span>Confirm application to Component 4</h2>
+<p>After the intended sidecars confirm application, Component 3 calls:</p>
+<pre class="callback">POST http://&lt;COMPONENT4_HOST&gt;:8090/api/v2/intelligence/changes/{proposalId}/acknowledge
+Content-Type: application/json
+X-RRPE-Control-Token: &lt;Component4-control-token&gt;</pre>
+<pre>{
+  "status": "APPLIED",
+  "policyVersion": "v2",
+  "appliedValue": 1440
+}</pre>
+<p>Use the original proposal ID. The value must exactly match <code>proposedValue</code>; the version must be non-empty and different from <code>baseVersion</code>. The callback returns <strong>HTTP 204</strong> on success. Its control token is required independently of optional receiver bearer authentication.</p>
+<p class="small">If application is already confirmed immediately, Component 3 may return the APPLIED JSON directly to the original POST. Confirm promptly while the proposal and current reference remain valid.</p>
+<h2><span class="number">6</span>Receiver checks</h2>
+<ul><li>Deduplicate by proposal ID; validate action, target, units, decision and expiry.</li><li>Check current value and base version before applying. Reject stale updates.</li><li>Reject <code>MOCK</code> messages. Return non-2xx for invalid data or conflicts, such as 400 or 409.</li><li>Do not report <code>APPLIED</code> for partial sidecar application.</li></ul>
+<div class="footer"><span>Component 4 → Component 3 · API contract version 1</span><span>03 / 03</span></div>
+</section>
+</body></html>

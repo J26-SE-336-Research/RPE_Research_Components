@@ -76,7 +76,7 @@ public class AdaptiveCollector {
         problems = List.copyOf(errors);
     }
     public Map<String, Object> status() {
-        return Map.of("enabled", connections.collect(), "deliveryConfigured", !connections.component3Url().isBlank(),
+        return Map.of("enabled", connections.collect(), "deliveryConfigured", workflow.deliveryConfigured(),
                 "configuredServices", connections.services(),
                 "measurements", latest.values().stream().sorted(Comparator.comparing(c -> c.window().service())).toList(),
                 "deadlineGuards", guards, "chains", chainMeasurements, "problems", problems);

@@ -18,13 +18,20 @@ public class PolicyWorkflow {
     private final Clock clock;
     private final AdaptiveConfig.Connections connections;
     private final AdaptiveConfig.Settings settings;
+    private final AdaptiveConfig.DeliveryEndpoints deliveryEndpoints;
     private final Map<String, Policy> policies = new LinkedHashMap<>();
     private final Map<UUID, PolicyChange> history = new LinkedHashMap<>();
-    @Autowired public PolicyWorkflow(AdaptiveConfig.Connections connections, AdaptiveConfig.Settings settings) { this(connections, settings, Clock.systemUTC()); }
+    @Autowired public PolicyWorkflow(AdaptiveConfig.Connections connections, AdaptiveConfig.Settings settings, AdaptiveConfig.DeliveryEndpoints endpoints) {
+        this(connections, settings, Clock.systemUTC(), endpoints);
+    }
     public PolicyWorkflow(AdaptiveConfig.Connections connections, Clock clock) { this(connections, AdaptiveConfig.Settings.defaults(), clock); }
     public PolicyWorkflow(AdaptiveConfig.Connections connections, AdaptiveConfig.Settings settings, Clock clock) {
-        this.connections = connections; this.settings = settings; this.clock = clock;
+        this(connections, settings, clock, AdaptiveConfig.DeliveryEndpoints.disabled());
     }
+    public PolicyWorkflow(AdaptiveConfig.Connections connections, AdaptiveConfig.Settings settings, Clock clock, AdaptiveConfig.DeliveryEndpoints endpoints) {
+        this.connections = connections; this.settings = settings; this.clock = clock; this.deliveryEndpoints = endpoints;
+    }
+    public boolean deliveryConfigured() { return java.util.Arrays.stream(Action.values()).anyMatch(action -> !deliveryEndpoints.url(action, connections).isBlank()); }
     private String key(String target, Source source) { return (source == Source.MOCK ? "MOCK:" : "LIVE:") + target; }
 
     public synchronized void putPolicy(Policy policy, Source source) {
@@ -84,7 +91,7 @@ public class PolicyWorkflow {
             }
         }
         Decision decision = proposal.action() == Action.CHAIN_DEADLINE ? Decision.PENDING_APPROVAL : Decision.AUTOMATIC;
-        Delivery delivery = proposal.source() == Source.MOCK || connections.component3Url().isBlank()
+        Delivery delivery = proposal.source() == Source.MOCK || deliveryEndpoints.url(proposal.action(), connections).isBlank()
                 ? Delivery.WAITING_FOR_COMPONENT_3 : Delivery.READY;
         var change = new PolicyChange(proposal, decision, decision == Decision.AUTOMATIC ? "adaptive-controller" : null,
                 decision == Decision.AUTOMATIC ? clock.instant() : null, delivery,

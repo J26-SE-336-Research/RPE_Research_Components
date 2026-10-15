@@ -11,8 +11,24 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 
 @Configuration
 @EnableScheduling
-@EnableConfigurationProperties({AdaptiveConfig.Settings.class, AdaptiveConfig.Connections.class})
+@EnableConfigurationProperties({AdaptiveConfig.Settings.class, AdaptiveConfig.Connections.class, AdaptiveConfig.DeliveryEndpoints.class})
 public class AdaptiveConfig {
+    @ConfigurationProperties("rrpe.delivery")
+    public record DeliveryEndpoints(@DefaultValue("") String deadlineUrl,
+            @DefaultValue("") String leakyBucketUrl, @DefaultValue("") String retryBudgetUrl) {
+        public DeliveryEndpoints {
+            for (String url : List.of(deadlineUrl, leakyBucketUrl, retryBudgetUrl)) if (!url.isBlank()) Connections.checkUrl(url);
+        }
+        public static DeliveryEndpoints disabled() { return new DeliveryEndpoints("", "", ""); }
+        public String url(AdaptiveModels.Action action, Connections connections) {
+            String specific = switch (action) {
+                case CHAIN_DEADLINE -> deadlineUrl;
+                case LEAKY_BUCKET -> leakyBucketUrl;
+                case RETRY_BUDGET -> retryBudgetUrl;
+            };
+            return specific.isBlank() ? connections.component3Url() : specific;
+        }
+    }
     @ConfigurationProperties("rrpe.adaptive")
     public record Settings(@DefaultValue("5m") Duration window, @DefaultValue("1m") Duration cycle,
             @DefaultValue("30") int baselineSamples, @DefaultValue("20") int minimumServiceRequests,

@@ -11,18 +11,20 @@ import static org.rrpe.intelligence.adaptive.AdaptiveModels.*;
 public class PolicyDispatcher {
     private final PolicyWorkflow workflow;
     private final AdaptiveConfig.Connections connections;
+    private final AdaptiveConfig.DeliveryEndpoints endpoints;
     private final HttpClient http;
     private final JsonMapper json = JsonMapper.builder().build();
-    public PolicyDispatcher(PolicyWorkflow workflow, AdaptiveConfig.Connections connections) {
-        this.workflow = workflow; this.connections = connections;
+    public PolicyDispatcher(PolicyWorkflow workflow, AdaptiveConfig.Connections connections, AdaptiveConfig.DeliveryEndpoints endpoints) {
+        this.workflow = workflow; this.connections = connections; this.endpoints = endpoints;
         http = HttpClient.newBuilder().connectTimeout(connections.timeout()).build();
     }
     @Scheduled(fixedDelayString = "${rrpe.delivery-poll:15s}")
     public synchronized void dispatch() {
-        if (connections.component3Url().isBlank()) return;
         for (var change : workflow.deliverable()) {
+            String destination = endpoints.url(change.proposal().action(), connections);
+            if (destination.isBlank()) continue;
             try {
-                var request = HttpRequest.newBuilder(URI.create(connections.component3Url())).timeout(connections.timeout())
+                var request = HttpRequest.newBuilder(URI.create(destination)).timeout(connections.timeout())
                         .header("Content-Type", "application/json").header("Accept", "application/json")
                         .header("Idempotency-Key", change.proposal().id().toString());
                 if (!connections.component3Token().isBlank()) request.header("Authorization", "Bearer " + connections.component3Token());

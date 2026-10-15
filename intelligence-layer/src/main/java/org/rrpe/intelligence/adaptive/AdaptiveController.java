@@ -3,6 +3,7 @@ package org.rrpe.intelligence.adaptive;
 import static org.rrpe.intelligence.adaptive.AdaptiveModels.*;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import org.springframework.beans.factory.annotation.Value;
@@ -63,6 +64,12 @@ public class AdaptiveController {
         authorize(workflow.find(id).proposal().source(), token); workflow.deliveryResult(id, ack, null);
     }
     @GetMapping("/outbox") public Object outbox() { return workflow.deliverable(); }
+    @GetMapping("/outbox/deadlines") public List<PolicyChange> deadlineUpdates() { return updates(Action.CHAIN_DEADLINE); }
+    @GetMapping("/outbox/leaky-bucket") public List<PolicyChange> leakyBucketUpdates() { return updates(Action.LEAKY_BUCKET); }
+    @GetMapping("/outbox/retry-budget") public List<PolicyChange> retryBudgetUpdates() { return updates(Action.RETRY_BUDGET); }
+    private List<PolicyChange> updates(Action action) {
+        return workflow.deliverable().stream().filter(change -> change.proposal().action() == action).toList();
+    }
     @PostMapping("/demo/{scenario}") public Object demo(@PathVariable String scenario) { authorize(Source.MOCK, null); return scenarios.run(scenario); }
     private void authorize(Source source, String supplied) {
         if (source == null) throw new IllegalArgumentException("Evidence source is required");
