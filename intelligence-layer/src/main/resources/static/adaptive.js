@@ -26,6 +26,10 @@ function entries() {
     return [...found.values()];
   }
   const found = new Map();
+  for (const deadline of snapshot?.collection.configuredDeadlines || []) {
+    const target = `${deadline.method} ${deadline.route}`;
+    found.set(target, {target, configuredDeadline:deadline, measurement:null, assessment:null, configuredOnly:true});
+  }
   for (const data of snapshot?.collection.chains || []) found.set(data.window.chain, {target:data.window.chain, measurement:data, assessment:null});
   for (const a of snapshot?.assessments || []) if (a.source === 'TEMPO') found.set(a.target, {...found.get(a.target),target:a.target,assessment:a});
   for (const c of currentChanges()) if (!found.has(c.proposal.target)) found.set(c.proposal.target, {target:c.proposal.target,measurement:null,assessment:null});
@@ -68,13 +72,18 @@ function render() {
   $('example-controls').hidden = mode !== 'examples'; $('run-example').disabled = demoBusy || !snapshot?.mockEnabled;
   $('source-status').className = 'source-status ' + (mode === 'examples' ? 'example' : snapshot?.collection.enabled ? 'live' : '');
   $('source-status').textContent = mode === 'examples' ? 'Synthetic data · safe to explore' : snapshot?.collection.enabled ? 'Live collection enabled' : 'Live collection is off';
-  const data = entries(); $('chain-count').textContent = `${data.length} ${data.length === 1 ? 'chain' : 'chains'}`; $('chains').replaceChildren();
+  const data = entries(); const configuredView = mode === 'live' && data.length > 0 && data.every(item => item.configuredOnly);
+  $('chain-count').textContent = `${data.length} ${configuredView ? (data.length === 1 ? 'deadline' : 'deadlines') : (data.length === 1 ? 'chain' : 'chains')}`; $('chains').replaceChildren();
+  document.querySelector('.chain-panel h2').textContent = configuredView ? 'Configured deadlines' : 'Request chains';
+  document.querySelector('.chain-panel > .muted').textContent = configuredView ? 'Current route deadline values scraped from the Component 2 gateway.' : 'A chain can include several services. Select a chain to see its end-to-end deadline.';
+  document.querySelector('.workflow').hidden = configuredView;
   renderServices(data);
   if (!data.some(item => item.target === selected)) selected = data[0]?.target || null;
   if (!data.length) $('chains').append(el('p', mode === 'examples' ? 'Run an example to get started.' : 'No request chains yet.', 'muted'));
   for (const item of data) {
     const button = el('button', undefined, 'chain-button' + (item.target === selected ? ' selected' : ''));
-    button.append(el('strong', route(item.target)), el('small', mode === 'examples' ? 'Synthetic request chain' : item.assessment ? item.assessment.health.toLowerCase().replaceAll('_',' ') : 'Evidence received'));
+    button.append(el('strong', route(item.target)), el('small', item.configuredOnly ? 'Current configured value' : mode === 'examples' ? 'Synthetic request chain' : item.assessment ? item.assessment.health.toLowerCase().replaceAll('_',' ') : 'Evidence received'));
+    if (item.configuredOnly) button.append(el('small', ms(item.configuredDeadline.deadlineMs)));
     const proposal = currentChanges().find(change => change.proposal.target === item.target)?.proposal;
     if (proposal) button.append(el('small', `${ms(proposal.currentValue)} → ${ms(proposal.proposedValue)}`));
     button.append(el('small', item.measurement?.paths?.length ? `${item.measurement.paths.length} observed service ${item.measurement.paths.length === 1 ? 'path' : 'paths'} · one route deadline` : (item.target.split(' | ')[1] || '').replaceAll('mock-', '').replaceAll(' > ', ' → ')));
@@ -89,15 +98,15 @@ function render() {
 }
 function renderDetail(item) {
   const change = currentChanges().find(c => c.proposal.target === item.target), p = change?.proposal, a = item.assessment;
-  const current = p?.currentValue ?? item.measurement?.currentDeadlineMs;
+  const current = p?.currentValue ?? item.measurement?.currentDeadlineMs ?? item.configuredDeadline?.deadlineMs;
   const p99 = p?.measurements.recentP99Ms ?? a?.signals.p99 ?? item.measurement?.window.p99Ms;
   const baseline = p?.measurements.baselineP99Ms ?? a?.baseline.p99?.median;
   const unavailable = change && ['EXPIRED','SUPERSEDED','REJECTED'].includes(change.delivery === 'EXPIRED' || change.delivery === 'SUPERSEDED' ? change.delivery : change.decision);
   const proposed = unavailable ? null : p?.proposedValue;
-  $('route-label').textContent = route(item.target); $('result-title').textContent = 'Deadline recommendation';
+  $('route-label').textContent = route(item.target); $('result-title').textContent = item.configuredOnly ? 'Configured gateway deadline' : 'Deadline recommendation';
   $('current-value').textContent = ms(current); $('p99-value').textContent = ms(p99); $('recommended-value').textContent = ms(proposed);
-  $('recommended-caption').textContent = proposed == null ? 'Waiting for supported, current evidence' : mode === 'examples' ? 'Calculated from synthetic evidence' : 'Requires your review before application';
-  $('decision-badge').textContent = mode === 'examples' ? 'Example result' : unavailable ? human[change.decision === 'REJECTED' ? 'REJECTED' : change.delivery] : change ? human[change.decision] : a?.health === 'LEARNING_BASELINE' || a?.health === 'BASELINE_READY' ? 'Learning baseline' : 'Waiting for evidence';
+  $('recommended-caption').textContent = item.configuredOnly ? 'No recommendation from available metrics' : proposed == null ? 'Waiting for supported, current evidence' : mode === 'examples' ? 'Calculated from synthetic evidence' : 'Requires your review before application';
+  $('decision-badge').textContent = item.configuredOnly ? 'Configured value' : mode === 'examples' ? 'Example result' : unavailable ? human[change.decision === 'REJECTED' ? 'REJECTED' : change.delivery] : change ? human[change.decision] : a?.health === 'LEARNING_BASELINE' || a?.health === 'BASELINE_READY' ? 'Learning baseline' : 'Waiting for evidence';
   $('decision-badge').className = 'badge' + (change?.delivery === 'APPLIED' ? ' good' : unavailable ? ' neutral' : '');
   $('path').replaceChildren();
   if (item.measurement?.paths?.length) {
@@ -108,8 +117,8 @@ function renderDetail(item) {
     services.forEach((service,index) => { if(index) $('path').append(el('span','→')); $('path').append(el('span',service.replace(/^mock-/,'').replaceAll('-',' '),'path-chip')); });
   }
   const recovery = proposed != null && proposed < current;
-  $('explanation-title').textContent = proposed != null ? recovery ? 'The chain has recovered. Lower its deadline gradually.' : 'Give this request chain more time to finish.' : 'We need more evidence before changing this deadline.';
-  $('explanation').textContent = proposed != null ? recovery ? `Reduce the deadline from ${ms(current)} to ${ms(proposed)}. This recovery step preserves the healthy safety margin.` : `The measured request duration and persistent deadline failures support increasing the deadline from ${ms(current)} to ${ms(proposed)}.` : unavailable ? 'This decision has expired, was rejected, or no longer matches current evidence. A new recommendation is needed.' : a?.health === 'LEARNING_BASELINE' || a?.health === 'BASELINE_READY' ? 'The system is learning normal request duration and waiting for a separate recent window. It will recommend a change when enough evidence is available.' : 'A recommendation needs complete traces, enough requests and a reliable performance baseline.';
+  $('explanation-title').textContent = item.configuredOnly ? 'This is the deadline currently configured in Component 2.' : proposed != null ? recovery ? 'The chain has recovered. Lower its deadline gradually.' : 'Give this request chain more time to finish.' : 'We need more evidence before changing this deadline.';
+  $('explanation').textContent = item.configuredOnly ? 'Prometheus provides the configured route budget, but the complete request and failure metrics needed to assess or recommend a change are unavailable. This value is shown for reference only.' : proposed != null ? recovery ? `Reduce the deadline from ${ms(current)} to ${ms(proposed)}. This recovery step preserves the healthy safety margin.` : `The measured request duration and persistent deadline failures support increasing the deadline from ${ms(current)} to ${ms(proposed)}.` : unavailable ? 'This decision has expired, was rejected, or no longer matches current evidence. A new recommendation is needed.' : a?.health === 'LEARNING_BASELINE' || a?.health === 'BASELINE_READY' ? 'The system is learning normal request duration and waiting for a separate recent window. It will recommend a change when enough evidence is available.' : 'A recommendation needs complete traces, enough requests and a reliable performance baseline.';
   $('facts').replaceChildren();
   const failureRate = p?.measurements.failureRate ?? a?.signals.deadlineFailureRate;
   if (Number.isFinite(baseline)) $('facts').append(el('span',`Healthy baseline: ${ms(baseline)}`));
@@ -169,11 +178,12 @@ function renderEvidence(item, proposal, values) {
     const messages = [...(item.assessment?.evidence || []), ...(item.measurement?.problems || [])].filter(line => typeof line === 'string' && line.trim());
     for (const message of new Set(messages)) add('Evidence status', message);
   }
-  if (!container.children.length) add('Waiting for measurements', 'No measured deadline evidence is available yet. Check the Prometheus and Tempo connections.');
+  if (item.configuredOnly) add('Source: Component 2 Prometheus', `Configured gateway budget: ${ms(current)}. Scraped at ${new Date(item.configuredDeadline.observedAt).toLocaleString()}. No deadline adjustment is being proposed.`);
+  if (!container.children.length && !item.configuredOnly) add('Waiting for measurements', 'No measured deadline evidence is available yet. Check the Prometheus and Tempo connections.');
 }
 async function refresh() {
   if (busy) return; busy=true; $('refresh').disabled=true;
-  try { snapshot=await api(); if(initial) { initial=false; if(snapshot.mockEnabled && !snapshot.collection.chains?.length) {mode='examples'; await runExample();} } render(); }
+  try { snapshot=await api(); if(initial) { initial=false; if(snapshot.mockEnabled && !snapshot.collection.chains?.length && !snapshot.collection.configuredDeadlines?.length) {mode='examples'; await runExample();} } render(); }
   catch(e) { error(e.message); } finally {busy=false; $('refresh').disabled=false;}
 }
 async function runExample() {

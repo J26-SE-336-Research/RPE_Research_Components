@@ -19,6 +19,7 @@ public class TempoWindows {
     public record TraceSample(String id, String route, String method, List<String> services, double durationMs, long start, long end, Double deadlineMs) {}
     public record PathEvidence(List<String> services, int traceCount, double p99Ms) {}
     public record Coverage(int traceCount, Double prometheusCount, Double tolerance, boolean accepted) {}
+    public record ConfiguredDeadline(String method, String route, double deadlineMs, Instant observedAt) {}
     public record Collection(ChainWindow window, Double currentDeadlineMs, List<String> problems,
             List<PathEvidence> paths, Coverage coverage) {
         public Collection(ChainWindow window, Double currentDeadlineMs, List<String> problems) {
@@ -106,6 +107,33 @@ public class TempoWindows {
         if (minimum == null || maximum == null || age == null || minimum <= 0 || minimum != Math.rint(minimum)
                 || !minimum.equals(maximum) || age > connections.maximumScrapeAge().toSeconds()) return null;
         return minimum;
+    }
+    /** Lists current configured gateway budgets directly from Prometheus, without requiring traces. */
+    public List<ConfiguredDeadline> configuredDeadlines(Instant end) {
+        String metric = "sidecar_gateway_deadline_budget_milliseconds{namespace=\"" + TelemetryHttp.escape(connections.namespace()) + "\"}";
+        var root = http.get(connections.prometheusUrl().replaceAll("/$", "") + "/api/v1/query?query=" + TelemetryHttp.encode(metric)
+                + "&time=" + end.getEpochSecond());
+        if (!"success".equals(root.path("status").asString()) || !"vector".equals(root.path("data").path("resultType").asString())
+                || root.path("warnings").size() > 0) throw new IllegalStateException("Incomplete Prometheus deadline query");
+        var grouped = new TreeMap<String, List<ConfiguredDeadline>>();
+        for (var sample : root.path("data").path("result")) {
+            var labels = sample.path("metric");
+            String method = labels.path("method").asString(null), route = labels.path("route").asString(null);
+            var value = sample.path("value");
+            if (method == null || method.isBlank() || route == null || route.isBlank() || !value.isArray() || value.size() < 2) continue;
+            long sampledAt = value.get(0).asLong(0);
+            double deadline = Double.parseDouble(value.get(1).asString());
+            if (sampledAt <= 0 || sampledAt > end.getEpochSecond() || end.getEpochSecond() - sampledAt > connections.maximumScrapeAge().toSeconds()
+                    || !Double.isFinite(deadline) || deadline <= 0 || deadline != Math.rint(deadline)) continue;
+            grouped.computeIfAbsent(method + " " + route, ignored -> new ArrayList<>())
+                    .add(new ConfiguredDeadline(method, route, deadline, Instant.ofEpochSecond(sampledAt)));
+        }
+        var result = new ArrayList<ConfiguredDeadline>();
+        for (var replicas : grouped.values()) {
+            double value = replicas.get(0).deadlineMs();
+            if (replicas.stream().allMatch(item -> item.deadlineMs() == value)) result.add(replicas.get(0));
+        }
+        return List.copyOf(result);
     }
     public TraceSample parseTrace(String id, JsonNode trace) {
         if ("PARTIAL".equals(trace.path("status").asString()) || trace.path("status").asInt(0) == 1) {

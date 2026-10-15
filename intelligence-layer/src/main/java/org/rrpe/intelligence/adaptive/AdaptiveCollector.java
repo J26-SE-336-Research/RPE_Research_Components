@@ -22,6 +22,7 @@ public class AdaptiveCollector {
     private volatile List<String> problems = List.of();
     private volatile List<Assessment> guards = List.of();
     private volatile List<TempoWindows.Collection> chainMeasurements = List.of();
+    private volatile List<TempoWindows.ConfiguredDeadline> configuredDeadlines = List.of();
     @Autowired public AdaptiveCollector(AdaptiveConfig.Connections connections, AdaptiveEngine engine, PrometheusWindows prometheus, TempoWindows tempo,
             DeadlineHealth deadlineHealth, PolicyWorkflow workflow) {
         this(connections, engine, prometheus, tempo, deadlineHealth, workflow, Clock.systemUTC());
@@ -36,6 +37,8 @@ public class AdaptiveCollector {
         if (!connections.collect()) return;
         Instant end = clock.instant().truncatedTo(java.time.temporal.ChronoUnit.SECONDS);
         Map<String, Health> health = new HashMap<>(); var errors = new ArrayList<String>(); var guardResults = new ArrayList<Assessment>();
+        try { configuredDeadlines = tempo.configuredDeadlines(end); }
+        catch (RuntimeException exception) { configuredDeadlines = List.of(); errors.add("Prometheus deadline configuration: " + exception.getMessage()); }
         for (String service : connections.services()) {
             var data = prometheus.collect(service, end); latest.put(service, data);
             engine.service(data.window()); // Full service analysis can wait for retries/rejections independently.
@@ -79,6 +82,6 @@ public class AdaptiveCollector {
         return Map.of("enabled", connections.collect(), "deliveryConfigured", workflow.deliveryConfigured(),
                 "configuredServices", connections.services(),
                 "measurements", latest.values().stream().sorted(Comparator.comparing(c -> c.window().service())).toList(),
-                "deadlineGuards", guards, "chains", chainMeasurements, "problems", problems);
+                "deadlineGuards", guards, "chains", chainMeasurements, "configuredDeadlines", configuredDeadlines, "problems", problems);
     }
 }
