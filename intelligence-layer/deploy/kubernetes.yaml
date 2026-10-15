@@ -1,0 +1,66 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: intelligence-layer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: intelligence-layer
+  template:
+    metadata:
+      labels:
+        app: intelligence-layer
+    spec:
+      containers:
+        - name: intelligence-layer
+          image: 2002rusira/intelligence-layer:v1
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8090
+          env:
+            - name: SERVER_PORT
+              value: "8090"
+            # Tempo and Prometheus run in the external Component 2 stack.
+            # Verify the actual Service DNS and image before applying this reference.
+            - name: PROMETHEUS_URL
+              value: "http://prometheus:9090"
+            - name: TEMPO_URL
+              value: "http://tempo:3200"
+            - name: PROMETHEUS_COLLECTION_ENABLED
+              value: "false"
+          startupProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8090
+            failureThreshold: 30
+            periodSeconds: 5
+
+          livenessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8090
+            initialDelaySeconds: 10
+            timeoutSeconds: 2
+            periodSeconds: 15
+            failureThreshold: 3
+
+          readinessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8090
+            initialDelaySeconds: 10
+            timeoutSeconds: 2
+            periodSeconds: 5
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: intelligence-layer
+spec:
+  selector:
+    app: intelligence-layer
+  ports:
+    - port: 8090
+      targetPort: 8090

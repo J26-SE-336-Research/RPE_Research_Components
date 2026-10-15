@@ -1,0 +1,28 @@
+﻿{
+    "recent":  {
+                   "serviceName":  "order-service",
+                   "collectedAt":  "2026-10-02T03:45:00Z",
+                   "requestRate":  100,
+                   "p95LatencyMs":  100,
+                   "errorRate":  0.01,
+                   "retryCount":  2,
+                   "rejectedRequestCount":  0,
+                   "deadlineFailureCount":  0,
+                   "cancellationCount":  0,
+                   "inFlightRequests":  20,
+                   "successfulThroughput":  98
+               },
+    "baseline":  {
+                     "serviceName":  "order-service",
+                     "collectedAt":  "2026-10-02T03:00:00Z",
+                     "requestRate":  100,
+                     "p95LatencyMs":  100,
+                     "errorRate":  0.01,
+                     "retryCount":  2,
+                     "rejectedRequestCount":  0,
+                     "deadlineFailureCount":  0,
+                     "cancellationCount":  0,
+                     "inFlightRequests":  20,
+                     "successfulThroughput":  98
+                 }
+}

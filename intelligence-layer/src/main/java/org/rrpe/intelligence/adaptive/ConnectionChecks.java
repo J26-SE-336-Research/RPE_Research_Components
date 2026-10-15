@@ -1,0 +1,41 @@
+package org.rrpe.intelligence.adaptive;
+
+import java.time.Instant;
+import java.util.Map;
+import org.springframework.stereotype.Component;
+
+/** Read-only probes distinguish an unreachable server from one without fresh gateway evidence. */
+@Component
+public class ConnectionChecks {
+    public record Check(String state, String detail) {}
+    private final TelemetryHttp http;
+    private final AdaptiveConfig.Connections connections;
+    private final AdaptiveConfig.Settings settings;
+    public ConnectionChecks(TelemetryHttp http, AdaptiveConfig.Connections connections, AdaptiveConfig.Settings settings) {
+        this.http = http; this.connections = connections; this.settings = settings;
+    }
+    public Map<String, Check> check() {
+        Instant now = Instant.now().truncatedTo(java.time.temporal.ChronoUnit.SECONDS);
+        Check prometheus; Check tempo;
+        try {
+            String gauge = "sidecar_gateway_deadline_budget_milliseconds{namespace=\"" + TelemetryHttp.escape(connections.namespace()) + "\"}";
+            Double series = http.prometheus("count(" + gauge + ")", now);
+            Double age = http.prometheus("max(time()-timestamp(" + gauge + "))", now);
+            Double requests = http.prometheus("sum(increase(sidecar_gateway_request_chains_completed_total{namespace=\""
+                    + TelemetryHttp.escape(connections.namespace()) + "\",service=\"" + TelemetryHttp.escape(connections.gatewayService())
+                    + "\"}[" + settings.window().toSeconds() + "s]))", now);
+            boolean live = series != null && series > 0 && age != null && age <= connections.maximumScrapeAge().toSeconds() && requests != null && requests > 0;
+            prometheus = new Check(live ? "LIVE_DATA" : "NO_FRESH_DATA", live ? "Fresh configured deadlines and recent completed gateway requests found"
+                    : "Server responded, but fresh deadline gauges or recent gateway traffic are missing");
+        } catch (RuntimeException exception) { prometheus = new Check("UNREACHABLE_OR_QUERY_FAILED", exception.getMessage()); }
+        try {
+            String query = "{ resource.service.name = \"" + TelemetryHttp.escape(connections.gatewayService()) + "\" && span.rrpe.proxy.direction = \"inbound\" }";
+            var response = http.get(connections.tempoUrl().replaceAll("/$", "") + "/api/search?q=" + TelemetryHttp.encode(query)
+                    + "&start=" + now.minus(settings.window()).getEpochSecond() + "&end=" + now.getEpochSecond() + "&limit=1");
+            if (!response.path("traces").isArray()) throw new IllegalStateException("Invalid Tempo search response");
+            tempo = new Check(response.path("traces").size() > 0 ? "LIVE_DATA" : "NO_FRESH_DATA",
+                    response.path("traces").size() > 0 ? "Recent gateway traces found; completeness is checked during collection" : "Server responded, but no recent gateway traces were found");
+        } catch (RuntimeException exception) { tempo = new Check("UNREACHABLE_OR_QUERY_FAILED", exception.getMessage()); }
+        return Map.of("prometheus", prometheus, "tempo", tempo);
+    }
+}

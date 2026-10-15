@@ -1,0 +1,29 @@
+{
+    "schemaVersion":  "1.0",
+    "mode":  "ADVISORY",
+    "serviceName":  "order-service",
+    "status":  "STRESSED",
+    "sourceCollectedAt":  "2026-10-02T03:45:00Z",
+    "generatedAt":  "2026-10-06T09:52:03.882717Z",
+    "expiresAt":  "2026-10-06T09:57:03.882717Z",
+    "evidence":  [
+                     "Recent latency is 1.60 times the baseline",
+                     "Recent error rate is 6.00%"
+                 ],
+    "recommendations":  [
+                            {
+                                "action":  "RATE_LIMIT",
+                                "parameters":  {
+                                                   "maxRequestsPerSecond":  90.0
+                                               },
+                                "reason":  "Reduce admitted load while latency or errors are elevated"
+                            },
+                            {
+                                "action":  "RETRY_BUDGET",
+                                "parameters":  {
+                                                   "retryBudgetRatio":  0.05
+                                               },
+                                "reason":  "Retries have increased during degradation; cap extra attempts with a service retry budget"
+                            }
+                        ]
+}

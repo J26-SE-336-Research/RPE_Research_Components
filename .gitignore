@@ -1,0 +1,12 @@
+# Generated output and local configuration
+**/target/
+*.log
+.env
+.env.*
+!.env.example
+**/application-local.properties
+**/application-local.yml
+**/application-local.yaml
+.vscode/
+.idea/
+*.iml
