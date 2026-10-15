@@ -1,0 +1,10 @@
+go 1.24
+
+use (
+	./conformance-kit/go
+	./demo-app
+	./hub
+	./k8s/admission-webhook
+	./k8s/operator
+	./libs/rpe-go
+)

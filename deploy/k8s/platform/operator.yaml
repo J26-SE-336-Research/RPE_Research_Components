@@ -1,0 +1,92 @@
+# C3: RPE Operator + policy API. Least privilege: RPE custom resources in rpe-system, read-only pods in rpe-demo.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: rpe-operator
+  namespace: rpe-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: rpe-operator
+  namespace: rpe-system
+rules:
+  - apiGroups: [resilience.rpe.dev]
+    resources: [rpepolicies, rperollouts]
+    verbs: [get, list, watch, create, update, patch]
+  - apiGroups: [resilience.rpe.dev]
+    resources: [rpepolicies/status, rperollouts/status]
+    verbs: [get, update, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: rpe-operator
+  namespace: rpe-system
+subjects: [{kind: ServiceAccount, name: rpe-operator, namespace: rpe-system}]
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: rpe-operator}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: rpe-operator-pods
+  namespace: rpe-demo
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: rpe-operator-pods
+  namespace: rpe-demo
+subjects: [{kind: ServiceAccount, name: rpe-operator, namespace: rpe-system}]
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: rpe-operator-pods}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rpe-operator
+  namespace: rpe-system
+  labels: {app: rpe-operator, app.kubernetes.io/part-of: rpe}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: rpe-operator}
+  template:
+    metadata:
+      labels: {app: rpe-operator}
+    spec:
+      serviceAccountName: rpe-operator
+      containers:
+        - name: operator
+          image: rpe/operator:dev
+          imagePullPolicy: IfNotPresent
+          ports: [{containerPort: 8080, name: http}]
+          env:
+            - {name: DATABASE_URL, value: "postgres://rpe:rpe-dev-password@rpe-postgres.rpe-system:5432/rpe?sslmode=disable"}
+            - {name: REDIS_ADDR, value: "rpe-redis.rpe-system:6379"}
+            - {name: DEMO_NAMESPACE, value: rpe-demo}
+            - {name: DRAIN_MS, value: "2000"}          # > longest route deadline (in-flight requests on the old epoch finish)
+            - {name: DRIFT_INTERVAL_MS, value: "5000"}
+            - {name: AUTO_ROLLOUT, value: "false"}     # rollouts are started explicitly from the admin panel
+          readinessProbe:
+            httpGet: {path: /healthz, port: 8080}
+            periodSeconds: 3
+          resources:
+            requests: {cpu: 20m, memory: 48Mi}
+            limits: {memory: 192Mi}
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rpe-policy-api
+  namespace: rpe-system
+spec:
+  selector: {app: rpe-operator}
+  ports: [{port: 80, targetPort: 8080, name: http}]

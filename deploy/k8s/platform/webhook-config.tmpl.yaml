@@ -1,0 +1,25 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: rpe-sidecar-injector
+webhooks:
+  - name: sidecar-injector.rpe.dev
+    admissionReviewVersions: [v1]
+    sideEffects: None
+    # Fail is deterministic for tests; the C3 webhook-safety experiment (E2) compares it with Ignore.
+    failurePolicy: Fail
+    reinvocationPolicy: Never
+    timeoutSeconds: 5
+    namespaceSelector:
+      matchLabels: {rpe-injection: enabled}
+    rules:
+      - operations: [CREATE]
+        apiGroups: [""]
+        apiVersions: [v1]
+        resources: [pods]
+    clientConfig:
+      service:
+        name: rpe-admission-webhook
+        namespace: rpe-system
+        path: /mutate
+      caBundle: ${CA_BUNDLE}

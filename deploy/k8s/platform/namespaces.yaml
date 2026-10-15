@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: rpe-system
+  labels:
+    app.kubernetes.io/part-of: rpe
+---
+# Demo workloads: every Pod here gets the RPE sidecar (contract A3.2).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: rpe-demo
+  labels:
+    app.kubernetes.io/part-of: rpe
+    rpe-injection: enabled
+---
+# Test clients: never injected.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: rpe-e2e
+  labels:
+    app.kubernetes.io/part-of: rpe

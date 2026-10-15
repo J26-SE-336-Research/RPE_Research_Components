@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# C2/C3 contract A3.5: sidecar control API (health, staged/active policy epochs) and metrics endpoint.
+source "$(dirname "$0")/lib.sh"
+ip=$(pod_ip payment-svc); admin="http://${ip}:15020"
+client GET "${admin}/rpe/v1/health"
+assert_eq "${CODE}" 200 "sidecar health endpoint"
+assert_eq "$(echo "${BODY}" | jq -r .role)" service "payment sidecar role is service"
+client GET "http://$(pod_ip gateway):15020/rpe/v1/health"
+assert_eq "$(echo "${BODY}" | jq -r .role)" gateway "gateway sidecar role is gateway"
+epoch="e2e-$(date +%s)"
+client PUT "${admin}/rpe/v1/policy" "{\"epoch\":\"${epoch}\",\"version\":1,\"hash\":\"h1\",\"state\":\"staged\"}"
+assert_eq "$(echo "${BODY}" | jq -r --arg e "${epoch}" '.epochs[] | select(.epoch==$e) | .state')" staged "policy staged (held inactive)"
+client POST "${admin}/rpe/v1/policy/activate" "{\"epoch\":\"${epoch}\"}"
+assert_eq "$(echo "${BODY}" | jq -r .activeEpoch)" "${epoch}" "policy epoch activated"
+client DELETE "${admin}/rpe/v1/policy/${epoch}"
+assert_eq "${CODE}" 409 "the active epoch cannot be retired"
+client GET "http://${ip}:15090/metrics"
+assert_contains "${BODY}" "rpe_proxy_overhead_seconds_count" "metrics expose sidecar overhead"
+assert_contains "${BODY}" 'service="payment-svc"' "metrics are labelled with the RPE service name"
+finish

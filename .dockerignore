@@ -1,0 +1,8 @@
+# Build context for images built from the repository root (demo-app, hub).
+.git
+_research
+**/node_modules
+**/target
+**/dist
+deploy/k8s/generated
+tests/e2e/reports

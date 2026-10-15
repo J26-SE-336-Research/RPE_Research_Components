@@ -1,0 +1,40 @@
+{
+  "description": "Trace binding: the trace-id of a W3C traceparent, or empty when invalid.",
+  "cases": [
+    {
+      "name": "valid",
+      "input": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+      "expect": "4bf92f3577b34da6a3ce929d0e0e4736"
+    },
+    {
+      "name": "uppercase is normalised",
+      "input": "00-4BF92F3577B34DA6A3CE929D0E0E4736-00f067aa0ba902b7-01",
+      "expect": "4bf92f3577b34da6a3ce929d0e0e4736"
+    },
+    {
+      "name": "all-zero trace id",
+      "input": "00-00000000000000000000000000000000-00f067aa0ba902b7-01",
+      "expect": ""
+    },
+    {
+      "name": "non-hex trace id",
+      "input": "00-4bf92f3577b34da6a3ce929d0e0e47zz-00f067aa0ba902b7-01",
+      "expect": ""
+    },
+    {
+      "name": "too few parts",
+      "input": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7",
+      "expect": ""
+    },
+    {
+      "name": "short trace id",
+      "input": "00-4bf92f3577b34da6a3ce929d0e0e47-00f067aa0ba902b7-01",
+      "expect": ""
+    },
+    {
+      "name": "empty",
+      "input": "",
+      "expect": ""
+    }
+  ]
+}

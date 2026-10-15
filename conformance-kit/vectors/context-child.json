@@ -1,0 +1,129 @@
+{
+  "description": "Child derivation: ttl = parent ttl - elapsed - reserve, rb = grant, pid = parent iid; a grant above the parent budget violates R-T03.",
+  "cases": [
+    {
+      "name": "elapsed and reserve are subtracted",
+      "parent": {
+        "v": 1,
+        "rid": "4bf92f3577b34da6a3ce929d0e0e4736",
+        "iid": "00f067aa0ba902b7",
+        "pid": "0000000000000000",
+        "ttl": 287,
+        "bud": 300,
+        "rb": 3,
+        "cs": "none",
+        "pe": "e42",
+        "rt": "POST /api/orders"
+      },
+      "elapsedMs": 20,
+      "reserveMs": 5,
+      "grant": 1,
+      "expectTtl": 262,
+      "expectRb": 1
+    },
+    {
+      "name": "whole budget granted",
+      "parent": {
+        "v": 1,
+        "rid": "4bf92f3577b34da6a3ce929d0e0e4736",
+        "iid": "00f067aa0ba902b7",
+        "pid": "0000000000000000",
+        "ttl": 287,
+        "bud": 300,
+        "rb": 3,
+        "cs": "none",
+        "pe": "e42",
+        "rt": "POST /api/orders"
+      },
+      "elapsedMs": 0,
+      "reserveMs": 0,
+      "grant": 3,
+      "expectTtl": 287,
+      "expectRb": 3
+    },
+    {
+      "name": "zero grant",
+      "parent": {
+        "v": 1,
+        "rid": "4bf92f3577b34da6a3ce929d0e0e4736",
+        "iid": "00f067aa0ba902b7",
+        "pid": "0000000000000000",
+        "ttl": 287,
+        "bud": 300,
+        "rb": 3,
+        "cs": "none",
+        "pe": "e42",
+        "rt": "POST /api/orders"
+      },
+      "elapsedMs": 10,
+      "reserveMs": 0,
+      "grant": 0,
+      "expectTtl": 277,
+      "expectRb": 0
+    },
+    {
+      "name": "ttl may become negative",
+      "parent": {
+        "v": 1,
+        "rid": "4bf92f3577b34da6a3ce929d0e0e4736",
+        "iid": "00f067aa0ba902b7",
+        "pid": "0000000000000000",
+        "ttl": 287,
+        "bud": 300,
+        "rb": 3,
+        "cs": "none",
+        "pe": "e42",
+        "rt": "POST /api/orders"
+      },
+      "elapsedMs": 300,
+      "reserveMs": 0,
+      "grant": 1,
+      "expectTtl": -13,
+      "expectRb": 1
+    },
+    {
+      "name": "grant above parent budget (R-T03)",
+      "parent": {
+        "v": 1,
+        "rid": "4bf92f3577b34da6a3ce929d0e0e4736",
+        "iid": "00f067aa0ba902b7",
+        "pid": "0000000000000000",
+        "ttl": 287,
+        "bud": 300,
+        "rb": 3,
+        "cs": "none",
+        "pe": "e42",
+        "rt": "POST /api/orders"
+      },
+      "elapsedMs": 0,
+      "reserveMs": 0,
+      "grant": 4,
+      "error": {
+        "code": "INVALID_TRANSITION",
+        "rule": "R-T03"
+      }
+    },
+    {
+      "name": "negative grant (R-T03)",
+      "parent": {
+        "v": 1,
+        "rid": "4bf92f3577b34da6a3ce929d0e0e4736",
+        "iid": "00f067aa0ba902b7",
+        "pid": "0000000000000000",
+        "ttl": 287,
+        "bud": 300,
+        "rb": 3,
+        "cs": "none",
+        "pe": "e42",
+        "rt": "POST /api/orders"
+      },
+      "elapsedMs": 0,
+      "reserveMs": 0,
+      "grant": -1,
+      "error": {
+        "code": "INVALID_TRANSITION",
+        "rule": "R-T03"
+      }
+    }
+  ]
+}

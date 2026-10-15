@@ -1,0 +1,16 @@
+# Test client in a namespace WITHOUT injection: all e2e HTTP calls are made from here with kubectl exec.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: e2e-client
+  namespace: rpe-e2e
+  labels: {app: e2e-client}
+spec:
+  containers:
+    - name: curl
+      image: curlimages/curl:8.11.1
+      command: ["sleep", "infinity"]
+      resources:
+        requests: {cpu: 10m, memory: 16Mi}
+        limits: {memory: 64Mi}
+  terminationGracePeriodSeconds: 1

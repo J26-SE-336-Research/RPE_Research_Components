@@ -1,0 +1,82 @@
+{
+  "description": "Retry-budget split across fan-out children (R-F05): grants never exceed rb - reserve in parallel mode.",
+  "cases": [
+    {
+      "name": "remainder goes to the first children",
+      "mode": "parallel",
+      "rb": 7,
+      "reserve": 1,
+      "n": 4,
+      "expect": [
+        2,
+        2,
+        1,
+        1
+      ]
+    },
+    {
+      "name": "even split",
+      "mode": "parallel",
+      "rb": 3,
+      "reserve": 0,
+      "n": 3,
+      "expect": [
+        1,
+        1,
+        1
+      ]
+    },
+    {
+      "name": "fewer tokens than children",
+      "mode": "parallel",
+      "rb": 2,
+      "reserve": 0,
+      "n": 3,
+      "expect": [
+        1,
+        1,
+        0
+      ]
+    },
+    {
+      "name": "reserve above budget",
+      "mode": "parallel",
+      "rb": 1,
+      "reserve": 2,
+      "n": 2,
+      "expect": [
+        0,
+        0
+      ]
+    },
+    {
+      "name": "sequential children share the pool",
+      "mode": "sequential",
+      "rb": 3,
+      "reserve": 1,
+      "n": 2,
+      "expect": [
+        2,
+        2
+      ]
+    },
+    {
+      "name": "no children",
+      "mode": "parallel",
+      "rb": 3,
+      "reserve": 0,
+      "n": 0,
+      "expect": []
+    },
+    {
+      "name": "single child",
+      "mode": "parallel",
+      "rb": 255,
+      "reserve": 5,
+      "n": 1,
+      "expect": [
+        250
+      ]
+    }
+  ]
+}

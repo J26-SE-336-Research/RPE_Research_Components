@@ -1,0 +1,454 @@
+{
+  "description": "X-RPE-Context decoding: field values, canonical re-encoding, and the error code (and rule) of invalid input.",
+  "cases": [
+    {
+      "name": "canonical sample",
+      "input": "v=1, rid=\"4bf92f3577b34da6a3ce929d0e0e4736\", iid=\"00f067aa0ba902b7\", pid=\"0000000000000000\", ttl=287, bud=300, rb=3, cs=none, pe=\"e42\", rt=\"POST /api/orders\"",
+      "expect": {
+        "v": 1,
+        "rid": "4bf92f3577b34da6a3ce929d0e0e4736",
+        "iid": "00f067aa0ba902b7",
+        "pid": "0000000000000000",
+        "ttl": 287,
+        "bud": 300,
+        "rb": 3,
+        "cs": "none",
+        "pe": "e42",
+        "rt": "POST /api/orders"
+      },
+      "canonical": "v=1, rid=\"4bf92f3577b34da6a3ce929d0e0e4736\", iid=\"00f067aa0ba902b7\", pid=\"0000000000000000\", ttl=287, bud=300, rb=3, cs=none, pe=\"e42\", rt=\"POST /api/orders\""
+    },
+    {
+      "name": "without policy epoch",
+      "input": "v=1, rid=\"4bf92f3577b34da6a3ce929d0e0e4736\", iid=\"00f067aa0ba902b7\", pid=\"0000000000000000\", ttl=287, bud=300, rb=3, cs=none, rt=\"POST /api/orders\"",
+      "expect": {
+        "v": 1,
+        "rid": "4bf92f3577b34da6a3ce929d0e0e4736",
+        "iid": "00f067aa0ba902b7",
+        "pid": "0000000000000000",
+        "ttl": 287,
+        "bud": 300,
+        "rb": 3,
+        "cs": "none",
+        "pe": "",
+        "rt": "POST /api/orders"
+      },
+      "canonical": "v=1, rid=\"4bf92f3577b34da6a3ce929d0e0e4736\", iid=\"00f067aa0ba902b7\", pid=\"0000000000000000\", ttl=287, bud=300, rb=3, cs=none, rt=\"POST /api/orders\""
+    },
+    {
+      "name": "unknown members are kept and sorted (R-V01)",
+      "input": "v=1, rid=\"4bf92f3577b34da6a3ce929d0e0e4736\", iid=\"00f067aa0ba902b7\", pid=\"0000000000000000\", ttl=287, bud=300, rb=3, cs=none, pe=\"e42\", rt=\"POST /api/orders\", zz=\"future\", zy=7, zx",
+      "expect": {
+        "v": 1,
+        "rid": "4bf92f3577b34da6a3ce929d0e0e4736",
+        "iid": "00f067aa0ba902b7",
+        "pid": "0000000000000000",
+        "ttl": 287,
+        "bud": 300,
+        "rb": 3,
+        "cs": "none",
+        "pe": "e42",
+        "rt": "POST /api/orders",
+        "unknown": {
+          "zx": "?1",
+          "zy": "7",
+          "zz": "\"future\""
+        }
+      },
+      "canonical": "v=1, rid=\"4bf92f3577b34da6a3ce929d0e0e4736\", iid=\"00f067aa0ba902b7\", pid=\"0000000000000000\", ttl=287, bud=300, rb=3, cs=none, pe=\"e42\", rt=\"POST /api/orders\", zx=?1, zy=7, zz=\"future\""
+    },
+    {
+      "name": "whitespace around members",
+      "input": "  v=1 ,\t rid=\"4bf92f3577b34da6a3ce929d0e0e4736\" ,\t iid=\"00f067aa0ba902b7\" ,\t pid=\"0000000000000000\" ,\t ttl=287 ,\t bud=300 ,\t rb=3 ,\t cs=none ,\t pe=\"e42\" ,\t rt=\"POST /api/orders\" \t",
+      "expect": {
+        "v": 1,
+        "rid": "4bf92f3577b34da6a3ce929d0e0e4736",
+        "iid": "00f067aa0ba902b7",
+        "pid": "0000000000000000",
+        "ttl": 287,
+        "bud": 300,
+        "rb": 3,
+        "cs": "none",
+        "pe": "e42",
+        "rt": "POST /api/orders"
+      },
+      "canonical": "v=1, rid=\"4bf92f3577b34da6a3ce929d0e0e4736\", iid=\"00f067aa0ba902b7\", pid=\"0000000000000000\", ttl=287, bud=300, rb=3, cs=none, pe=\"e42\", rt=\"POST /api/orders\""
+    },
+    {
+      "name": "members in any order",
+      "input": "rt=\"POST /api/orders\", cs=none, rb=3, bud=300, ttl=287, pid=\"0000000000000000\", iid=\"00f067aa0ba902b7\", rid=\"4bf92f3577b34da6a3ce929d0e0e4736\", v=1, pe=\"e42\"",
+      "expect": {
+        "v": 1,
+        "rid": "4bf92f3577b34da6a3ce929d0e0e4736",
+        "iid": "00f067aa0ba902b7",
+        "pid": "0000000000000000",
+        "ttl": 287,
+        "bud": 300,
+        "rb": 3,
+        "cs": "none",
+        "pe": "e42",
+        "rt": "POST /api/orders"
+      },
+      "canonical": "v=1, rid=\"4bf92f3577b34da6a3ce929d0e0e4736\", iid=\"00f067aa0ba902b7\", pid=\"0000000000000000\", ttl=287, bud=300, rb=3, cs=none, pe=\"e42\", rt=\"POST /api/orders\""
+    },
+    {
+      "name": "cancel requested",
+      "input": "v=1, rid=\"4bf92f3577b34da6a3ce929d0e0e4736\", iid=\"00f067aa0ba902b7\", pid=\"0000000000000000\", ttl=287, bud=300, rb=3, cs=cancel, pe=\"e42\", rt=\"POST /api/orders\"",
+      "expect": {
+        "v": 1,
+        "rid": "4bf92f3577b34da6a3ce929d0e0e4736",
+        "iid": "00f067aa0ba902b7",
+        "pid": "0000000000000000",
+        "ttl": 287,
+        "bud": 300,
+        "rb": 3,
+        "cs": "cancel",
+        "pe": "e42",
+        "rt": "POST /api/orders"
+      },
+      "canonical": "v=1, rid=\"4bf92f3577b34da6a3ce929d0e0e4736\", iid=\"00f067aa0ba902b7\", pid=\"0000000000000000\", ttl=287, bud=300, rb=3, cs=cancel, pe=\"e42\", rt=\"POST /api/orders\""
+    },
+    {
+      "name": "expired state",
+      "input": "v=1, rid=\"4bf92f3577b34da6a3ce929d0e0e4736\", iid=\"00f067aa0ba902b7\", pid=\"0000000000000000\", ttl=287, bud=300, rb=3, cs=expired, pe=\"e42\", rt=\"POST /api/orders\"",
+      "expect": {
+        "v": 1,
+        "rid": "4bf92f3577b34da6a3ce929d0e0e4736",
+        "iid": "00f067aa0ba902b7",
+        "pid": "0000000000000000",
+        "ttl": 287,
+        "bud": 300,
+        "rb": 3,
+        "cs": "expired",
+        "pe": "e42",
+        "rt": "POST /api/orders"
+      },
+      "canonical": "v=1, rid=\"4bf92f3577b34da6a3ce929d0e0e4736\", iid=\"00f067aa0ba902b7\", pid=\"0000000000000000\", ttl=287, bud=300, rb=3, cs=expired, pe=\"e42\", rt=\"POST /api/orders\""
+    },
+    {
+      "name": "negative ttl decodes (rejected later by admission)",
+      "input": "v=1, rid=\"4bf92f3577b34da6a3ce929d0e0e4736\", iid=\"00f067aa0ba902b7\", pid=\"0000000000000000\", ttl=-5, bud=300, rb=3, cs=none, pe=\"e42\", rt=\"POST /api/orders\"",
+      "expect": {
+        "v": 1,
+        "rid": "4bf92f3577b34da6a3ce929d0e0e4736",
+        "iid": "00f067aa0ba902b7",
+        "pid": "0000000000000000",
+        "ttl": -5,
+        "bud": 300,
+        "rb": 3,
+        "cs": "none",
+        "pe": "e42",
+        "rt": "POST /api/orders"
+      },
+      "canonical": "v=1, rid=\"4bf92f3577b34da6a3ce929d0e0e4736\", iid=\"00f067aa0ba902b7\", pid=\"0000000000000000\", ttl=-5, bud=300, rb=3, cs=none, pe=\"e42\", rt=\"POST /api/orders\""
+    },
+    {
+      "name": "ttl equal to budget",
+      "input": "v=1, rid=\"4bf92f3577b34da6a3ce929d0e0e4736\", iid=\"00f067aa0ba902b7\", pid=\"0000000000000000\", ttl=300, bud=300, rb=3, cs=none, pe=\"e42\", rt=\"POST /api/orders\"",
+      "expect": {
+        "v": 1,
+        "rid": "4bf92f3577b34da6a3ce929d0e0e4736",
+        "iid": "00f067aa0ba902b7",
+        "pid": "0000000000000000",
+        "ttl": 300,
+        "bud": 300,
+        "rb": 3,
+        "cs": "none",
+        "pe": "e42",
+        "rt": "POST /api/orders"
+      },
+      "canonical": "v=1, rid=\"4bf92f3577b34da6a3ce929d0e0e4736\", iid=\"00f067aa0ba902b7\", pid=\"0000000000000000\", ttl=300, bud=300, rb=3, cs=none, pe=\"e42\", rt=\"POST /api/orders\""
+    },
+    {
+      "name": "escaped quote in route",
+      "input": "v=1, rid=\"4bf92f3577b34da6a3ce929d0e0e4736\", iid=\"00f067aa0ba902b7\", pid=\"0000000000000000\", ttl=287, bud=300, rb=3, cs=none, pe=\"e42\", rt=\"GET /a\\\"b\\\\c\"",
+      "expect": {
+        "v": 1,
+        "rid": "4bf92f3577b34da6a3ce929d0e0e4736",
+        "iid": "00f067aa0ba902b7",
+        "pid": "0000000000000000",
+        "ttl": 287,
+        "bud": 300,
+        "rb": 3,
+        "cs": "none",
+        "pe": "e42",
+        "rt": "GET /a\"b\\c"
+      },
+      "canonical": "v=1, rid=\"4bf92f3577b34da6a3ce929d0e0e4736\", iid=\"00f067aa0ba902b7\", pid=\"0000000000000000\", ttl=287, bud=300, rb=3, cs=none, pe=\"e42\", rt=\"GET /a\\\"b\\\\c\""
+    },
+    {
+      "name": "leading zeros in integers",
+      "input": "v=1, rid=\"4bf92f3577b34da6a3ce929d0e0e4736\", iid=\"00f067aa0ba902b7\", pid=\"0000000000000000\", ttl=0287, bud=300, rb=3, cs=none, pe=\"e42\", rt=\"POST /api/orders\"",
+      "expect": {
+        "v": 1,
+        "rid": "4bf92f3577b34da6a3ce929d0e0e4736",
+        "iid": "00f067aa0ba902b7",
+        "pid": "0000000000000000",
+        "ttl": 287,
+        "bud": 300,
+        "rb": 3,
+        "cs": "none",
+        "pe": "e42",
+        "rt": "POST /api/orders"
+      },
+      "canonical": "v=1, rid=\"4bf92f3577b34da6a3ce929d0e0e4736\", iid=\"00f067aa0ba902b7\", pid=\"0000000000000000\", ttl=287, bud=300, rb=3, cs=none, pe=\"e42\", rt=\"POST /api/orders\""
+    },
+    {
+      "name": "maximum retry budget",
+      "input": "v=1, rid=\"4bf92f3577b34da6a3ce929d0e0e4736\", iid=\"00f067aa0ba902b7\", pid=\"0000000000000000\", ttl=287, bud=300, rb=255, cs=none, pe=\"e42\", rt=\"POST /api/orders\"",
+      "expect": {
+        "v": 1,
+        "rid": "4bf92f3577b34da6a3ce929d0e0e4736",
+        "iid": "00f067aa0ba902b7",
+        "pid": "0000000000000000",
+        "ttl": 287,
+        "bud": 300,
+        "rb": 255,
+        "cs": "none",
+        "pe": "e42",
+        "rt": "POST /api/orders"
+      },
+      "canonical": "v=1, rid=\"4bf92f3577b34da6a3ce929d0e0e4736\", iid=\"00f067aa0ba902b7\", pid=\"0000000000000000\", ttl=287, bud=300, rb=255, cs=none, pe=\"e42\", rt=\"POST /api/orders\""
+    },
+    {
+      "name": "empty value",
+      "input": "",
+      "error": {
+        "code": "INVALID_SYNTAX"
+      }
+    },
+    {
+      "name": "only whitespace",
+      "input": " \t ",
+      "error": {
+        "code": "INVALID_SYNTAX"
+      }
+    },
+    {
+      "name": "duplicate member",
+      "input": "v=1, rid=\"4bf92f3577b34da6a3ce929d0e0e4736\", iid=\"00f067aa0ba902b7\", pid=\"0000000000000000\", ttl=287, bud=300, rb=3, cs=none, pe=\"e42\", rt=\"POST /api/orders\", ttl=5",
+      "error": {
+        "code": "DUPLICATE_HEADER"
+      }
+    },
+    {
+      "name": "unknown cancel state",
+      "input": "v=1, rid=\"4bf92f3577b34da6a3ce929d0e0e4736\", iid=\"00f067aa0ba902b7\", pid=\"0000000000000000\", ttl=287, bud=300, rb=3, cs=maybe, pe=\"e42\", rt=\"POST /api/orders\"",
+      "error": {
+        "code": "INVALID_SYNTAX"
+      }
+    },
+    {
+      "name": "cancel state as string",
+      "input": "v=1, rid=\"4bf92f3577b34da6a3ce929d0e0e4736\", iid=\"00f067aa0ba902b7\", pid=\"0000000000000000\", ttl=287, bud=300, rb=3, cs=\"none\", pe=\"e42\", rt=\"POST /api/orders\"",
+      "error": {
+        "code": "INVALID_SYNTAX"
+      }
+    },
+    {
+      "name": "ttl above budget (R-T02)",
+      "input": "v=1, rid=\"4bf92f3577b34da6a3ce929d0e0e4736\", iid=\"00f067aa0ba902b7\", pid=\"0000000000000000\", ttl=301, bud=300, rb=3, cs=none, pe=\"e42\", rt=\"POST /api/orders\"",
+      "error": {
+        "code": "INVALID_TRANSITION",
+        "rule": "R-T02"
+      }
+    },
+    {
+      "name": "uppercase hex id",
+      "input": "v=1, rid=\"4BF92F3577B34DA6A3CE929D0E0E4736\", iid=\"00f067aa0ba902b7\", pid=\"0000000000000000\", ttl=287, bud=300, rb=3, cs=none, pe=\"e42\", rt=\"POST /api/orders\"",
+      "error": {
+        "code": "INVALID_SYNTAX"
+      }
+    },
+    {
+      "name": "non-hex id",
+      "input": "v=1, rid=\"XXXXXXXX77b34da6a3ce929d0e0e4736\", iid=\"00f067aa0ba902b7\", pid=\"0000000000000000\", ttl=287, bud=300, rb=3, cs=none, pe=\"e42\", rt=\"POST /api/orders\"",
+      "error": {
+        "code": "INVALID_SYNTAX"
+      }
+    },
+    {
+      "name": "all-zero request id",
+      "input": "v=1, rid=\"00000000000000000000000000000000\", iid=\"00f067aa0ba902b7\", pid=\"0000000000000000\", ttl=287, bud=300, rb=3, cs=none, pe=\"e42\", rt=\"POST /api/orders\"",
+      "error": {
+        "code": "INVALID_SYNTAX"
+      }
+    },
+    {
+      "name": "all-zero invocation id",
+      "input": "v=1, rid=\"4bf92f3577b34da6a3ce929d0e0e4736\", iid=\"0000000000000000\", pid=\"0000000000000000\", ttl=287, bud=300, rb=3, cs=none, pe=\"e42\", rt=\"POST /api/orders\"",
+      "error": {
+        "code": "INVALID_SYNTAX"
+      }
+    },
+    {
+      "name": "short request id",
+      "input": "v=1, rid=\"4bf92f3577b34da6a3ce929d0e0e473\", iid=\"00f067aa0ba902b7\", pid=\"0000000000000000\", ttl=287, bud=300, rb=3, cs=none, pe=\"e42\", rt=\"POST /api/orders\"",
+      "error": {
+        "code": "OUT_OF_RANGE"
+      }
+    },
+    {
+      "name": "unsupported version (R-V02)",
+      "input": "v=2, rid=\"4bf92f3577b34da6a3ce929d0e0e4736\", iid=\"00f067aa0ba902b7\", pid=\"0000000000000000\", ttl=287, bud=300, rb=3, cs=none, pe=\"e42\", rt=\"POST /api/orders\"",
+      "error": {
+        "code": "UNSUPPORTED_VERSION",
+        "rule": "R-V02"
+      }
+    },
+    {
+      "name": "version zero",
+      "input": "v=0, rid=\"4bf92f3577b34da6a3ce929d0e0e4736\", iid=\"00f067aa0ba902b7\", pid=\"0000000000000000\", ttl=287, bud=300, rb=3, cs=none, pe=\"e42\", rt=\"POST /api/orders\"",
+      "error": {
+        "code": "OUT_OF_RANGE"
+      }
+    },
+    {
+      "name": "retry budget out of range",
+      "input": "v=1, rid=\"4bf92f3577b34da6a3ce929d0e0e4736\", iid=\"00f067aa0ba902b7\", pid=\"0000000000000000\", ttl=287, bud=300, rb=256, cs=none, pe=\"e42\", rt=\"POST /api/orders\"",
+      "error": {
+        "code": "OUT_OF_RANGE"
+      }
+    },
+    {
+      "name": "negative retry budget",
+      "input": "v=1, rid=\"4bf92f3577b34da6a3ce929d0e0e4736\", iid=\"00f067aa0ba902b7\", pid=\"0000000000000000\", ttl=287, bud=300, rb=-1, cs=none, pe=\"e42\", rt=\"POST /api/orders\"",
+      "error": {
+        "code": "OUT_OF_RANGE"
+      }
+    },
+    {
+      "name": "budget zero",
+      "input": "v=1, rid=\"4bf92f3577b34da6a3ce929d0e0e4736\", iid=\"00f067aa0ba902b7\", pid=\"0000000000000000\", ttl=287, bud=0, rb=3, cs=none, pe=\"e42\", rt=\"POST /api/orders\"",
+      "error": {
+        "code": "OUT_OF_RANGE"
+      }
+    },
+    {
+      "name": "budget above maximum",
+      "input": "v=1, rid=\"4bf92f3577b34da6a3ce929d0e0e4736\", iid=\"00f067aa0ba902b7\", pid=\"0000000000000000\", ttl=287, bud=600001, rb=3, cs=none, pe=\"e42\", rt=\"POST /api/orders\"",
+      "error": {
+        "code": "OUT_OF_RANGE"
+      }
+    },
+    {
+      "name": "empty policy epoch",
+      "input": "v=1, rid=\"4bf92f3577b34da6a3ce929d0e0e4736\", iid=\"00f067aa0ba902b7\", pid=\"0000000000000000\", ttl=287, bud=300, rb=3, cs=none, pe=\"\", rt=\"POST /api/orders\"",
+      "error": {
+        "code": "OUT_OF_RANGE"
+      }
+    },
+    {
+      "name": "parameters are not supported",
+      "input": "v=1, rid=\"4bf92f3577b34da6a3ce929d0e0e4736\", iid=\"00f067aa0ba902b7\", pid=\"0000000000000000\", ttl=287, bud=300, rb=3, cs=none, pe=\"e42\", rt=\"POST /api/orders\";x=1",
+      "error": {
+        "code": "INVALID_SYNTAX"
+      }
+    },
+    {
+      "name": "trailing comma",
+      "input": "v=1, rid=\"4bf92f3577b34da6a3ce929d0e0e4736\", iid=\"00f067aa0ba902b7\", pid=\"0000000000000000\", ttl=287, bud=300, rb=3, cs=none, pe=\"e42\", rt=\"POST /api/orders\",",
+      "error": {
+        "code": "INVALID_SYNTAX"
+      }
+    },
+    {
+      "name": "missing route",
+      "input": "v=1, rid=\"4bf92f3577b34da6a3ce929d0e0e4736\", iid=\"00f067aa0ba902b7\", pid=\"0000000000000000\", ttl=287, bud=300, rb=3, cs=none, pe=\"e42\"",
+      "error": {
+        "code": "MISSING_HEADER"
+      }
+    },
+    {
+      "name": "missing version",
+      "input": "rid=\"4bf92f3577b34da6a3ce929d0e0e4736\", iid=\"00f067aa0ba902b7\", pid=\"0000000000000000\", ttl=287, bud=300, rb=3, cs=none, pe=\"e42\", rt=\"POST /api/orders\"",
+      "error": {
+        "code": "MISSING_HEADER"
+      }
+    },
+    {
+      "name": "unterminated string",
+      "input": "v=1, rid=\"4bf92f3577b34da6a3ce929d0e0e4736\", iid=\"00f067aa0ba902b7\", pid=\"0000000000000000\", ttl=287, bud=300, rb=3, cs=none, pe=\"e42\", rt=\"POST",
+      "error": {
+        "code": "INVALID_SYNTAX"
+      }
+    },
+    {
+      "name": "decimal value",
+      "input": "v=1, rid=\"4bf92f3577b34da6a3ce929d0e0e4736\", iid=\"00f067aa0ba902b7\", pid=\"0000000000000000\", ttl=287.5, bud=300, rb=3, cs=none, pe=\"e42\", rt=\"POST /api/orders\"",
+      "error": {
+        "code": "INVALID_SYNTAX"
+      }
+    },
+    {
+      "name": "integer with 16 digits",
+      "input": "v=1, rid=\"4bf92f3577b34da6a3ce929d0e0e4736\", iid=\"00f067aa0ba902b7\", pid=\"0000000000000000\", ttl=1234567890123456, bud=300, rb=3, cs=none, pe=\"e42\", rt=\"POST /api/orders\"",
+      "error": {
+        "code": "INVALID_SYNTAX"
+      }
+    },
+    {
+      "name": "integer as string",
+      "input": "v=1, rid=\"4bf92f3577b34da6a3ce929d0e0e4736\", iid=\"00f067aa0ba902b7\", pid=\"0000000000000000\", ttl=\"287\", bud=300, rb=3, cs=none, pe=\"e42\", rt=\"POST /api/orders\"",
+      "error": {
+        "code": "INVALID_SYNTAX"
+      }
+    },
+    {
+      "name": "version as bare key",
+      "input": "v, rid=\"4bf92f3577b34da6a3ce929d0e0e4736\", iid=\"00f067aa0ba902b7\", pid=\"0000000000000000\", ttl=287, bud=300, rb=3, cs=none, pe=\"e42\", rt=\"POST /api/orders\"",
+      "error": {
+        "code": "INVALID_SYNTAX"
+      }
+    },
+    {
+      "name": "uppercase key",
+      "input": "V=1, rid=\"4bf92f3577b34da6a3ce929d0e0e4736\", iid=\"00f067aa0ba902b7\", pid=\"0000000000000000\", ttl=287, bud=300, rb=3, cs=none, pe=\"e42\", rt=\"POST /api/orders\"",
+      "error": {
+        "code": "INVALID_SYNTAX"
+      }
+    },
+    {
+      "name": "space before =",
+      "input": "v =1, rid=\"4bf92f3577b34da6a3ce929d0e0e4736\", iid=\"00f067aa0ba902b7\", pid=\"0000000000000000\", ttl=287, bud=300, rb=3, cs=none, pe=\"e42\", rt=\"POST /api/orders\"",
+      "error": {
+        "code": "INVALID_SYNTAX"
+      }
+    },
+    {
+      "name": "missing value after =",
+      "input": "v=1, rid=\"4bf92f3577b34da6a3ce929d0e0e4736\", iid=\"00f067aa0ba902b7\", pid=\"0000000000000000\", ttl=, bud=300, rb=3, cs=none, pe=\"e42\", rt=\"POST /api/orders\"",
+      "error": {
+        "code": "INVALID_SYNTAX"
+      }
+    },
+    {
+      "name": "invalid escape",
+      "input": "v=1, rid=\"4bf92f3577b34da6a3ce929d0e0e4736\", iid=\"00f067aa0ba902b7\", pid=\"0000000000000000\", ttl=287, bud=300, rb=3, cs=none, pe=\"e42\", rt=\"a\\nb\"",
+      "error": {
+        "code": "INVALID_SYNTAX"
+      }
+    },
+    {
+      "name": "non-ASCII in string",
+      "input": "v=1, rid=\"4bf92f3577b34da6a3ce929d0e0e4736\", iid=\"00f067aa0ba902b7\", pid=\"0000000000000000\", ttl=287, bud=300, rb=3, cs=none, pe=\"e42\", rt=\"POST /é\"",
+      "error": {
+        "code": "INVALID_SYNTAX"
+      }
+    },
+    {
+      "name": "missing comma",
+      "input": "v=1, rid=\"4bf92f3577b34da6a3ce929d0e0e4736\", iid=\"00f067aa0ba902b7\", pid=\"0000000000000000\", ttl=287 bud=300, rb=3, cs=none, pe=\"e42\", rt=\"POST /api/orders\"",
+      "error": {
+        "code": "INVALID_SYNTAX"
+      }
+    },
+    {
+      "name": "value exceeds 256 bytes",
+      "input": "v=1, rid=\"4bf92f3577b34da6a3ce929d0e0e4736\", iid=\"00f067aa0ba902b7\", pid=\"0000000000000000\", ttl=287, bud=300, rb=3, cs=none, pe=\"e42\", rt=\"POST /api/orders\", zz=\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"",
+      "error": {
+        "code": "CONTEXT_TOO_LARGE"
+      }
+    }
+  ]
+}

@@ -1,0 +1,464 @@
+{
+  "description": "Context guard R-T01..R-T06: the rules a parent -\u003e child step violates (empty when valid).",
+  "cases": [
+    {
+      "name": "valid child",
+      "parent": {
+        "v": 1,
+        "rid": "4bf92f3577b34da6a3ce929d0e0e4736",
+        "iid": "00f067aa0ba902b7",
+        "pid": "0000000000000000",
+        "ttl": 287,
+        "bud": 300,
+        "rb": 3,
+        "cs": "none",
+        "pe": "e42",
+        "rt": "POST /api/orders"
+      },
+      "child": {
+        "v": 1,
+        "rid": "4bf92f3577b34da6a3ce929d0e0e4736",
+        "iid": "b7ad6b7169203331",
+        "pid": "00f067aa0ba902b7",
+        "ttl": 262,
+        "bud": 300,
+        "rb": 1,
+        "cs": "none",
+        "pe": "e42",
+        "rt": "POST /api/orders"
+      },
+      "elapsedMs": 20,
+      "violations": []
+    },
+    {
+      "name": "ttl exactly parent ttl minus elapsed",
+      "parent": {
+        "v": 1,
+        "rid": "4bf92f3577b34da6a3ce929d0e0e4736",
+        "iid": "00f067aa0ba902b7",
+        "pid": "0000000000000000",
+        "ttl": 287,
+        "bud": 300,
+        "rb": 3,
+        "cs": "none",
+        "pe": "e42",
+        "rt": "POST /api/orders"
+      },
+      "child": {
+        "v": 1,
+        "rid": "4bf92f3577b34da6a3ce929d0e0e4736",
+        "iid": "b7ad6b7169203331",
+        "pid": "00f067aa0ba902b7",
+        "ttl": 267,
+        "bud": 300,
+        "rb": 1,
+        "cs": "none",
+        "pe": "e42",
+        "rt": "POST /api/orders"
+      },
+      "elapsedMs": 20,
+      "violations": []
+    },
+    {
+      "name": "ttl increases (R-T02)",
+      "parent": {
+        "v": 1,
+        "rid": "4bf92f3577b34da6a3ce929d0e0e4736",
+        "iid": "00f067aa0ba902b7",
+        "pid": "0000000000000000",
+        "ttl": 287,
+        "bud": 300,
+        "rb": 3,
+        "cs": "none",
+        "pe": "e42",
+        "rt": "POST /api/orders"
+      },
+      "child": {
+        "v": 1,
+        "rid": "4bf92f3577b34da6a3ce929d0e0e4736",
+        "iid": "b7ad6b7169203331",
+        "pid": "00f067aa0ba902b7",
+        "ttl": 268,
+        "bud": 300,
+        "rb": 1,
+        "cs": "none",
+        "pe": "e42",
+        "rt": "POST /api/orders"
+      },
+      "elapsedMs": 20,
+      "violations": [
+        "R-T02"
+      ]
+    },
+    {
+      "name": "retry budget increases (R-T03)",
+      "parent": {
+        "v": 1,
+        "rid": "4bf92f3577b34da6a3ce929d0e0e4736",
+        "iid": "00f067aa0ba902b7",
+        "pid": "0000000000000000",
+        "ttl": 287,
+        "bud": 300,
+        "rb": 3,
+        "cs": "none",
+        "pe": "e42",
+        "rt": "POST /api/orders"
+      },
+      "child": {
+        "v": 1,
+        "rid": "4bf92f3577b34da6a3ce929d0e0e4736",
+        "iid": "b7ad6b7169203331",
+        "pid": "00f067aa0ba902b7",
+        "ttl": 262,
+        "bud": 300,
+        "rb": 4,
+        "cs": "none",
+        "pe": "e42",
+        "rt": "POST /api/orders"
+      },
+      "elapsedMs": 20,
+      "violations": [
+        "R-T03"
+      ]
+    },
+    {
+      "name": "route changes (R-T01)",
+      "parent": {
+        "v": 1,
+        "rid": "4bf92f3577b34da6a3ce929d0e0e4736",
+        "iid": "00f067aa0ba902b7",
+        "pid": "0000000000000000",
+        "ttl": 287,
+        "bud": 300,
+        "rb": 3,
+        "cs": "none",
+        "pe": "e42",
+        "rt": "POST /api/orders"
+      },
+      "child": {
+        "v": 1,
+        "rid": "4bf92f3577b34da6a3ce929d0e0e4736",
+        "iid": "b7ad6b7169203331",
+        "pid": "00f067aa0ba902b7",
+        "ttl": 262,
+        "bud": 300,
+        "rb": 1,
+        "cs": "none",
+        "pe": "e42",
+        "rt": "GET /other"
+      },
+      "elapsedMs": 20,
+      "violations": [
+        "R-T01"
+      ]
+    },
+    {
+      "name": "request id changes (R-T01)",
+      "parent": {
+        "v": 1,
+        "rid": "4bf92f3577b34da6a3ce929d0e0e4736",
+        "iid": "00f067aa0ba902b7",
+        "pid": "0000000000000000",
+        "ttl": 287,
+        "bud": 300,
+        "rb": 3,
+        "cs": "none",
+        "pe": "e42",
+        "rt": "POST /api/orders"
+      },
+      "child": {
+        "v": 1,
+        "rid": "0af7651916cd43dd8448eb211c80319c",
+        "iid": "b7ad6b7169203331",
+        "pid": "00f067aa0ba902b7",
+        "ttl": 262,
+        "bud": 300,
+        "rb": 1,
+        "cs": "none",
+        "pe": "e42",
+        "rt": "POST /api/orders"
+      },
+      "elapsedMs": 20,
+      "violations": [
+        "R-T01"
+      ]
+    },
+    {
+      "name": "budget changes (R-T01)",
+      "parent": {
+        "v": 1,
+        "rid": "4bf92f3577b34da6a3ce929d0e0e4736",
+        "iid": "00f067aa0ba902b7",
+        "pid": "0000000000000000",
+        "ttl": 287,
+        "bud": 300,
+        "rb": 3,
+        "cs": "none",
+        "pe": "e42",
+        "rt": "POST /api/orders"
+      },
+      "child": {
+        "v": 1,
+        "rid": "4bf92f3577b34da6a3ce929d0e0e4736",
+        "iid": "b7ad6b7169203331",
+        "pid": "00f067aa0ba902b7",
+        "ttl": 262,
+        "bud": 400,
+        "rb": 1,
+        "cs": "none",
+        "pe": "e42",
+        "rt": "POST /api/orders"
+      },
+      "elapsedMs": 20,
+      "violations": [
+        "R-T01"
+      ]
+    },
+    {
+      "name": "policy epoch changes (R-T01)",
+      "parent": {
+        "v": 1,
+        "rid": "4bf92f3577b34da6a3ce929d0e0e4736",
+        "iid": "00f067aa0ba902b7",
+        "pid": "0000000000000000",
+        "ttl": 287,
+        "bud": 300,
+        "rb": 3,
+        "cs": "none",
+        "pe": "e42",
+        "rt": "POST /api/orders"
+      },
+      "child": {
+        "v": 1,
+        "rid": "4bf92f3577b34da6a3ce929d0e0e4736",
+        "iid": "b7ad6b7169203331",
+        "pid": "00f067aa0ba902b7",
+        "ttl": 262,
+        "bud": 300,
+        "rb": 1,
+        "cs": "none",
+        "pe": "e43",
+        "rt": "POST /api/orders"
+      },
+      "elapsedMs": 20,
+      "violations": [
+        "R-T01"
+      ]
+    },
+    {
+      "name": "cancellation cleared (R-T04)",
+      "parent": {
+        "v": 1,
+        "rid": "4bf92f3577b34da6a3ce929d0e0e4736",
+        "iid": "00f067aa0ba902b7",
+        "pid": "0000000000000000",
+        "ttl": 287,
+        "bud": 300,
+        "rb": 3,
+        "cs": "cancel",
+        "pe": "e42",
+        "rt": "POST /api/orders"
+      },
+      "child": {
+        "v": 1,
+        "rid": "4bf92f3577b34da6a3ce929d0e0e4736",
+        "iid": "b7ad6b7169203331",
+        "pid": "00f067aa0ba902b7",
+        "ttl": 262,
+        "bud": 300,
+        "rb": 1,
+        "cs": "none",
+        "pe": "e42",
+        "rt": "POST /api/orders"
+      },
+      "elapsedMs": 20,
+      "violations": [
+        "R-T04"
+      ]
+    },
+    {
+      "name": "cancellation kept",
+      "parent": {
+        "v": 1,
+        "rid": "4bf92f3577b34da6a3ce929d0e0e4736",
+        "iid": "00f067aa0ba902b7",
+        "pid": "0000000000000000",
+        "ttl": 287,
+        "bud": 300,
+        "rb": 3,
+        "cs": "cancel",
+        "pe": "e42",
+        "rt": "POST /api/orders"
+      },
+      "child": {
+        "v": 1,
+        "rid": "4bf92f3577b34da6a3ce929d0e0e4736",
+        "iid": "b7ad6b7169203331",
+        "pid": "00f067aa0ba902b7",
+        "ttl": 262,
+        "bud": 300,
+        "rb": 1,
+        "cs": "cancel",
+        "pe": "e42",
+        "rt": "POST /api/orders"
+      },
+      "elapsedMs": 20,
+      "violations": []
+    },
+    {
+      "name": "cancellation set by the child",
+      "parent": {
+        "v": 1,
+        "rid": "4bf92f3577b34da6a3ce929d0e0e4736",
+        "iid": "00f067aa0ba902b7",
+        "pid": "0000000000000000",
+        "ttl": 287,
+        "bud": 300,
+        "rb": 3,
+        "cs": "none",
+        "pe": "e42",
+        "rt": "POST /api/orders"
+      },
+      "child": {
+        "v": 1,
+        "rid": "4bf92f3577b34da6a3ce929d0e0e4736",
+        "iid": "b7ad6b7169203331",
+        "pid": "00f067aa0ba902b7",
+        "ttl": 262,
+        "bud": 300,
+        "rb": 1,
+        "cs": "expired",
+        "pe": "e42",
+        "rt": "POST /api/orders"
+      },
+      "elapsedMs": 20,
+      "violations": []
+    },
+    {
+      "name": "version downgrade (R-T05)",
+      "parent": {
+        "v": 2,
+        "rid": "4bf92f3577b34da6a3ce929d0e0e4736",
+        "iid": "00f067aa0ba902b7",
+        "pid": "0000000000000000",
+        "ttl": 287,
+        "bud": 300,
+        "rb": 3,
+        "cs": "none",
+        "pe": "e42",
+        "rt": "POST /api/orders"
+      },
+      "child": {
+        "v": 1,
+        "rid": "4bf92f3577b34da6a3ce929d0e0e4736",
+        "iid": "b7ad6b7169203331",
+        "pid": "00f067aa0ba902b7",
+        "ttl": 262,
+        "bud": 300,
+        "rb": 1,
+        "cs": "none",
+        "pe": "e42",
+        "rt": "POST /api/orders"
+      },
+      "elapsedMs": 20,
+      "violations": [
+        "R-T05"
+      ]
+    },
+    {
+      "name": "pid is not the parent iid (R-T06)",
+      "parent": {
+        "v": 1,
+        "rid": "4bf92f3577b34da6a3ce929d0e0e4736",
+        "iid": "00f067aa0ba902b7",
+        "pid": "0000000000000000",
+        "ttl": 287,
+        "bud": 300,
+        "rb": 3,
+        "cs": "none",
+        "pe": "e42",
+        "rt": "POST /api/orders"
+      },
+      "child": {
+        "v": 1,
+        "rid": "4bf92f3577b34da6a3ce929d0e0e4736",
+        "iid": "b7ad6b7169203331",
+        "pid": "b7ad6b7169203331",
+        "ttl": 262,
+        "bud": 300,
+        "rb": 1,
+        "cs": "none",
+        "pe": "e42",
+        "rt": "POST /api/orders"
+      },
+      "elapsedMs": 20,
+      "violations": [
+        "R-T06"
+      ]
+    },
+    {
+      "name": "iid reused (R-T06)",
+      "parent": {
+        "v": 1,
+        "rid": "4bf92f3577b34da6a3ce929d0e0e4736",
+        "iid": "00f067aa0ba902b7",
+        "pid": "0000000000000000",
+        "ttl": 287,
+        "bud": 300,
+        "rb": 3,
+        "cs": "none",
+        "pe": "e42",
+        "rt": "POST /api/orders"
+      },
+      "child": {
+        "v": 1,
+        "rid": "4bf92f3577b34da6a3ce929d0e0e4736",
+        "iid": "00f067aa0ba902b7",
+        "pid": "00f067aa0ba902b7",
+        "ttl": 262,
+        "bud": 300,
+        "rb": 1,
+        "cs": "none",
+        "pe": "e42",
+        "rt": "POST /api/orders"
+      },
+      "elapsedMs": 20,
+      "violations": [
+        "R-T06"
+      ]
+    },
+    {
+      "name": "several violations",
+      "parent": {
+        "v": 1,
+        "rid": "4bf92f3577b34da6a3ce929d0e0e4736",
+        "iid": "00f067aa0ba902b7",
+        "pid": "0000000000000000",
+        "ttl": 287,
+        "bud": 300,
+        "rb": 3,
+        "cs": "none",
+        "pe": "e42",
+        "rt": "POST /api/orders"
+      },
+      "child": {
+        "v": 1,
+        "rid": "4bf92f3577b34da6a3ce929d0e0e4736",
+        "iid": "b7ad6b7169203331",
+        "pid": "00f067aa0ba902b7",
+        "ttl": 500,
+        "bud": 300,
+        "rb": 9,
+        "cs": "none",
+        "pe": "e42",
+        "rt": "GET /other"
+      },
+      "elapsedMs": 20,
+      "violations": [
+        "R-T01",
+        "R-T02",
+        "R-T03"
+      ]
+    }
+  ]
+}
