@@ -1,0 +1,16 @@
+﻿{
+    "schemaVersion":  "1.0",
+    "mode":  "ADVISORY",
+    "serviceName":  "order-service",
+    "status":  "HEALTHY",
+    "sourceCollectedAt":  "2026-10-02T03:45:00Z",
+    "generatedAt":  "2026-10-06T08:31:12.547122500Z",
+    "expiresAt":  "2026-10-06T08:36:12.547122500Z",
+    "evidence":  [
+                     "Recent latency is 1.00 times the baseline",
+                     "Recent error rate is 1.00%"
+                 ],
+    "recommendations":  [
+
+                        ]
+}

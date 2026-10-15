@@ -1,0 +1,9 @@
+﻿{
+    "serviceName":  "order-service",
+    "status":  "HEALTHY",
+    "evidence":  [
+                     "Recent latency is 1.00 times the baseline",
+                     "Recent error rate is 1.00%"
+                 ],
+    "assessedAt":  "2026-10-02T03:56:07.811968900Z"
+}

@@ -1,0 +1,9 @@
+﻿{
+    "serviceName":  "order-service",
+    "status":  "OVERLOADED",
+    "evidence":  [
+                     "Recent latency is 2.50 times the baseline",
+                     "Recent error rate is 12.00%"
+                 ],
+    "assessedAt":  "2026-10-02T03:56:07.861650300Z"
+}
