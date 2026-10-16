@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-// Roles: admin and sre may change the system; viewer is read-only (contract A3.8).
+// Roles: admin and sre may change the system; viewer is read-only.
 type user struct {
 	Name, Password, Role string
 }

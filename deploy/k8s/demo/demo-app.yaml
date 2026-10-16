@@ -1,4 +1,4 @@
-# Shared demo topology (Appendix A6). Generated layout: one Deployment + Service per demo service.
+# Demo topology: one Deployment and Service per demo service.
 #   gateway -> order-svc -> (parallel) inventory-svc, payment-svc, loyalty-svc (optional), legacy-svc (optional, NO sidecar) -> shipping-svc
 ---
 apiVersion: apps/v1

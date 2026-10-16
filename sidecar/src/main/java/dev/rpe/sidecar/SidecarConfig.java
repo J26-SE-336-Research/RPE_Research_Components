@@ -2,7 +2,7 @@ package dev.rpe.sidecar;
 
 import java.util.Map;
 
-/** Sidecar configuration from environment variables injected by the C3 admission webhook (contract A3.2). */
+/** Sidecar configuration from environment variables injected by the C3 admission webhook. */
 public record SidecarConfig(
         String role,
         String serviceName,

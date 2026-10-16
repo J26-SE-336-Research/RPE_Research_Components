@@ -1,4 +1,4 @@
-// Package conformance holds the C1 conformance vectors (spec Appendix A1) and evaluates them with rpe-go.
+// Package conformance loads the shared protocol test vectors and evaluates them with rpe-go.
 // The same vector files are evaluated by the rpe-java runner; both implementations must pass 100%.
 package conformance
 

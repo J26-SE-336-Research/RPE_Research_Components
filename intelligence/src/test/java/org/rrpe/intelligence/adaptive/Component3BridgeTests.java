@@ -14,7 +14,7 @@ import org.junit.jupiter.api.Test;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
-/** Delivery of human-approved recommendations to a fake Component 3 policy API (contract A3.4). */
+/** Delivery of human-approved recommendations to a fake Component 3 policy API. */
 class Component3BridgeTests {
     private final JsonMapper json = JsonMapper.builder().build();
     private final List<JsonNode> policies = new CopyOnWriteArrayList<>();

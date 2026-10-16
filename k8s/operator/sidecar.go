@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-// sidecars talks to each proxy's control API on :15020 (contract A3.5).
+// sidecars talks to each proxy's control API on :15020.
 type sidecars struct {
 	http *http.Client
 	port int

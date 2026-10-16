@@ -16,7 +16,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// api is the C3 policy API (contract A3.4): the only way policies enter the system.
+// api is the policy API: the only way policies enter the system.
 type api struct {
 	k       client.Client
 	store   *store
@@ -178,7 +178,7 @@ func (a *api) events(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, ev)
 }
 
-// ack lets a proxy confirm a delivery itself (sidecar-initiated acknowledgement, contract A3.5).
+// ack lets a proxy confirm a delivery itself (sidecar-initiated acknowledgement).
 func (a *api) ack(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Pod, Service, Epoch, Hash, State string

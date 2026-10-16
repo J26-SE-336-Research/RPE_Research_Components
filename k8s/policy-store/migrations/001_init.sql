@@ -1,4 +1,4 @@
--- RPE policy store (C3). PostgreSQL 16. Contract A3.4.
+-- RPE policy store (C3). PostgreSQL 16.
 -- Governance (C3 FR10): a policy row cannot exist without a human approval record, and specs are
 -- append-only (a change is a new version, never an in-place update).
 

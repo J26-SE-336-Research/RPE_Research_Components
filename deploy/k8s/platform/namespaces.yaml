@@ -5,7 +5,7 @@ metadata:
   labels:
     app.kubernetes.io/part-of: rpe
 ---
-# Demo workloads: every Pod here gets the RPE sidecar (contract A3.2).
+# Demo workloads: every Pod here gets the RPE sidecar.
 apiVersion: v1
 kind: Namespace
 metadata:

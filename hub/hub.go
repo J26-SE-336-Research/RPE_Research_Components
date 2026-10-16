@@ -19,7 +19,7 @@ func withUser(ctx context.Context, u user) context.Context {
 }
 func userOf(ctx context.Context) user { u, _ := ctx.Value(ctxKey{}).(user); return u }
 
-// Demo topology (Appendix A6). RPE services get a sidecar; legacy-svc is intentionally non-RPE.
+// Demo topology. RPE services get a sidecar; legacy-svc is intentionally a plain service without RPE.
 var demoServices = []string{"gateway", "order-svc", "inventory-svc", "payment-svc", "loyalty-svc", "fraud-check-svc", "legacy-svc", "shipping-svc"}
 
 var demoEdges = [][2]string{

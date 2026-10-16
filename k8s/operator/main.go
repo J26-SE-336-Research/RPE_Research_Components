@@ -2,7 +2,7 @@
 //
 // It detects approved policies through PostgreSQL LISTEN/NOTIFY (with catch-up from policy_events after
 // downtime), mirrors them as RPEPolicy resources, drives RPERollout resources through a two-phase
-// (stage → activate at the gateway first → drain) or naive rollout to the running proxies, records every
+// (stage, then activate at the gateway first, then drain) or naive rollout to the running proxies, records every
 // delivery, keeps a Redis fast path (events, effective policies, acks) and repairs drift.
 package main
 

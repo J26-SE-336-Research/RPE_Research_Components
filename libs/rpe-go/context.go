@@ -187,7 +187,7 @@ func (c Context) Child(elapsed, reserve time.Duration, grant int64) (Context, er
 	return child, nil
 }
 
-// ValidateContextTransition is the context guard (R-T01..R-T06) for a parent → child step.
+// ValidateContextTransition is the context guard (R-T01..R-T06) for a parent-to-child step.
 // elapsed is the time the parent spent locally before sending the child request.
 func ValidateContextTransition(in, out Context, elapsed time.Duration) []error {
 	var v []error

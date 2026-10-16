@@ -1,4 +1,4 @@
-# Observability for C4 live analysis: Prometheus scrapes every sidecar's metrics port (contract A3.3) and Tempo
+# Observability for C4 live analysis: Prometheus scrapes every sidecar's metrics port and Tempo
 # stores the OTLP traces the demo services emit. Both are single-replica, in-memory/local stores for the demo cluster.
 apiVersion: v1
 kind: ServiceAccount

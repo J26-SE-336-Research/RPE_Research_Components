@@ -57,7 +57,7 @@ func contextFields(c rpe.Context) map[string]string {
 	}
 }
 
-// flattenChain walks the nested demo response and evaluates the C1 rules for every parent→child step
+// flattenChain walks the nested demo response and evaluates the C1 rules for every parent-to-child step
 // using the real rpe-go context guard, so the panel shows exactly what the library enforces.
 func flattenChain(root *demoResponse) []Hop {
 	var hops []Hop

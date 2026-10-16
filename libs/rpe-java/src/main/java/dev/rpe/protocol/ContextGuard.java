@@ -3,7 +3,7 @@ package dev.rpe.protocol;
 import java.util.ArrayList;
 import java.util.List;
 
-/** The context guard: rules R-T01..R-T06 for a parent → child step. */
+/** The context guard: rules R-T01..R-T06 for a parent-to-child step. */
 public final class ContextGuard {
     private ContextGuard() {}
 

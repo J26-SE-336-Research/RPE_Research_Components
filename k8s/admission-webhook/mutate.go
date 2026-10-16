@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-// Annotations and labels (shared contract A3.2).
+// Annotations and labels understood by the webhook.
 const (
 	annotationPrefix  = "resilience.rpe.dev/"
 	annotationInject  = annotationPrefix + "inject" // "disabled" opts a pod out inside an enabled namespace

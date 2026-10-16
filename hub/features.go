@@ -46,7 +46,7 @@ func (h *hub) validate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"valid": true, "fields": contextFields(c), "unknown": c.Unknown, "canonical": c.Encode()})
 }
 
-// transition runs the context guard (R-T01..R-T06) on a parent → child pair.
+// transition runs the context guard (R-T01..R-T06) on a parent and child pair.
 func (h *hub) transition(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Parent, Child string
@@ -405,7 +405,7 @@ func (h *hub) createPolicy(w http.ResponseWriter, r *http.Request) {
 	spec := map[string]any{"deadlineMs": in.DeadlineMs, "retry": map[string]any{"budget": in.RetryBudget, "budgetRatio": in.RetryRatio},
 		"leakyBucket": map[string]any{"ratePerSec": in.RatePerSec}}
 	if in.Service == "gateway" && in.Route != "" && in.DeadlineMs > 0 {
-		// the gateway creates root contexts: a route deadline is the budget it stamps for that route (A3.4)
+		// the gateway creates root contexts: a route deadline is the budget it stamps for that route
 		spec["routes"] = map[string]any{in.Route: map[string]any{"deadlineMs": in.DeadlineMs}}
 	}
 	body := map[string]any{

@@ -20,7 +20,7 @@ import java.util.logging.Logger;
 /**
  * Proxies one HTTP exchange for the inbound (15006) or outbound (15001) listener.
  *
- * <p>This is the pass-through skeleton (C2 Phase 1, P1.1). The resilience mechanisms (context handling via
+ * <p>This is the pass-through skeleton. The resilience mechanisms (context handling via
  * rpe-java, deadline, cancellation, leaky bucket, backpressure, retries and the coordinated decision function)
  * plug in at the marked extension points.
  */
@@ -56,10 +56,10 @@ public final class ProxyHandler extends SimpleChannelInboundHandler<FullHttpRequ
         FullHttpRequest forwarded = new DefaultFullHttpRequest(request.protocolVersion(), request.method(), target.uri(),
                 request.content().retain(), request.headers().copy(), request.trailingHeaders().copy());
         if (direction == Direction.INBOUND) {
-            forwarded.headers().remove(HOP_HEADER); // hop-scoped header never reaches the application (A3.1)
+            forwarded.headers().remove(HOP_HEADER); // hop-scoped header never reaches the application
         }
         HttpUtil.setKeepAlive(forwarded, true);
-        // Extension point (C2 P1.2+): parse/validate X-RPE-Context, admission (expired / insufficient time /
+        // TODO: parse/validate X-RPE-Context, admission (expired / insufficient time /
         // leaky bucket), outbound decision function and retries happen here before forwarding.
 
         metrics.begin();
@@ -80,7 +80,7 @@ public final class ProxyHandler extends SimpleChannelInboundHandler<FullHttpRequ
                     total, Math.max(0, total - up.upstreamNanos() / 1e9));
             String result = response.headers().get("X-RPE-Result");
             if (direction == Direction.INBOUND && cfg.gateway() && result != null) {
-                // Chain-level outcome at the trust boundary: one count per root request (A3.3, used by C4).
+                // Chain-level outcome at the trust boundary: one count per root request (used by C4).
                 metrics.chain(request.method().name(), path(request.uri()), code == 504 || result.contains("rsn=deadline"));
             }
             reply(ctx, response, keepAlive);

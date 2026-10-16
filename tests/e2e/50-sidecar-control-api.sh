@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# C2/C3 contract A3.5: sidecar control API (health, staged/active policy epochs) and metrics endpoint.
+# C2/C3: sidecar control API (health, staged/active policy epochs) and metrics endpoint.
 source "$(dirname "$0")/lib.sh"
 ip=$(pod_ip payment-svc); admin="http://${ip}:15020"
 client GET "${admin}/rpe/v1/health"

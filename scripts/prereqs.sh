@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Checks the local toolchain (Appendix A7 of the component guides).
+# Checks that the local toolchain is installed.
 source "$(dirname "$0")/lib.sh"
 missing=0
 check() {

@@ -6,7 +6,7 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Policies held by this sidecar, keyed by epoch (contract A3.5). An epoch is staged (held inactive) or active.
+ * Policies held by this sidecar, keyed by epoch. An epoch is staged (held inactive) or active.
  * The policy body is stored as received; the enforcement mechanisms read it as they are implemented.
  */
 public final class PolicyStore {

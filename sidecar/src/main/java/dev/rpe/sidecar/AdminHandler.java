@@ -13,7 +13,7 @@ import io.netty.handler.codec.http.HttpUtil;
 import io.netty.handler.codec.http.HttpVersion;
 import io.netty.util.CharsetUtil;
 
-/** Control API on port 15020 (contract A3.5) and the Prometheus endpoint on port 15090. */
+/** Control API on port 15020 and the Prometheus endpoint on port 15090. */
 public final class AdminHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
     private final SidecarConfig cfg;
     private final PolicyStore policies;
@@ -52,7 +52,7 @@ public final class AdminHandler extends SimpleChannelInboundHandler<FullHttpRequ
             if (epoch == null || state == null) {
                 resp = json(HttpResponseStatus.BAD_REQUEST, "{\"error\":\"epoch and state are required\"}");
             } else {
-                // Extension point (C2 P2.4): parse the policy spec, swap it atomically, ack to C3 (POST /api/k8s/acks).
+                // TODO: parse the policy spec, swap it in atomically and acknowledge it to C3 (POST /api/k8s/acks).
                 policies.put(epoch, Json.number(body, "version", 0), Json.string(body, "hash"),
                         PolicyStore.State.valueOf(state.toUpperCase()), body);
                 resp = json(HttpResponseStatus.OK, policies.toJson());

@@ -20,7 +20,7 @@ import tools.jackson.databind.json.JsonMapper;
 import tools.jackson.databind.node.ObjectNode;
 
 /**
- * Integration with Component 3 (policy API, contract A3.4):
+ * Integration with the Component 3 policy API:
  * <ol>
  *   <li>delivers human-approved recommendations as a new policy version (the reviewer is the approver) and starts a
  *       two-phase rollout;</li>

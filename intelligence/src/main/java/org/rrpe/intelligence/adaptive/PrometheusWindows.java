@@ -18,7 +18,7 @@ public class PrometheusWindows {
         String selector = "{service=\"" + TelemetryHttp.escape(service) + "\",namespace=\"" + TelemetryHttp.escape(connections.namespace()) + "\"}";
         String range = "[" + settings.window().toSeconds() + "s]";
         var queries = new LinkedHashMap<String, String>();
-        // Metrics contract A3.3 (Component 2 sidecar). Inbound traffic describes the load this service receives.
+        // Sidecar metrics (rpe_*). Inbound traffic describes the load this service receives.
         String inbound = selector.replace("}", ",direction=\"inbound\"}");
         queries.put("originalRequests", "sum(increase(rpe_original_requests_total" + inbound + range + "))");
         queries.put("observedRequests", "sum(increase(rpe_requests_total" + inbound + range + "))");

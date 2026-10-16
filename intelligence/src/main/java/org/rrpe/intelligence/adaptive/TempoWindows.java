@@ -7,7 +7,7 @@ import org.springframework.stereotype.Component;
 import tools.jackson.databind.JsonNode;
 
 /**
- * Fetches gateway-root traces (span attributes rpe.*, contract A3.3), validates spans and computes chain p99 from
+ * Fetches gateway-root traces (span attributes rpe.*), validates spans and computes chain p99 from
  * complete root durations. Trace counts are cross-checked against the gateway sidecar's per-route chain counters.
  */
 @Component

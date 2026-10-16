@@ -9,7 +9,7 @@ import (
 )
 
 // policyFollower keeps the gateway's root-context parameters in line with the policy its sidecar enforces
-// (contract A3.4): the active epoch is stamped into new contexts (pe) and spec.routes[route].deadlineMs
+// The active epoch is stamped into new contexts (pe) and spec.routes[route].deadlineMs
 // overrides the configured route budget. Without an active policy the static configuration applies.
 type policyFollower struct {
 	url    string

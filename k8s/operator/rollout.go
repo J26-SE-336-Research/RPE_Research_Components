@@ -56,8 +56,8 @@ func hasSidecar(p corev1.Pod) bool {
 
 // RolloutReconciler drives an RPERollout through its phases.
 //
-// two-phase: Staging (every target holds the new epoch inactive) → Activating (gateways flip first, then
-// services) → Draining (in-flight requests on the previous epoch finish) → Complete (previous epoch retired).
+// two-phase: Staging (every target holds the new epoch inactive), Activating (gateways flip first, then
+// services), Draining (in-flight requests on the previous epoch finish), Complete (previous epoch retired).
 // naive: every target is switched to active at once (the comparison baseline, no consistency guarantee).
 type RolloutReconciler struct {
 	client.Client

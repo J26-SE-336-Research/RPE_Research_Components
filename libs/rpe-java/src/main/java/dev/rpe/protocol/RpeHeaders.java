@@ -1,6 +1,6 @@
 package dev.rpe.protocol;
 
-/** Header names and protocol limits of the RPE v1 header set (spec §2, Appendix A1). */
+/** Header names and protocol limits of the RPE v1 header set . */
 public final class RpeHeaders {
     /** End-to-end request context. */
     public static final String CONTEXT = "X-RPE-Context";

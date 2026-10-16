@@ -7,8 +7,8 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.LongAdder;
 
 /**
- * Minimal Prometheus exposition for the metrics contract (A3.3). Only the metrics implemented so far
- * are exported; the remaining contract metrics are added together with their mechanisms.
+ * Minimal Prometheus exposition of the rpe_* metrics. Only the metrics implemented so far are exported;
+ * the rest are added together with the mechanisms that produce them.
  */
 public final class Metrics {
     private static final double[] BUCKETS = {0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10};
@@ -19,7 +19,7 @@ public final class Metrics {
     private final Map<String, Histogram> durations = new ConcurrentHashMap<>();
     private final Histogram overhead = new Histogram();
     private final AtomicLong inflight = new AtomicLong();
-    // Contract A3.3 counters. Every request is currently a first attempt (the retry mechanism is C2 Phase 2)
+    // Every request is currently a first attempt (the retry mechanism is not implemented yet)
     // and the proxy does not yet reject on its own, so retries and proxy rejections are genuinely zero.
     private final Map<String, LongAdder> original = new ConcurrentHashMap<>();
     private final Map<String, LongAdder> retries = new ConcurrentHashMap<>();
