@@ -73,7 +73,3 @@ curl -s -X POST localhost:8090/api/v2/intelligence/demo/deadline-increase | jq '
 - Joint recommendations under feasibility constraints.
 - Impact preview before approval and outcome verification after rollout.
 - Comparison against simpler and ML detectors.
-
-## Historical files
-
-[`ADAPTIVE_IMPLEMENTATION.md`](ADAPTIVE_IMPLEMENTATION.md) and [`deploy/kubernetes.yaml`](deploy/kubernetes.yaml) come from the original `RPE_POC1` prototype (branch `component-4-integrated-v2`, commit `775fd0a`). They are kept as algorithm background only; their run instructions, dashboard and metric names no longer apply.
