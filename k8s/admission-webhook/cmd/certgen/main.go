@@ -14,17 +14,24 @@ import (
 )
 
 func main() {
-	if len(os.Args) != 2 {
-		fmt.Fprintln(os.Stderr, "usage: rrpe-admission-certgen OUTPUT_DIRECTORY")
+	if len(os.Args) < 2 || len(os.Args) > 4 {
+		fmt.Fprintln(os.Stderr, "usage: rpe-admission-certgen OUTPUT_DIRECTORY [SERVICE] [NAMESPACE]")
 		os.Exit(2)
 	}
-	if err := generate(os.Args[1]); err != nil {
+	service, namespace := "rpe-admission-webhook", "rpe-system"
+	if len(os.Args) > 2 {
+		service = os.Args[2]
+	}
+	if len(os.Args) > 3 {
+		namespace = os.Args[3]
+	}
+	if err := generate(os.Args[1], service, namespace); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
 
-func generate(directory string) error {
+func generate(directory, service, namespace string) error {
 	if err := os.MkdirAll(directory, 0o700); err != nil {
 		return fmt.Errorf("create output directory: %w", err)
 	}
@@ -35,7 +42,7 @@ func generate(directory string) error {
 	}
 	caTemplate := &x509.Certificate{
 		SerialNumber:          serialNumber(),
-		Subject:               pkix.Name{CommonName: "RRPE Admission Webhook Development CA"},
+		Subject:               pkix.Name{CommonName: "RPE Admission Webhook Development CA"},
 		NotBefore:             now.Add(-5 * time.Minute),
 		NotAfter:              now.Add(365 * 24 * time.Hour),
 		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign | x509.KeyUsageDigitalSignature,
@@ -61,8 +68,8 @@ func generate(directory string) error {
 	}
 	serverTemplate := &x509.Certificate{
 		SerialNumber:          serialNumber(),
-		Subject:               pkix.Name{CommonName: "rrpe-admission-webhook.rrpe-system.svc"},
-		DNSNames:              []string{"rrpe-admission-webhook", "rrpe-admission-webhook.rrpe-system", "rrpe-admission-webhook.rrpe-system.svc", "rrpe-admission-webhook.rrpe-system.svc.cluster.local"},
+		Subject:               pkix.Name{CommonName: service + "." + namespace + ".svc"},
+		DNSNames:              []string{service, service + "." + namespace, service + "." + namespace + ".svc", service + "." + namespace + ".svc.cluster.local"},
 		NotBefore:             now.Add(-5 * time.Minute),
 		NotAfter:              now.Add(90 * 24 * time.Hour),
 		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,

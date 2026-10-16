@@ -1,0 +1,46 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: rpepolicies.resilience.rpe.dev
+spec:
+  group: resilience.rpe.dev
+  scope: Namespaced
+  names:
+    kind: RPEPolicy
+    listKind: RPEPolicyList
+    plural: rpepolicies
+    singular: rpepolicy
+    shortNames: [rpep]
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources: {status: {}}
+      additionalPrinterColumns:
+        - {name: Service, type: string, jsonPath: .spec.service}
+        - {name: Version, type: integer, jsonPath: .spec.version}
+        - {name: Active, type: string, jsonPath: .status.activeEpoch}
+        - {name: Phase, type: string, jsonPath: .status.phase}
+        - {name: Approved-By, type: string, jsonPath: .spec.approvedBy}
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [policyId, version, epoch, service, approvedBy]
+              properties:
+                policyId: {type: string}
+                version: {type: integer, minimum: 1}
+                epoch: {type: string}
+                service: {type: string}
+                route: {type: string}
+                settings: {type: object, x-kubernetes-preserve-unknown-fields: true}
+                approvedBy: {type: string, minLength: 1}
+                approvedAt: {type: string}
+            status:
+              type: object
+              properties:
+                activeEpoch: {type: string}
+                rollout: {type: string}
+                phase: {type: string}
