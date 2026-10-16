@@ -1,26 +1,6 @@
 package rpe
 
-import (
-	"crypto/rand"
-	"encoding/hex"
-	"time"
-)
-
-func randomID(bytes int) (string, error) {
-	raw := make([]byte, bytes)
-	for {
-		if _, e := rand.Read(raw); e != nil {
-			return "", e
-		}
-		nonzero := false
-		for _, b := range raw {
-			nonzero = nonzero || b != 0
-		}
-		if nonzero {
-			return hex.EncodeToString(raw), nil
-		}
-	}
-}
+import "time"
 
 // NewRootContext is called at trusted ingress after selecting approved policy.
 // Caller must strip client-supplied protocol headers and authenticate the request.
