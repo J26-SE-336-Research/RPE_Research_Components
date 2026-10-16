@@ -1,0 +1,30 @@
+# Steady background traffic (~3 requests/s on GET /api/orders) so Prometheus, Tempo and C4 always have live data.
+# Counter-exact e2e suites pause it (scale to 0) and resume it afterwards.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rpe-traffic
+  namespace: rpe-e2e
+  labels: {app: rpe-traffic, app.kubernetes.io/part-of: rpe}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: rpe-traffic}
+  template:
+    metadata:
+      labels: {app: rpe-traffic}
+    spec:
+      terminationGracePeriodSeconds: 1
+      containers:
+        - name: traffic
+          image: curlimages/curl:8.11.1
+          command: [/bin/sh, -c]
+          args:
+            - |
+              while true; do
+                curl -s -o /dev/null --max-time 5 http://gateway.rpe-demo:8080/api/orders
+                sleep 0.3
+              done
+          resources:
+            requests: {cpu: 10m, memory: 8Mi}
+            limits: {memory: 32Mi}

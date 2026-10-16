@@ -1,0 +1,63 @@
+# C4: Resilience Intelligence Layer. Live mode: analyses Prometheus (sidecar metrics) and Tempo (gateway traces),
+# keeps every recommendation pending until a human approves it, and delivers approved ones to the C3 policy API.
+# The demo cluster uses a 1-minute window and a 15-second cycle so live recommendations appear within minutes.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rpe-intelligence
+  namespace: rpe-system
+  labels: {app: rpe-intelligence, app.kubernetes.io/part-of: rpe}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: rpe-intelligence}
+  template:
+    metadata:
+      labels: {app: rpe-intelligence}
+    spec:
+      containers:
+        - name: intelligence
+          image: rpe/intelligence:dev
+          imagePullPolicy: IfNotPresent
+          ports: [{containerPort: 8090, name: http}]
+          env:
+            - {name: PROMETHEUS_COLLECTION_ENABLED, value: "true"}
+            - {name: PROMETHEUS_URL, value: "http://rpe-prometheus.rpe-system:9090"}
+            - {name: TEMPO_URL, value: "http://rpe-tempo.rpe-system:3200"}
+            - {name: RRPE_CONNECTIONS_NAMESPACE, value: rpe-demo}
+            - {name: RRPE_CONNECTIONS_SERVICES, value: "gateway,order-svc,inventory-svc,payment-svc,loyalty-svc,shipping-svc,fraud-check-svc"}
+            - {name: RRPE_CONNECTIONS_GATEWAYSERVICE, value: gateway}
+            - {name: RRPE_CONNECTIONS_SCRAPEINTERVAL, value: 5s}
+            - {name: RRPE_CONNECTIONS_TRACELIMIT, value: "2000"}
+            - {name: RRPE_ADAPTIVE_WINDOW, value: 1m}
+            - {name: RRPE_ADAPTIVE_CYCLE, value: 15s}
+            # Tempo makes a trace searchable ~10 s after it ends; evaluate windows that ended 20 s ago
+            - {name: RRPE_ADAPTIVE_EVALUATION_DELAY, value: 20s}
+            - {name: RRPE_ADAPTIVE_BASELINESAMPLES, value: "5"}
+            - {name: RRPE_ADAPTIVE_COOLDOWN, value: 1m}
+            - {name: RRPE_DELIVERY_POLL, value: 5s}
+            - {name: COMPONENT3_POLICY_URL, value: "http://rpe-policy-api.rpe-system"}
+            - name: RRPE_CONTROL_TOKEN
+              valueFrom: {secretKeyRef: {name: rpe-control-token, key: token}}
+            - {name: RPE_AUDIT_JDBC_URL, value: "jdbc:postgresql://rpe-postgres.rpe-system:5432/rpe"}
+            - {name: RPE_AUDIT_USER, value: rpe}
+            - {name: RPE_AUDIT_PASSWORD, value: rpe-dev-password}
+            # synthetic scenarios stay available for the simulation tab; they are never delivered
+            - {name: RRPE_MOCK_ENABLED, value: "true"}
+            - {name: JAVA_TOOL_OPTIONS, value: "-XX:MaxRAMPercentage=70"}
+          readinessProbe:
+            httpGet: {path: /actuator/health, port: 8090}
+            initialDelaySeconds: 15
+            periodSeconds: 5
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+            limits: {memory: 640Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rpe-intelligence
+  namespace: rpe-system
+spec:
+  selector: {app: rpe-intelligence}
+  ports: [{port: 8090, targetPort: 8090, name: http}]

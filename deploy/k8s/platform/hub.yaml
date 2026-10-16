@@ -1,0 +1,109 @@
+# rpe-hub: backend of the RPE Admin Panel (serves the console SPA + /api/hub).
+# Least-privilege RBAC: read pods/namespaces and server-side dry-run pod creation in rpe-demo.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: rpe-hub
+  namespace: rpe-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: rpe-hub-demo
+  namespace: rpe-demo
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, create]   # create is only used with dryRun=All (admission simulator)
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: rpe-hub-demo
+  namespace: rpe-demo
+subjects: [{kind: ServiceAccount, name: rpe-hub, namespace: rpe-system}]
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: rpe-hub-demo}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: rpe-hub-system
+  namespace: rpe-system
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: rpe-hub-system
+  namespace: rpe-system
+subjects: [{kind: ServiceAccount, name: rpe-hub, namespace: rpe-system}]
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: rpe-hub-system}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: rpe-hub-namespaces
+rules:
+  - apiGroups: [""]
+    resources: [namespaces]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: rpe-hub-namespaces
+subjects: [{kind: ServiceAccount, name: rpe-hub, namespace: rpe-system}]
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: rpe-hub-namespaces}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rpe-hub
+  namespace: rpe-system
+  labels: {app: rpe-hub, app.kubernetes.io/part-of: rpe}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: rpe-hub}
+  template:
+    metadata:
+      labels: {app: rpe-hub}
+    spec:
+      serviceAccountName: rpe-hub
+      containers:
+        - name: hub
+          image: rpe/hub:dev
+          imagePullPolicy: IfNotPresent
+          ports: [{containerPort: 8080, name: http}]
+          env:
+            - {name: GATEWAY_URL, value: "http://gateway.rpe-demo:8080"}
+            - {name: INTELLIGENCE_URL, value: "http://rpe-intelligence.rpe-system:8090"}
+            - {name: POLICY_API_URL, value: "http://rpe-policy-api.rpe-system"}
+            # shared with C4: authorises human reviews of live recommendations
+            - name: INTEL_CONTROL_TOKEN
+              valueFrom: {secretKeyRef: {name: rpe-control-token, key: token}}
+            # Development accounts (user:password:role). Override for any shared environment.
+            - {name: HUB_USERS, value: "admin:admin:admin,sre:sre:sre,viewer:viewer:viewer"}
+            - {name: SESSION_SECRET, value: "rpe-dev-session-secret-change-me"}
+          readinessProbe:
+            httpGet: {path: /healthz, port: 8080}
+            periodSeconds: 3
+          resources:
+            requests: {cpu: 20m, memory: 32Mi}
+            limits: {memory: 128Mi}
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rpe-hub
+  namespace: rpe-system
+spec:
+  selector: {app: rpe-hub}
+  ports: [{port: 80, targetPort: 8080, name: http}]

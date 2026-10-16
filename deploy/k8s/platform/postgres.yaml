@@ -1,0 +1,46 @@
+# C3 policy store (also used later by C4 audit and the hub). Dev-only credentials.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rpe-postgres
+  namespace: rpe-system
+  labels: {app: rpe-postgres, app.kubernetes.io/part-of: rpe}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: rpe-postgres}
+  template:
+    metadata:
+      labels: {app: rpe-postgres}
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          ports: [{containerPort: 5432}]
+          env:
+            - {name: POSTGRES_USER, value: rpe}
+            - {name: POSTGRES_PASSWORD, value: rpe-dev-password}
+            - {name: POSTGRES_DB, value: rpe}
+          readinessProbe:
+            exec: {command: [pg_isready, -U, rpe, -d, rpe]}
+            periodSeconds: 3
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {memory: 256Mi}
+          volumeMounts:
+            - {name: migrations, mountPath: /docker-entrypoint-initdb.d}
+            - {name: data, mountPath: /var/lib/postgresql/data}
+      volumes:
+        - name: migrations
+          configMap: {name: rpe-policy-store-migrations}
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rpe-postgres
+  namespace: rpe-system
+spec:
+  selector: {app: rpe-postgres}
+  ports: [{port: 5432, targetPort: 5432}]

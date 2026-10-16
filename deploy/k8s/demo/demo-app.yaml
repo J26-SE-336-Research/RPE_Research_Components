@@ -1,0 +1,335 @@
+# Shared demo topology (Appendix A6). Generated layout: one Deployment + Service per demo service.
+#   gateway -> order-svc -> (parallel) inventory-svc, payment-svc, loyalty-svc (optional), legacy-svc (optional, NO sidecar) -> shipping-svc
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: rpe-demo
+  labels: {app: gateway, app.kubernetes.io/part-of: rpe-demo}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: gateway}
+  template:
+    metadata:
+      labels: {app: gateway}
+      annotations: {"resilience.rpe.dev/role": gateway}
+    spec:
+      containers:
+        - name: app
+          image: rpe/demo-app:dev
+          imagePullPolicy: IfNotPresent
+          ports: [{containerPort: 8080, name: http}]
+          env:
+            - {name: SERVICE_NAME, value: gateway}
+            - {name: OTEL_EXPORTER_OTLP_ENDPOINT, value: "http://rpe-tempo.rpe-system:4318"}
+            - {name: ROLE, value: gateway}
+            - {name: ROUTE_BUDGETS, value: "GET /api/orders=1000;POST /api/orders=2000"}
+            - {name: DEFAULT_BUDGET_MS, value: "1000"}
+            - {name: RETRY_BUDGET, value: "3"}
+            - {name: POLICY_EPOCH, value: "e0"}
+            # follow the policy the gateway's sidecar enforces (active epoch and route deadlines)
+            - {name: POLICY_FOLLOW_URL, value: "http://127.0.0.1:15020/rpe/v1/policy/active"}
+            - {name: CHILDREN, value: "order=http://order-svc:8080/orders"}
+          readinessProbe:
+            httpGet: {path: /healthz, port: 8080}
+            periodSeconds: 3
+          resources:
+            requests: {cpu: 20m, memory: 16Mi}
+            limits: {memory: 64Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway
+  namespace: rpe-demo
+spec:
+  selector: {app: gateway}
+  ports: [{port: 8080, targetPort: 8080, name: http}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: order-svc
+  namespace: rpe-demo
+  labels: {app: order-svc, app.kubernetes.io/part-of: rpe-demo}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: order-svc}
+  template:
+    metadata:
+      labels: {app: order-svc}
+      annotations: {}
+    spec:
+      containers:
+        - name: app
+          image: rpe/demo-app:dev
+          imagePullPolicy: IfNotPresent
+          ports: [{containerPort: 8080, name: http}]
+          env:
+            - {name: SERVICE_NAME, value: order-svc}
+            - {name: OTEL_EXPORTER_OTLP_ENDPOINT, value: "http://rpe-tempo.rpe-system:4318"}
+            - {name: CHILDREN, value: "inventory=http://inventory-svc:8080/reserve,payment=http://payment-svc:8080/pay,loyalty=http://loyalty-svc:8080/award?optional,legacy=http://legacy-svc:8080/ship?optional"}
+            - {name: FANOUT, value: partial}
+            - {name: SPLIT_MODE, value: parallel}
+          readinessProbe:
+            httpGet: {path: /healthz, port: 8080}
+            periodSeconds: 3
+          resources:
+            requests: {cpu: 20m, memory: 16Mi}
+            limits: {memory: 64Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: order-svc
+  namespace: rpe-demo
+spec:
+  selector: {app: order-svc}
+  ports: [{port: 8080, targetPort: 8080, name: http}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inventory-svc
+  namespace: rpe-demo
+  labels: {app: inventory-svc, app.kubernetes.io/part-of: rpe-demo}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: inventory-svc}
+  template:
+    metadata:
+      labels: {app: inventory-svc}
+      annotations: {}
+    spec:
+      containers:
+        - name: app
+          image: rpe/demo-app:dev
+          imagePullPolicy: IfNotPresent
+          ports: [{containerPort: 8080, name: http}]
+          env:
+            - {name: SERVICE_NAME, value: inventory-svc}
+            - {name: OTEL_EXPORTER_OTLP_ENDPOINT, value: "http://rpe-tempo.rpe-system:4318"}
+            - {name: SIDE_EFFECT, value: stock_reserved}
+          readinessProbe:
+            httpGet: {path: /healthz, port: 8080}
+            periodSeconds: 3
+          resources:
+            requests: {cpu: 20m, memory: 16Mi}
+            limits: {memory: 64Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: inventory-svc
+  namespace: rpe-demo
+spec:
+  selector: {app: inventory-svc}
+  ports: [{port: 8080, targetPort: 8080, name: http}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payment-svc
+  namespace: rpe-demo
+  labels: {app: payment-svc, app.kubernetes.io/part-of: rpe-demo}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: payment-svc}
+  template:
+    metadata:
+      labels: {app: payment-svc}
+      annotations: {}
+    spec:
+      containers:
+        - name: app
+          image: rpe/demo-app:dev
+          imagePullPolicy: IfNotPresent
+          ports: [{containerPort: 8080, name: http}]
+          env:
+            - {name: SERVICE_NAME, value: payment-svc}
+            - {name: OTEL_EXPORTER_OTLP_ENDPOINT, value: "http://rpe-tempo.rpe-system:4318"}
+            - {name: SIDE_EFFECT, value: cards_charged}
+            # a payment provider call takes ~120-140 ms, so chain latency is realistic for deadline tuning
+            - {name: BASE_LATENCY_MS, value: "120"}
+            - {name: BASE_JITTER_MS, value: "20"}
+          readinessProbe:
+            httpGet: {path: /healthz, port: 8080}
+            periodSeconds: 3
+          resources:
+            requests: {cpu: 20m, memory: 16Mi}
+            limits: {memory: 64Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: payment-svc
+  namespace: rpe-demo
+spec:
+  selector: {app: payment-svc}
+  ports: [{port: 8080, targetPort: 8080, name: http}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loyalty-svc
+  namespace: rpe-demo
+  labels: {app: loyalty-svc, app.kubernetes.io/part-of: rpe-demo}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: loyalty-svc}
+  template:
+    metadata:
+      labels: {app: loyalty-svc}
+      annotations: {}
+    spec:
+      containers:
+        - name: app
+          image: rpe/demo-app:dev
+          imagePullPolicy: IfNotPresent
+          ports: [{containerPort: 8080, name: http}]
+          env:
+            - {name: SERVICE_NAME, value: loyalty-svc}
+            - {name: OTEL_EXPORTER_OTLP_ENDPOINT, value: "http://rpe-tempo.rpe-system:4318"}
+            - {name: SIDE_EFFECT, value: points_awarded}
+          readinessProbe:
+            httpGet: {path: /healthz, port: 8080}
+            periodSeconds: 3
+          resources:
+            requests: {cpu: 20m, memory: 16Mi}
+            limits: {memory: 64Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: loyalty-svc
+  namespace: rpe-demo
+spec:
+  selector: {app: loyalty-svc}
+  ports: [{port: 8080, targetPort: 8080, name: http}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fraud-check-svc
+  namespace: rpe-demo
+  labels: {app: fraud-check-svc, app.kubernetes.io/part-of: rpe-demo}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: fraud-check-svc}
+  template:
+    metadata:
+      labels: {app: fraud-check-svc}
+      annotations: {}
+    spec:
+      containers:
+        - name: app
+          image: rpe/demo-app:dev
+          imagePullPolicy: IfNotPresent
+          ports: [{containerPort: 8080, name: http}]
+          env:
+            - {name: SERVICE_NAME, value: fraud-check-svc}
+            - {name: OTEL_EXPORTER_OTLP_ENDPOINT, value: "http://rpe-tempo.rpe-system:4318"}
+            - {name: SIDE_EFFECT, value: fraud_checked}
+          readinessProbe:
+            httpGet: {path: /healthz, port: 8080}
+            periodSeconds: 3
+          resources:
+            requests: {cpu: 20m, memory: 16Mi}
+            limits: {memory: 64Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fraud-check-svc
+  namespace: rpe-demo
+spec:
+  selector: {app: fraud-check-svc}
+  ports: [{port: 8080, targetPort: 8080, name: http}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: legacy-svc
+  namespace: rpe-demo
+  labels: {app: legacy-svc, app.kubernetes.io/part-of: rpe-demo}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: legacy-svc}
+  template:
+    metadata:
+      labels: {app: legacy-svc}
+      annotations: {"resilience.rpe.dev/inject": disabled}
+    spec:
+      containers:
+        - name: app
+          image: rpe/demo-app:dev
+          imagePullPolicy: IfNotPresent
+          ports: [{containerPort: 8080, name: http}]
+          env:
+            - {name: SERVICE_NAME, value: legacy-svc}
+            - {name: OTEL_EXPORTER_OTLP_ENDPOINT, value: "http://rpe-tempo.rpe-system:4318"}
+            - {name: RPE_ENABLED, value: "false"}
+            - {name: CHILDREN, value: "shipping=http://shipping-svc:8080/ship"}
+          readinessProbe:
+            httpGet: {path: /healthz, port: 8080}
+            periodSeconds: 3
+          resources:
+            requests: {cpu: 20m, memory: 16Mi}
+            limits: {memory: 64Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: legacy-svc
+  namespace: rpe-demo
+spec:
+  selector: {app: legacy-svc}
+  ports: [{port: 8080, targetPort: 8080, name: http}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shipping-svc
+  namespace: rpe-demo
+  labels: {app: shipping-svc, app.kubernetes.io/part-of: rpe-demo}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: shipping-svc}
+  template:
+    metadata:
+      labels: {app: shipping-svc}
+      annotations: {}
+    spec:
+      containers:
+        - name: app
+          image: rpe/demo-app:dev
+          imagePullPolicy: IfNotPresent
+          ports: [{containerPort: 8080, name: http}]
+          env:
+            - {name: SERVICE_NAME, value: shipping-svc}
+            - {name: OTEL_EXPORTER_OTLP_ENDPOINT, value: "http://rpe-tempo.rpe-system:4318"}
+            - {name: SIDE_EFFECT, value: shipments_created}
+          readinessProbe:
+            httpGet: {path: /healthz, port: 8080}
+            periodSeconds: 3
+          resources:
+            requests: {cpu: 20m, memory: 16Mi}
+            limits: {memory: 64Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: shipping-svc
+  namespace: rpe-demo
+spec:
+  selector: {app: shipping-svc}
+  ports: [{port: 8080, targetPort: 8080, name: http}]

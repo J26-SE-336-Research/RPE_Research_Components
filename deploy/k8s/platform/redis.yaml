@@ -1,0 +1,36 @@
+# Redis: fast path next to the PostgreSQL system of record (policy events stream, effective-policy
+# cache, delivery acks, change broadcast, Operator checkpoint).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rpe-redis
+  namespace: rpe-system
+  labels: {app: rpe-redis, app.kubernetes.io/part-of: rpe}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: rpe-redis}
+  template:
+    metadata:
+      labels: {app: rpe-redis}
+    spec:
+      containers:
+        - name: redis
+          image: redis:7.4-alpine
+          args: ["--appendonly", "no", "--save", ""]
+          ports: [{containerPort: 6379}]
+          readinessProbe:
+            exec: {command: [redis-cli, ping]}
+            periodSeconds: 3
+          resources:
+            requests: {cpu: 20m, memory: 32Mi}
+            limits: {memory: 128Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rpe-redis
+  namespace: rpe-system
+spec:
+  selector: {app: rpe-redis}
+  ports: [{port: 6379, targetPort: 6379}]

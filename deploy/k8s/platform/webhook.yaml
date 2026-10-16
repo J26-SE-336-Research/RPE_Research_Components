@@ -1,0 +1,51 @@
+# C3: RPE Mutating Admission Webhook. The MutatingWebhookConfiguration (with the generated CA bundle)
+# is rendered by scripts/deploy.sh into deploy/k8s/generated/.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rpe-admission-webhook
+  namespace: rpe-system
+  labels: {app: rpe-admission-webhook, app.kubernetes.io/part-of: rpe}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: rpe-admission-webhook}
+  template:
+    metadata:
+      labels: {app: rpe-admission-webhook}
+    spec:
+      containers:
+        - name: webhook
+          image: rpe/admission-webhook:dev
+          imagePullPolicy: IfNotPresent
+          ports: [{containerPort: 8443, name: https}]
+          env:
+            - {name: SIDECAR_IMAGE, value: "rpe/sidecar:dev"}
+            - {name: SIDECAR_IMAGE_PULL_POLICY, value: IfNotPresent}
+            - {name: DEFAULT_INBOUND_MODE, value: redirect}
+            - {name: DEFAULT_OUTBOUND_PORTS, value: "80,8080"}
+            - {name: DEFAULT_DEADLINE_MS, value: "1000"}
+          readinessProbe:
+            httpGet: {path: /healthz, port: 8443, scheme: HTTPS}
+            periodSeconds: 3
+          resources:
+            requests: {cpu: 20m, memory: 32Mi}
+            limits: {memory: 64Mi}
+          volumeMounts:
+            - {name: tls, mountPath: /tls, readOnly: true}
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+      volumes:
+        - name: tls
+          secret: {secretName: rpe-admission-webhook-tls}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rpe-admission-webhook
+  namespace: rpe-system
+spec:
+  selector: {app: rpe-admission-webhook}
+  ports: [{port: 443, targetPort: 8443, name: https}]

@@ -1,0 +1,177 @@
+# Observability for C4 live analysis: Prometheus scrapes every sidecar's metrics port (contract A3.3) and Tempo
+# stores the OTLP traces the demo services emit. Both are single-replica, in-memory/local stores for the demo cluster.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: rpe-prometheus
+  namespace: rpe-system
+---
+# Least privilege: discover pods in the demo namespace only.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: rpe-prometheus-discovery
+  namespace: rpe-demo
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: rpe-prometheus-discovery
+  namespace: rpe-demo
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: rpe-prometheus-discovery}
+subjects: [{kind: ServiceAccount, name: rpe-prometheus, namespace: rpe-system}]
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rpe-prometheus-config
+  namespace: rpe-system
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 5s
+      evaluation_interval: 15s
+    scrape_configs:
+      - job_name: rpe-sidecars
+        honor_labels: true
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces: {names: [rpe-demo]}
+        relabel_configs:
+          # only the sidecar metrics port injected by the webhook
+          - source_labels: [__meta_kubernetes_pod_container_port_name]
+            regex: rpe-metrics
+            action: keep
+          - source_labels: [__meta_kubernetes_pod_label_app]
+            target_label: service
+          - source_labels: [__meta_kubernetes_namespace]
+            target_label: namespace
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rpe-prometheus
+  namespace: rpe-system
+  labels: {app: rpe-prometheus, app.kubernetes.io/part-of: rpe}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: rpe-prometheus}
+  template:
+    metadata:
+      labels: {app: rpe-prometheus}
+    spec:
+      serviceAccountName: rpe-prometheus
+      containers:
+        - name: prometheus
+          image: prom/prometheus:v2.55.1
+          args:
+            - --config.file=/etc/prometheus/prometheus.yml
+            - --storage.tsdb.path=/prometheus
+            - --storage.tsdb.retention.time=6h
+            - --web.enable-lifecycle
+          ports: [{containerPort: 9090, name: http}]
+          readinessProbe:
+            httpGet: {path: /-/ready, port: 9090}
+            periodSeconds: 5
+          volumeMounts:
+            - {name: config, mountPath: /etc/prometheus}
+            - {name: data, mountPath: /prometheus}
+          resources:
+            requests: {cpu: 50m, memory: 128Mi}
+            limits: {memory: 512Mi}
+      volumes:
+        - {name: config, configMap: {name: rpe-prometheus-config}}
+        - {name: data, emptyDir: {}}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rpe-prometheus
+  namespace: rpe-system
+spec:
+  selector: {app: rpe-prometheus}
+  ports: [{port: 9090, targetPort: 9090, name: http}]
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rpe-tempo-config
+  namespace: rpe-system
+data:
+  tempo.yaml: |
+    stream_over_http_enabled: true
+    server:
+      http_listen_port: 3200
+      log_level: warn
+    distributor:
+      receivers:
+        otlp:
+          protocols:
+            http: {endpoint: "0.0.0.0:4318"}
+            grpc: {endpoint: "0.0.0.0:4317"}
+    ingester:
+      max_block_duration: 5m
+    compactor:
+      compaction:
+        block_retention: 6h
+    storage:
+      trace:
+        backend: local
+        local: {path: /var/tempo/traces}
+        wal: {path: /var/tempo/wal}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rpe-tempo
+  namespace: rpe-system
+  labels: {app: rpe-tempo, app.kubernetes.io/part-of: rpe}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: rpe-tempo}
+  template:
+    metadata:
+      labels: {app: rpe-tempo}
+    spec:
+      securityContext: {runAsUser: 10001, runAsGroup: 10001, fsGroup: 10001}
+      containers:
+        - name: tempo
+          image: grafana/tempo:2.6.1
+          args: [-config.file=/etc/tempo/tempo.yaml]
+          ports:
+            - {containerPort: 3200, name: http}
+            - {containerPort: 4317, name: otlp-grpc}
+            - {containerPort: 4318, name: otlp-http}
+          readinessProbe:
+            httpGet: {path: /ready, port: 3200}
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          volumeMounts:
+            - {name: config, mountPath: /etc/tempo}
+            - {name: data, mountPath: /var/tempo}
+          resources:
+            requests: {cpu: 50m, memory: 128Mi}
+            limits: {memory: 768Mi}
+      volumes:
+        - {name: config, configMap: {name: rpe-tempo-config}}
+        - {name: data, emptyDir: {}}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rpe-tempo
+  namespace: rpe-system
+spec:
+  selector: {app: rpe-tempo}
+  ports:
+    - {port: 3200, targetPort: 3200, name: http}
+    - {port: 4317, targetPort: 4317, name: otlp-grpc}
+    - {port: 4318, targetPort: 4318, name: otlp-http}
