@@ -4,7 +4,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CLUSTER="${RPE_CLUSTER:-rpe}"
-KCTX="kind-${CLUSTER}"
+KCTX="${RPE_KCTX:-kind-${CLUSTER}}"
 GENERATED="${ROOT}/deploy/k8s/generated"
 IMAGES=(sidecar admission-webhook demo-app intelligence hub operator)
 

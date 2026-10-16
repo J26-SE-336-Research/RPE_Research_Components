@@ -1,0 +1,101 @@
+name: Deploy to VPS
+
+# Builds the six RPE images, pushes them to GitHub Container Registry and deploys them to the shared k3s VPS.
+# Required repository secrets (Settings > Secrets and variables > Actions):
+#   VPS_HOST, VPS_USER, VPS_SSH_KEY   SSH access of the deploy user
+#   GHCR_PULL_USER, GHCR_PULL_TOKEN   GitHub user + classic PAT (read:packages) the cluster uses to pull images
+on:
+  push:
+    # ci-cd-vps is temporary: manual runs are only offered for workflows on the default branch
+    branches: [Integrated, ci-cd-vps]
+  workflow_dispatch:
+    inputs:
+      run_e2e:
+        description: Run the e2e smoke suites (10, 60, 90) after deploying
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  packages: write
+
+# one deployment at a time; a newer push waits instead of cancelling a running rollout
+concurrency:
+  group: deploy-vps
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - {image: sidecar,           context: sidecar,                dockerfile: sidecar/Dockerfile}
+          - {image: admission-webhook, context: k8s/admission-webhook,  dockerfile: k8s/admission-webhook/Dockerfile}
+          - {image: operator,          context: k8s/operator,           dockerfile: k8s/operator/Dockerfile}
+          - {image: intelligence,      context: intelligence,           dockerfile: intelligence/Dockerfile}
+          - {image: hub,               context: .,                      dockerfile: hub/Dockerfile}
+          - {image: demo-app,          context: .,                      dockerfile: demo-app/Dockerfile}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Image name and tag
+        run: |
+          echo "OWNER=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
+          echo "TAG=${GITHUB_SHA::12}" >> "$GITHUB_ENV"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          push: true
+          tags: ghcr.io/${{ env.OWNER }}/rpe-${{ matrix.image }}:${{ env.TAG }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache: false
+      - name: Image prefix and tag
+        run: |
+          echo "IMAGE_PREFIX=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/rpe-" >> "$GITHUB_ENV"
+          echo "IMAGE_TAG=${GITHUB_SHA::12}" >> "$GITHUB_ENV"
+      - name: SSH tunnel to the k3s API (port 6443 stays closed on the firewall)
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh ~/.kube && chmod 700 ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/id_ed25519 && chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -t ed25519 "$VPS_HOST" >> ~/.ssh/known_hosts
+          ssh -i ~/.ssh/id_ed25519 -f -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 \
+              -L 6443:127.0.0.1:6443 "$VPS_USER@$VPS_HOST"
+          # the k3s kubeconfig already points at https://127.0.0.1:6443, which the tunnel serves
+          ssh -i ~/.ssh/id_ed25519 "$VPS_USER@$VPS_HOST" 'cat ~/.kube/config' > ~/.kube/config
+          chmod 600 ~/.kube/config
+          kubectl get nodes
+      - name: Deploy
+        env:
+          GHCR_USER: ${{ secrets.GHCR_PULL_USER }}
+          GHCR_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
+        run: bash scripts/deploy-remote.sh
+      - name: e2e smoke suites
+        if: github.event_name == 'push' || inputs.run_e2e
+        run: |
+          # 00 expects two nodes and 20 builds ad-hoc pods from local images, so the smoke set is 10, 60 and 90
+          for s in 10 60 90; do
+            KCTX="$(kubectl config current-context)" bash tests/e2e/${s}-*.sh
+          done
