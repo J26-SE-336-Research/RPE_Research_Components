@@ -1,0 +1,135 @@
+{
+  "description": "X-RPE-Result decoding (defaults v=1, out=unknown, rsn=none) and canonical encoding.",
+  "cases": [
+    {
+      "name": "full result",
+      "input": "v=1, out=partial, rsn=deadline, term=?1, bp=2, bpu=78, rbu=1, pv=\"e42\", late=?0, kids=\"inv:ok:80;loy:expired:90\"",
+      "expect": {
+        "v": 1,
+        "out": "partial",
+        "rsn": "deadline",
+        "term": true,
+        "bp": 2,
+        "bpu": 78,
+        "rbu": 1,
+        "pv": "e42",
+        "late": false,
+        "kids": "inv:ok:80;loy:expired:90"
+      },
+      "canonical": "v=1, out=partial, rsn=deadline, term=?1, bp=2, bpu=78, rbu=1, pv=\"e42\", late=?0, kids=\"inv:ok:80;loy:expired:90\""
+    },
+    {
+      "name": "defaults",
+      "input": "out=ok",
+      "expect": {
+        "v": 1,
+        "out": "ok",
+        "rsn": "none",
+        "term": false,
+        "bp": 0,
+        "bpu": 0,
+        "rbu": 0,
+        "pv": "",
+        "late": false,
+        "kids": ""
+      },
+      "canonical": "v=1, out=ok, rsn=none, term=?0, bp=0, bpu=0, rbu=0, late=?0"
+    },
+    {
+      "name": "bare boolean is true",
+      "input": "out=rejected, rsn=overload, term",
+      "expect": {
+        "v": 1,
+        "out": "rejected",
+        "rsn": "overload",
+        "term": true,
+        "bp": 0,
+        "bpu": 0,
+        "rbu": 0,
+        "pv": "",
+        "late": false,
+        "kids": ""
+      },
+      "canonical": "v=1, out=rejected, rsn=overload, term=?1, bp=0, bpu=0, rbu=0, late=?0"
+    },
+    {
+      "name": "unknown members are ignored",
+      "input": "out=ok, zz=1",
+      "expect": {
+        "v": 1,
+        "out": "ok",
+        "rsn": "none",
+        "term": false,
+        "bp": 0,
+        "bpu": 0,
+        "rbu": 0,
+        "pv": "",
+        "late": false,
+        "kids": ""
+      },
+      "canonical": "v=1, out=ok, rsn=none, term=?0, bp=0, bpu=0, rbu=0, late=?0"
+    },
+    {
+      "name": "late completion",
+      "input": "out=ok, rsn=deadline, late=?1, pv=\"e7\"",
+      "expect": {
+        "v": 1,
+        "out": "ok",
+        "rsn": "deadline",
+        "term": false,
+        "bp": 0,
+        "bpu": 0,
+        "rbu": 0,
+        "pv": "e7",
+        "late": true,
+        "kids": ""
+      },
+      "canonical": "v=1, out=ok, rsn=deadline, term=?0, bp=0, bpu=0, rbu=0, pv=\"e7\", late=?1"
+    },
+    {
+      "name": "escaped child annotation",
+      "input": "out=partial, kids=\"a\\\"b\"",
+      "expect": {
+        "v": 1,
+        "out": "partial",
+        "rsn": "none",
+        "term": false,
+        "bp": 0,
+        "bpu": 0,
+        "rbu": 0,
+        "pv": "",
+        "late": false,
+        "kids": "a\"b"
+      },
+      "canonical": "v=1, out=partial, rsn=none, term=?0, bp=0, bpu=0, rbu=0, late=?0, kids=\"a\\\"b\""
+    },
+    {
+      "name": "backpressure level out of range",
+      "input": "out=ok, bp=4",
+      "error": {
+        "code": "OUT_OF_RANGE"
+      }
+    },
+    {
+      "name": "utilisation out of range",
+      "input": "out=ok, bpu=101",
+      "error": {
+        "code": "OUT_OF_RANGE"
+      }
+    },
+    {
+      "name": "duplicate member",
+      "input": "out=ok, out=failed",
+      "error": {
+        "code": "DUPLICATE_HEADER"
+      }
+    },
+    {
+      "name": "syntax error",
+      "input": "out=ok,,",
+      "error": {
+        "code": "INVALID_SYNTAX"
+      }
+    }
+  ]
+}

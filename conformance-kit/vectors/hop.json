@@ -1,0 +1,62 @@
+{
+  "description": "X-RPE-Hop decoding and canonical encoding.",
+  "cases": [
+    {
+      "name": "caller token and attempt",
+      "input": "cb=\"c-7f3a\", att=2",
+      "expectCb": "c-7f3a",
+      "expectAtt": 2,
+      "canonical": "cb=\"c-7f3a\", att=2"
+    },
+    {
+      "name": "attempt only",
+      "input": "att=1",
+      "expectCb": "",
+      "expectAtt": 1,
+      "canonical": "att=1"
+    },
+    {
+      "name": "unknown members are ignored",
+      "input": "cb=\"t\", zz=1",
+      "expectCb": "t",
+      "expectAtt": 0,
+      "canonical": "cb=\"t\""
+    },
+    {
+      "name": "attempt zero",
+      "input": "att=0",
+      "expectCb": "",
+      "expectAtt": 0,
+      "error": {
+        "code": "OUT_OF_RANGE"
+      }
+    },
+    {
+      "name": "attempt above 255",
+      "input": "att=256",
+      "expectCb": "",
+      "expectAtt": 0,
+      "error": {
+        "code": "OUT_OF_RANGE"
+      }
+    },
+    {
+      "name": "empty caller token",
+      "input": "cb=\"\"",
+      "expectCb": "",
+      "expectAtt": 0,
+      "error": {
+        "code": "OUT_OF_RANGE"
+      }
+    },
+    {
+      "name": "caller token as token",
+      "input": "cb=abc",
+      "expectCb": "",
+      "expectAtt": 0,
+      "error": {
+        "code": "INVALID_SYNTAX"
+      }
+    }
+  ]
+}

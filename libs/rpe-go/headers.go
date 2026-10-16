@@ -1,0 +1,28 @@
+package rpe
+
+const (
+	HeaderProtocolVersion         = "Protocol-Version"
+	HeaderRequestID               = "Request-Id"
+	HeaderInvocationID            = "Invocation-Id"
+	HeaderParentInvocationID      = "Parent-Invocation-Id"
+	HeaderDeadline                = "Deadline"
+	HeaderRequestDeadlineMillis   = "Request-Deadline-Millis"
+	HeaderRequestRoute            = "Request-Route"
+	HeaderRetryBudgetRemaining    = "Retry-Budget-Remaining"
+	HeaderDeadlineExceeded        = "Deadline-Exceeded"
+	HeaderCancellationTriggered   = "Cancellation-Triggered"
+	HeaderTerminalState           = "Terminal-State"
+	HeaderResponseOutcome         = "Response-Outcome"
+	HeaderResponseReason          = "Response-Reason"
+	HeaderBackpressureLevel       = "Backpressure-Level"
+	HeaderPolicyVersion           = "Policy-Version"
+	HeaderRequestMethod           = "Request-Method"
+	HeaderTraceparent             = "traceparent"
+	HeaderTracestate              = "tracestate"
+	HeaderIdempotencyKey          = "Idempotency-Key"
+	HeaderRetryAfter              = "Retry-After"
+	HeaderServiceHealth           = "Service-Health"
+	HeaderTopologyTrail           = "Topology-Trail"
+	HeaderTopologyRegistryVersion = "Topology-Registry-Version"
+	HeaderTopologyIncomplete      = "Topology-Incomplete"
+)

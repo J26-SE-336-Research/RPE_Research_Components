@@ -1,0 +1,89 @@
+{
+  "description": "X-RPE-Context canonical encoding from field values.",
+  "cases": [
+    {
+      "name": "root context",
+      "fields": {
+        "v": 1,
+        "rid": "4bf92f3577b34da6a3ce929d0e0e4736",
+        "iid": "00f067aa0ba902b7",
+        "pid": "0000000000000000",
+        "ttl": 287,
+        "bud": 300,
+        "rb": 3,
+        "cs": "none",
+        "pe": "e42",
+        "rt": "POST /api/orders"
+      },
+      "expect": "v=1, rid=\"4bf92f3577b34da6a3ce929d0e0e4736\", iid=\"00f067aa0ba902b7\", pid=\"0000000000000000\", ttl=287, bud=300, rb=3, cs=none, pe=\"e42\", rt=\"POST /api/orders\""
+    },
+    {
+      "name": "policy epoch omitted when empty",
+      "fields": {
+        "v": 1,
+        "rid": "4bf92f3577b34da6a3ce929d0e0e4736",
+        "iid": "00f067aa0ba902b7",
+        "pid": "0000000000000000",
+        "ttl": 287,
+        "bud": 300,
+        "rb": 3,
+        "cs": "none",
+        "pe": "",
+        "rt": "POST /api/orders"
+      },
+      "expect": "v=1, rid=\"4bf92f3577b34da6a3ce929d0e0e4736\", iid=\"00f067aa0ba902b7\", pid=\"0000000000000000\", ttl=287, bud=300, rb=3, cs=none, rt=\"POST /api/orders\""
+    },
+    {
+      "name": "unknown members sorted after known members",
+      "fields": {
+        "v": 1,
+        "rid": "4bf92f3577b34da6a3ce929d0e0e4736",
+        "iid": "00f067aa0ba902b7",
+        "pid": "0000000000000000",
+        "ttl": 287,
+        "bud": 300,
+        "rb": 3,
+        "cs": "none",
+        "pe": "e42",
+        "rt": "POST /api/orders",
+        "unknown": {
+          "aa": "7",
+          "zz": "\"future\""
+        }
+      },
+      "expect": "v=1, rid=\"4bf92f3577b34da6a3ce929d0e0e4736\", iid=\"00f067aa0ba902b7\", pid=\"0000000000000000\", ttl=287, bud=300, rb=3, cs=none, pe=\"e42\", rt=\"POST /api/orders\", aa=7, zz=\"future\""
+    },
+    {
+      "name": "string escaping",
+      "fields": {
+        "v": 1,
+        "rid": "4bf92f3577b34da6a3ce929d0e0e4736",
+        "iid": "00f067aa0ba902b7",
+        "pid": "0000000000000000",
+        "ttl": 287,
+        "bud": 300,
+        "rb": 3,
+        "cs": "none",
+        "pe": "e42",
+        "rt": "GET /a\"b\\c"
+      },
+      "expect": "v=1, rid=\"4bf92f3577b34da6a3ce929d0e0e4736\", iid=\"00f067aa0ba902b7\", pid=\"0000000000000000\", ttl=287, bud=300, rb=3, cs=none, pe=\"e42\", rt=\"GET /a\\\"b\\\\c\""
+    },
+    {
+      "name": "expired child",
+      "fields": {
+        "v": 1,
+        "rid": "4bf92f3577b34da6a3ce929d0e0e4736",
+        "iid": "b7ad6b7169203331",
+        "pid": "00f067aa0ba902b7",
+        "ttl": -12,
+        "bud": 300,
+        "rb": 1,
+        "cs": "expired",
+        "pe": "e42",
+        "rt": "POST /api/orders"
+      },
+      "expect": "v=1, rid=\"4bf92f3577b34da6a3ce929d0e0e4736\", iid=\"b7ad6b7169203331\", pid=\"00f067aa0ba902b7\", ttl=-12, bud=300, rb=1, cs=expired, pe=\"e42\", rt=\"POST /api/orders\""
+    }
+  ]
+}
