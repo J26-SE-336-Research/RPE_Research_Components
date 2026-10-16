@@ -15,7 +15,7 @@ client → gateway → order-svc → (parallel) inventory-svc, payment-svc, loya
           every hop: app + rpe-sidecar (injected by the C3 webhook), context X-RPE-Context (C1)
 ```
 
-**📘 Full explanation of every component and a complete run guide: [COMPONENTS.md](COMPONENTS.md).**
+See [COMPONENTS.md](COMPONENTS.md) for a description of every component and a complete run guide.
 
 ## Quick start (Kubernetes, the whole ecosystem)
 
