@@ -6,7 +6,8 @@
 **/target/
 **/bin/
 # Go binaries built in place (go build in a module directory)
-/hub/hub
+/admin-panel/server/server
+/admin-panel/server/hub
 /k8s/operator/operator
 /k8s/admission-webhook/admission-webhook
 /demo-app/demo-app

@@ -13,7 +13,7 @@ build() {
     demo-app)          docker build -t rpe/demo-app:dev -f "${ROOT}/demo-app/Dockerfile" "${ROOT}" ;;
     intelligence)      docker build -t rpe/intelligence:dev "${ROOT}/intelligence" ;;
     operator)          docker build -t rpe/operator:dev "${ROOT}/k8s/operator" ;;
-    hub)               docker build -t rpe/hub:dev -f "${ROOT}/hub/Dockerfile" "${ROOT}" ;;
+    hub)               docker build -t rpe/hub:dev -f "${ROOT}/admin-panel/server/Dockerfile" "${ROOT}" ;;
     *) die "unknown image ${name} (known: ${IMAGES[*]})" ;;
   esac
 }

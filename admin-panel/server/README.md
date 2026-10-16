@@ -3,7 +3,7 @@
 **Owner:** team. **Status:** built (e2e suites 80 and 95).
 
 The Admin Panel backend (Go):
-- serves the React console (`console/`) and the `/api/hub/*` API;
+- serves the React web app (`admin-panel/web`) and the `/api/hub/*` API;
 - signed-cookie sessions with roles `admin`, `sre` (may change the system) and `viewer` (read-only);
 - least-privilege Kubernetes RBAC.
 

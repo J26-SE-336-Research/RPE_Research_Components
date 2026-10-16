@@ -8,7 +8,7 @@ A closed-loop resilience ecosystem for HTTP microservices, built by four SLIIT f
 | C2 | Service Interceptor Layer: HTTP sidecar enforcing deadline, cancellation, backpressure, retry budget | R.R.D Pinto | `sidecar/`, `scenarios/` |
 | C3 | Kubernetes Enforcement Layer: sidecar injection, PostgreSQL policy store, Operator, consistent rollout | Kalhara D.M.R | `k8s/`, `charts/rpe/` |
 | C4 | Resilience Intelligence Layer: health classification, joint recommendations, human approval | R.M.S.B. Rathnayake | `intelligence/` |
-| Shared | Demo app, **Admin Panel** (console + rpe-hub), Prometheus + Tempo, e2e tests | team | `demo-app/`, `console/`, `hub/`, `tests/e2e/`, `deploy/` |
+| Shared | Demo app, **Admin Panel** (console + rpe-hub), Prometheus + Tempo, e2e tests | team | `demo-app/`, `admin-panel/`, `tests/e2e/`, `deploy/` |
 
 ```
 client → gateway → order-svc → (parallel) inventory-svc, payment-svc, loyalty-svc (optional), legacy-svc (no RPE) → shipping-svc
@@ -84,7 +84,7 @@ scripts/, tests/e2e/      shared  build / deploy / unit + Kubernetes e2e test sc
 spec/ bench/ services/protocol-service/                                    C1, to be built (see READMEs)
 k8s/operator/              C3  Operator + policy API (two-phase rollouts, drift repair), CRDs RPEPolicy/RPERollout
 charts/rpe/                                                                C3, to be built
-console/ hub/              shared  Admin Panel: React console + Go rpe-hub
+admin-panel/              shared  Admin Panel: React web app (web/) + Go server rpe-hub (server/)
 scenarios/                                                                 shared, to be built
 ```
 

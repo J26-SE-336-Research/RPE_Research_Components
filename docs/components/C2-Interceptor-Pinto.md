@@ -24,7 +24,7 @@ Example tasks:
 
 **Rules Claude must follow for C2 work:**
 1. Obey **Appendix A8**. Never remove a proposal commitment (§4). **The interceptor notifies; it never forcibly terminates application work.**
-2. C2 owns: `sidecar/`, `experiments/c2/`, `scenarios/` (lead), `console/src/modules/c2-interceptor/`. Don't edit other components' folders.
+2. C2 owns: `sidecar/`, `experiments/c2/`, `scenarios/` (lead), its pages in `admin-panel/web/src/pages/`. Don't edit other components' folders.
 3. **Use C1's `rpe-java` library for every header read and write.** No ad-hoc headers (no `X-Proxy-*`, no `Request_id`). If you need a new field, propose it to C1 (`spec/CHANGES.md`).
 4. Metric names and labels follow **A3.3** exactly; C4 depends on them.
 5. Java 21, Netty 4.1.x, `./mvnw -q verify` must pass. Every mechanism needs unit tests and an integration test against a stub upstream.
@@ -856,8 +856,8 @@ charts/rpe/                   C3  Helm chart for the whole platform
 experiments/c3/               C3  convergence / rollout experiments
 intelligence/                 C4  Spring Boot intelligence layer (moved v2 engine)
 experiments/c4/               C4  labelled scenarios, detector comparison, preview-error analysis
-console/                      shared  React + TS (Vite); src/modules/{c1-protocol,c2-interceptor,c3-enforcement,c4-intelligence}
-hub/                          shared  rpe-hub (auth, routing, SSE, experiments store)
+admin-panel/web/              shared  React + TS (Vite) web app; one page per function
+admin-panel/server/           shared  rpe-hub server (auth, routing, SSE, experiments store)
 demo-app/                     shared  polyglot demo services
 scenarios/                    shared  k6 scripts + fault definitions (Scenario Lab)
 deploy/observability/         shared  Grafana, OTel collector (planned); Prometheus + Tempo are built in deploy/k8s/platform/observability.yaml
@@ -915,7 +915,7 @@ Every run records ground-truth labels (start/end, fault, expected health), which
 
 **`rpe-hub`** (shared): auth and RBAC, a reverse proxy to the component APIs, the SSE hop-event stream, the experiments store (PostgreSQL schema `hub`).
 
-**Admin Console** (`console/`, shared shell; each student owns their module):
+**Admin Console** (`admin-panel/web`, shared shell; each student owns their module):
 
 - **OPERATE:** Overview · Services & Routes · Policies & Approvals · Fleet · Service Registry · Settings & Users
 - **DEMONSTRATE:** Scenario Lab · C1 Protocol · C2 Interceptor · C3 Enforcement · C4 Intelligence · Experiments
@@ -1011,7 +1011,7 @@ Every component is tested on a local **kind** cluster (`rpe`, 1 control-plane + 
 
 `make reset-data` gives a clean slate before demos; it also restarts C4, which relearns its baselines in about 5–7 minutes.
 
-**Admin Panel (built):** `console/` (React + TS, Vite) + `hub/` (Go rpe-hub: signed-cookie auth, roles admin/sre/viewer, least-privilege RBAC). `make console` serves it at http://localhost:8800. It is a function-organised operations console, **not per-student tabs**:
+**Admin Panel (built):** `admin-panel/web` (React + TS, Vite) + `admin-panel/server` (Go rpe-hub: signed-cookie auth, roles admin/sre/viewer, least-privilege RBAC). `make console` serves it at http://localhost:8800. It is a function-organised operations console, **not per-student tabs**:
 - **Monitor:** Overview, Services, Request Inspector.
 - **Configuration:** Policies, Rollouts, Recommendations (approval queue, health, reviewed, audit trail, simulation).
 - **Infrastructure:** Proxies, Workloads.

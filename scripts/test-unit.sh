@@ -4,11 +4,11 @@ source "$(dirname "$0")/lib.sh"
 require go
 failed=()
 run() { local name=$1; shift; log "unit: ${name}"; if ! "$@"; then failed+=("${name}"); fi; }
-for mod in libs/rpe-go conformance-kit/go demo-app k8s/admission-webhook k8s/operator hub; do
+for mod in libs/rpe-go conformance-kit/go demo-app k8s/admission-webhook k8s/operator admin-panel/server; do
   run "${mod}" bash -c "cd '${ROOT}/${mod}' && go vet ./... && go test -race -count=1 ./..."
 done
 if [[ "${SKIP_NODE:-0}" != "1" ]] && command -v npm >/dev/null 2>&1; then
-  run console bash -c "cd '${ROOT}/console' && { [[ -d node_modules ]] || npm ci --no-audit --no-fund >/dev/null; } && npm run -s build >/dev/null"
+  run admin-panel/web bash -c "cd '${ROOT}/admin-panel/web' && { [[ -d node_modules ]] || npm ci --no-audit --no-fund >/dev/null; } && npm run -s build >/dev/null"
 fi
 if [[ "${SKIP_JAVA:-0}" != "1" ]]; then
   # C1: rpe-java must pass the shared conformance vectors and agree with rpe-go on the differential corpus

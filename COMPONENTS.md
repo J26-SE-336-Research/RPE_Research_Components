@@ -299,7 +299,7 @@ Pages show only what is built. New capabilities are added as real pages or secti
 | **Demo app** (`demo-app/`) | One configurable Go service playing every role in the demo topology. Uses `rpe-go` and exports OpenTelemetry spans to Tempo. The gateway follows the policy its proxy enforces (active epoch and route deadlines). Fault knobs `POST /admin/faults {latencyMs, jitterMs, errorRate, cpuBurnMs, clockOffsetMs}`, side-effect counters `GET /admin/counters`, `POST /admin/reset`, fan-out policy `partial`/`all`, point of no return before committing side effects. Responses nest each child's response, so one call shows the context at every hop | Built |
 | **Demo topology** (`deploy/k8s/demo`) | `gateway → order-svc → (parallel) inventory-svc, payment-svc (~120 ms provider call), loyalty-svc (optional), legacy-svc (optional, no sidecar, no RPE) → shipping-svc`, plus `fraud-check-svc` for `fanout=all` scenarios. `rpe-traffic` (in `rpe-e2e`) sends about 3 requests/s so live telemetry always exists | Built |
 | **Kubernetes e2e tests** (`tests/e2e/`) | Bash + kubectl + jq suites against the kind cluster | Built (12 suites, 175 checks, all passing) |
-| **Admin Panel** (`console/` + `hub/`) | One operations console for the whole ecosystem (Monitor, Configuration, Infrastructure, Testing). Every action calls the real running components (see [section 2.1](#21-the-admin-panel)) | Built (e2e suite 80) |
+| **Admin Panel** (`admin-panel/web` + `admin-panel/server`) | One operations console for the whole ecosystem (Monitor, Configuration, Infrastructure, Testing). Every action calls the real running components (see [section 2.1](#21-the-admin-panel)) | Built (e2e suite 80) |
 | **Scenario Lab, k6 presets** (`scenarios/`) | k6 load profiles with ground-truth labels for C4 (the panel's Scenario Lab already drives faults and traffic) | Planned |
 | **Observability** (`deploy/k8s/platform/observability.yaml`) | Prometheus scrapes every sidecar's metrics port (pod discovery in `rpe-demo`, 5 s interval). Tempo receives OTLP spans from the demo services | Built (e2e suite 95); Grafana planned |
 
@@ -529,7 +529,7 @@ A change counts as **done** only when `make test-unit` and `make test-e2e` both 
 | Sidecar | `cd sidecar && ./mvnw -q -DskipTests package && RPE_SERVICE_NAME=gateway RPE_APP_PORT=18081 java -jar target/rpe-sidecar.jar` (uses NIO on macOS; TPROXY needs Linux) | `curl localhost:15006/api/orders`, `curl localhost:15090/metrics` |
 | Webhook | `cd k8s/admission-webhook && go test -race ./...` (it needs TLS + Kubernetes to run for real) | n/a |
 | Intelligence | `cd intelligence && RRPE_MOCK_ENABLED=true ./mvnw spring-boot:run` | `curl -s -X POST localhost:8090/api/v2/intelligence/demo/stressed \| jq` |
-| Admin Panel UI | `cd console && npm install && npm run dev` with the hub port-forwarded (`make console` in another terminal) | http://localhost:5173 (hot reload) |
+| Admin Panel UI | `cd admin-panel/web && npm install && npm run dev` with the hub port-forwarded (`make console` in another terminal) | http://localhost:5173 (hot reload) |
 
 **Demo-app environment variables:**
 
@@ -644,7 +644,7 @@ k8s/operator/               C3  Operator, CRDs and policy API
 charts/rpe/                 C3  Helm chart (planned)
 intelligence/               C4  Spring Boot intelligence layer
 demo-app/                   shared  Configurable demo microservice
-console/  hub/              shared  Admin Panel: React console + Go rpe-hub (built)
+admin-panel/web/  admin-panel/server/   shared  Admin Panel: React web app + Go server (rpe-hub)
 deploy/kind/                shared  kind cluster config
 deploy/k8s/                 shared  platform, demo and e2e manifests
 scripts/                    shared  prereqs, cluster, images, deploy, restart, unit + e2e test runners
