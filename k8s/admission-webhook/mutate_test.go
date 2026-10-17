@@ -106,6 +106,30 @@ func TestTproxyModeRunsWithGroup1337(t *testing.T) {
 	}
 }
 
+func TestPassesRouteDeadlinesAndMissingContextMode(t *testing.T) {
+	ann := map[string]string{annotationRole: "gateway", annotationRoutes: "GET /api/orders=1000;POST /api/orders=2000"}
+	patch, err := mutatePod(podJSON(ann, 8080), testCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := envMap(findContainer(t, patch, "/spec/containers/-"))
+	if env["RPE_ROUTE_DEADLINES"] != "GET /api/orders=1000;POST /api/orders=2000" {
+		t.Fatalf("route deadlines not passed to the sidecar: %v", env)
+	}
+	if env["RPE_MISSING_CONTEXT"] != "passthrough" {
+		t.Fatalf("requests without context (probes, non-RPE callers) must pass through by default: %v", env)
+	}
+	strict := testCfg
+	strict.defaultMissingContext = "reject"
+	patch, err = mutatePod(podJSON(nil, 8080), strict)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if env := envMap(findContainer(t, patch, "/spec/containers/-")); env["RPE_MISSING_CONTEXT"] != "reject" {
+		t.Fatalf("webhook default not applied: %v", env)
+	}
+}
+
 func TestOptOutAndIdempotency(t *testing.T) {
 	for _, ann := range []map[string]string{{annotationInject: "disabled"}, {annotationDone: "true"}} {
 		patch, err := mutatePod(podJSON(ann, 8080), testCfg)
@@ -123,6 +147,10 @@ func TestRejectsInvalidPods(t *testing.T) {
 		podJSON(map[string]string{annotationMode: "magic"}, 8080),
 		podJSON(map[string]string{annotationBudget: "0"}, 8080),
 		podJSON(map[string]string{annotationOut: "70000"}, 8080),
+		podJSON(map[string]string{annotationRoutes: "GET /api/orders"}, 8080),
+		podJSON(map[string]string{annotationRoutes: "GET api/orders=100"}, 8080),
+		podJSON(map[string]string{annotationRoutes: "GET /api/orders=0"}, 8080),
+		podJSON(map[string]string{annotationRoutes: "/api/orders=100"}, 8080),
 	}
 	for i, c := range cases {
 		if _, err := mutatePod(c, testCfg); err == nil {
