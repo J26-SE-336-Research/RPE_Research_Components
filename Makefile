@@ -42,4 +42,4 @@ cluster-down:    ## delete the kind cluster
 	@scripts/cluster-down.sh
 
 clean:           ## remove build outputs
-	rm -rf sidecar/target intelligence/target deploy/k8s/generated tests/e2e/reports
+	rm -rf netty-sidecar-proxy/target libs/rpe-java/target intelligence/target deploy/k8s/generated tests/e2e/reports
