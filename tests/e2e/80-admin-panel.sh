@@ -38,10 +38,9 @@ hub POST /api/hub/protocol/split '{"rb":7,"reserve":1,"n":4,"mode":"parallel"}'
 assert_eq "$(echo "${BODY}" | jq -c .grants)" "[2,2,1,1]" "C1 splitter conserves the budget"
 
 hub POST /api/hub/demos/deadline '{"latencyMs":1500}'
-assert_eq "$(echo "${BODY}" | jq -r .chain.status)" 504 "C1 deadline demo: terminal 504"
-assert_eq "$(echo "${BODY}" | jq -r .chain.result.term)" "?1" "C1 deadline demo: result is terminal"
-assert_eq "$(echo "${BODY}" | jq -r '.payment.cards_charged // 0')" 0 "C1 deadline demo: no card charged after expiry"
-assert_ge "$(echo "${BODY}" | jq -r '.payment.work_abandoned // 0')" 1 "C1 deadline demo: payment abandoned its work"
+assert_eq "$(echo "${BODY}" | jq -r .chain.status)" 200 "C1 deadline demo: the late request is served (signal, never reject)"
+assert_eq "$(echo "${BODY}" | jq -r .chain.result.cs)" expired "C1 deadline demo: the sidecars signal the cancellation (cs=expired)"
+assert_ge "$(echo "${BODY}" | jq -r '.payment.cards_charged // 0')" 1 "C1 deadline demo: payment's critical work completes"
 hub POST /api/hub/demos/fanout '{"failing":"loyalty-svc"}'
 assert_eq "$(echo "${BODY}" | jq -r '.chain.hops[] | select(.service=="order-svc") | .outcome')" partial "C1 fan-out demo: optional failure gives partial"
 

@@ -35,6 +35,7 @@ client GET "http://order-svc.rpe-demo:8080/orders" "" -H 'X-RPE-Context: v=1, ri
 assert_eq "${CODE}" 400 "invalid context rejected by a service"
 assert_contains "$(header X-RPE-Result)" "rsn=invalid-context" "rejection reason is invalid-context"
 client GET "http://payment-svc.rpe-demo:8080/pay" "" -H 'X-RPE-Context: v=1, rid="4bf92f3577b34da6a3ce929d0e0e4736", iid="00f067aa0ba902b7", pid="0000000000000000", ttl=0, bud=300, rb=1, cs=none, rt="GET /api/orders"'
-assert_eq "${CODE}" 504 "R-D02 expired-on-arrival request rejected before application logic"
-assert_contains "$(header X-RPE-Result)" "term=?1" "expired response is terminal (non-retryable)"
+assert_eq "${CODE}" 200 "an expired-on-arrival request is still served (signal, never reject)"
+assert_eq "$(field "$(echo "${BODY}" | jq -r .context)" cs)" expired "the service receives the cancellation signal (cs=expired)"
+assert_contains "$(header X-RPE-Result)" "cs=expired" "the response carries the signal back upstream"
 finish
