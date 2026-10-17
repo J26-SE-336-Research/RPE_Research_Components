@@ -729,7 +729,7 @@ Common labels: `service`, `pod`, `route`, `method`, `peer` (the other service), 
   - **new, gateway only:** `rpe_chain_requests_total{method,route}` and `rpe_chain_deadline_exceeded_total{method,route}`. They are counted from `X-RPE-Result` and capped at 64 routes.
 - Prometheus adds the `service`, `namespace` and `pod` target labels.
 - C4 counts service errors as `outcome="failed"` only, because a 429 or 504 means a protection is working, not that the service failed. It uses `avg_over_time` of `rpe_inflight_requests` as mean concurrency.
-- **Traces:** the demo services export OTLP/HTTP to `rpe-tempo.rpe-system:4318` and sample every trace.
+- **Traces:** the RPE sidecars (not the services) export OTLP/HTTP to `rpe-tempo.rpe-system:4318` and sample every trace; the webhook passes the endpoint to every injected sidecar.
   - Server spans carry `http.request.method`, `rpe.chain.route`, `rpe.direction=inbound`, `rpe.rid`, `rpe.ttl_ms`, `rpe.deadline.budget_ms`, `rpe.rb`, `rpe.policy_epoch` and `rpe.status_code`.
   - Client spans carry `rpe.direction=outbound` and `peer.service`.
   - `rpe-go`'s `Transport` keeps a same-trace `traceparent`, so the span tree stays intact.
