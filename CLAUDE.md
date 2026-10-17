@@ -1,5 +1,13 @@
 # RPE project: design rules for Claude
 
+## Hard rule: do not change the proxy's core behaviour
+
+**Never change the deadline-propagation, cancellation-propagation or backpressure-handling behaviour of the proxy
+(`netty-sidecar-proxy/`)**, even if it looks like an improvement or a test expects something else. This includes the
+deadline timer and how `ttl` is turned into a local deadline and back, how `cs` is set and passed on, the leaky
+bucket, the pressure signals, the adaptive concurrency and the circuit breaker. If a change seems needed, explain it to
+the user and wait for an explicit decision; adapt tests, demo services or other components instead.
+
 ## Deadline propagation and cancellation propagation (authoritative design)
 
 These rules are the intended design. Where existing code, tests or docs disagree (for example terminal 504 results,
