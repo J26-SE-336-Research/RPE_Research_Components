@@ -28,8 +28,14 @@ hub_login sre >/dev/null
 hub_login viewer >/dev/null
 
 # ---------- telemetry ----------
-client GET "${PROM}/api/v1/query?query=$(enc 'count(up{job="rpe-sidecars"} == 1)')"
-assert_eq "$(echo "${BODY}" | jq -r '.data.result[0].value[1] // 0')" 7 "Prometheus scrapes all 7 injected sidecars"
+# a pod replaced by the previous suite can stay in Prometheus's target list for a few seconds, so let the count settle
+scraped_sidecars() {
+  client GET "${PROM}/api/v1/query?query=$(enc 'count(up{job="rpe-sidecars"} == 1)')"
+  SCRAPED=$(echo "${BODY}" | jq -r '.data.result[0].value[1] // 0')
+  [[ "${SCRAPED}" == 7 ]]
+}
+wait_for 60 "Prometheus to settle on the 7 demo sidecars" scraped_sidecars
+assert_eq "${SCRAPED}" 7 "Prometheus scrapes all 7 injected sidecars"
 client GET "${PROM}/api/v1/query?query=$(enc 'sum(rpe_chain_requests_total{service="gateway",route="/api/orders"})')"
 assert_ge "$(echo "${BODY}" | jq -r '.data.result[0].value[1] // 0 | tonumber | floor')" 1 "gateway sidecar reports per-route chain counts"
 client GET "${TEMPO}/api/search?q=$(enc '{ resource.service.name = "gateway" && span.rpe.direction = "inbound" }')&limit=5"
