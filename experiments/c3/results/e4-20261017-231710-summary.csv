@@ -1,0 +1,5 @@
+mode,skew_ms,runs,mixed_mean,mixed_min,mixed_max,mixed_sd,convergence_ms_mean,convergence_ms_min,convergence_ms_max,convergence_ms_sd
+naive,0,3,0.00,0,0,0.00,129.7,112,141,15.5
+naive,2000,3,9.00,8,10,1.00,1536.7,766,2076,685.0
+two-phase,0,3,0.00,0,0,0.00,232.3,222,238,9.0
+two-phase,2000,3,0.00,0,0,0.00,2899.7,2538,3358,418.5

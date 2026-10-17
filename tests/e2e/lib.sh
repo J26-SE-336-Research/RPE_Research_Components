@@ -77,6 +77,27 @@ hub() {
   CODE=$out; BODY=$(k -n rpe-e2e exec e2e-client -- cat /tmp/hub-body 2>/dev/null || true)
 }
 hub_login() { hub POST /api/hub/login "{\"username\":\"$1\",\"password\":\"$1\"}" "/tmp/jar-$1"; }
+# wait_settled NAME [SECONDS] -> final phase of a rollout once its measurements settled (call it in $(...),
+# then hub GET the rollout for its status)
+wait_settled() {
+  local phase="" settled=""
+  for _ in $(seq 1 "${2:-120}"); do
+    hub GET "/api/hub/rollouts/$1"
+    phase=$(echo "${BODY}" | jq -r '.status.phase // empty')
+    settled=$(echo "${BODY}" | jq -r '.status.settled // false')
+    [[ "${phase}" == Failed || ( "${phase}" == Complete && "${settled}" == true ) ]] && break
+    sleep 1
+  done
+  echo "${phase}"
+}
+# load_start SECONDS [CONCURRENCY] -> steady GET /api/orders through the gateway in the background (load_wait)
+load_start() {
+  k -n rpe-e2e exec e2e-client -- sh -c "end=\$((\$(date +%s)+$1)); n=0; while [ \$(date +%s) -lt \$end ]; do
+    i=0; while [ \$i -lt ${2:-8} ]; do curl -s -o /dev/null --max-time 10 ${GW}/api/orders & i=\$((i+1)); done; wait; n=\$((n+${2:-8}));
+  done; echo \$n" >/tmp/rpe-load.out 2>&1 &
+  LOAD_PID=$!
+}
+load_wait() { wait "${LOAD_PID}" 2>/dev/null; LOAD_SENT=$(tail -1 /tmp/rpe-load.out 2>/dev/null | tr -dc 0-9); }
 # proxy_holds SERVICE EPOCH STATE -> number of that service's proxies holding EPOCH in STATE
 proxy_holds() {
   hub GET /api/hub/sidecars

@@ -8,10 +8,12 @@ import io.netty.handler.codec.http.HttpServerCodec;
 public final class AdminEndpointInitializer extends ChannelInitializer<SocketChannel> {
     private final ProxyConfig config;
     private final PolicyStore policies;
+    private final PolicyAcks acks;
 
-    AdminEndpointInitializer(ProxyConfig config, PolicyStore policies) {
+    AdminEndpointInitializer(ProxyConfig config, PolicyStore policies, PolicyAcks acks) {
         this.config = config;
         this.policies = policies;
+        this.acks = acks;
     }
 
     @Override
@@ -19,6 +21,6 @@ public final class AdminEndpointInitializer extends ChannelInitializer<SocketCha
         channel.pipeline()
                 .addLast("httpCodec", new HttpServerCodec())
                 .addLast("aggregator", new HttpObjectAggregator(1024 * 1024))
-                .addLast("adminHandler", new AdminEndpointHandler(config, policies));
+                .addLast("adminHandler", new AdminEndpointHandler(config, policies, acks));
     }
 }

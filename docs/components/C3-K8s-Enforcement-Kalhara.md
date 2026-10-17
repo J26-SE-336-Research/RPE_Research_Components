@@ -78,13 +78,44 @@ Admin panel: Policies (roll out / restore) and **Rollouts** pages. Migration `00
 
 **C4 integration (16 Oct 2026):** C4's `Component3Bridge` posts approved recommendations to the policy API, with `source=c4-recommendation`, `recommendationId` and `approvedBy` = the human reviewer. It then starts a two-phase rollout and polls it to Complete. Suite 95 verifies this end to end on Kubernetes. Migration `003_intel_audit.sql` adds C4's append-only audit table in the same database.
 
+**Superseded "Next" items (done 17 Oct 2026):** request-level epoch pinning, the per-epoch in-flight gauge for exact draining. |
+| **Per-request consistent rollout, PP1 novelty (17 Oct 2026)** | **Sidecar hooks** (in `netty-sidecar-proxy`, policy store, control API and metrics only; deadline, cancellation and backpressure untouched; for C2 to review, see A3.5 v0.3):
+- every inbound hop is pinned to the epoch the request carries (`pe`) when held, else the active epoch;
+- the sidecar computes the content hash of the policy it holds (SHA-256 of canonical JSON, the same as the Operator's `specHash`; shared test vectors in `PolicyStoreTest` and `TestSpecHashVectors`);
+- it sends acks (`POST /api/k8s/acks`) after stage, activate and retire;
+- it counts in-flight requests per epoch and mixed-policy hops (`rpe_policy_inflight_requests`, `rpe_policy_mismatch_total`, also in `GET /rpe/v1/policy`).
+
+**Operator:**
+- deliveries are verified by hash and the proxies' own acks are recorded (migration `004`: `confirmed_hash/state/at`);
+- two-phase drains until no target has a request pinned to the previous epoch in flight (`DRAIN_MAX_MS` is only a cap);
+- naive drops the previous epoch on each proxy as it switches (the Istio-like baseline);
+- `skewMs` sets a propagation spread per proxy, the same for both modes;
+- the mixed-policy count is relative to the rollout start and settles after completion (`SETTLE_MS`); measurements go to `RPERollout.status` and `policy.rollouts`;
+- rollouts run one at a time;
+- **coverage audit** over every `rpe-injection=enabled` namespace (`GET /api/k8s/fleet`, `rpe_injection_coverage_ratio`, `coverage-gap` events, admin **re-inject**);
+- **drift by content hash** with repair (`rpe_drift_repairs_total`; skipped while a policy is rolling out);
+- `GET /api/k8s/policies/{id}/status`;
+- the RPEPolicy status shows desired/observed/convergence/drift;
+- Operator metrics on `:8081`, scraped by Prometheus.
+
+**Console:**
+- Rollouts: **Consistency check** (live naive vs two-phase under traffic, phase steps, mixed counter, per-proxy hash/ack grid, measured-rollouts comparison);
+- Workloads: **Coverage audit** with re-inject, and **Policy enforcement** per proxy (held versions, hashes, in-flight, drift).
+
+**Tests:**
+- Operator state-machine tests with a fake proxy (two-phase order and drain, naive retire, hash mismatch → Failed, one at a time, acks);
+- e2e **91** (Operator restart catch-up and mid-rollout resume, tamper repair, coverage gap and re-inject) and **92** (naive mixed > 0 vs two-phase = 0 under traffic); 80 and 90 extended;
+- experiment script `experiments/c3/e4-consistent-rollout.sh` (repeated trials → CSV and summary).
+
+**Not yet run on a fresh cluster** (Docker was not running when this was built).
+
 **Next:**
-- regression halt using C4 health;
-- request-level epoch pinning, which needs C2 to read `pe` in the proxy (since 16 Oct the demo gateway stamps the **active epoch of its proxy**, and `spec.routes[route].deadlineMs` sets its route budgets; known limitation: the gateway proxy holds one active epoch, so a rollout for another service also flips the gateway's policy document);
-- the per-epoch in-flight gauge for exact draining (today it uses `DRAIN_MS`);
-- the push/ConfigMap/poll study;
-- the Helm chart;
-- the Istio comparison. |
+- run `make cluster-down all` and record E4 results;
+- regression halt using C4 health and admin revert (P3.4);
+- ordered rollout (P3.2);
+- the push/ConfigMap/poll study (P3.5);
+- the Helm chart (P2.5);
+- the Istio comparison (E7). |
 | Proposal note | The budget section mentions Node.js. The plan uses Go (consistent with the existing webhook and controller-runtime). Node.js isn't a functional commitment |
 
 ## 3. Problem and research gap
@@ -455,6 +486,16 @@ Repeat ≥ 5 times per configuration; report mean, min, max, sd and p95.
 3. **Demo 2:** inject a new namespace live, then kill the Operator → recovery (2 min).
 4. **Results slides:** E3 convergence chart, E4 mixed-policy table, E7 footprint.
 
+**PP1 runbook (built 17 Oct 2026).** Before the panel: `make cluster-down all` (fresh cluster, all suites green), then `make reset-data`, then `make console` (http://localhost:8800, log in as `admin`).
+1. **Injection and coverage (Workloads).** Audited coverage is 100%. Point at the proxy user 1337 and the `rpe-init` exit 0. *Optional live gap:* run the steps of `tests/e2e/91-recovery.sh` §4 (webhook down with `failurePolicy: Ignore`, create a pod), show **Pods without the proxy**, restore the webhook, click **Re-inject**.
+2. **Main novelty (Rollouts → Consistency check).** Use spread 1500–2000 ms with traffic on.
+   - **Immediate** run: the mixed-policy counter goes above 0.
+   - **Two-phase** run with the same spread: the steps go Staging → Activating (gateway first) → Draining (in-flight count on the old version) → Complete, and the counter stays at **0**.
+   - Open a rollout: per-proxy content hash **verified**, and the proxy's own **acknowledgement** time.
+   - **Measured rollouts** shows the averages side by side.
+3. **Recovery.** Run `kubectl -n rpe-system delete pod -l app=rpe-operator` during a two-phase run (spread 4000 ms): the rollout resumes and completes. Tamper with a proxy (Proxies, stage a different policy under the active epoch): **Policy enforcement** shows the hash mismatch, then **In sync** within `DRIFT_INTERVAL_MS`.
+4. **Evidence.** The output of `experiments/c3/e4-consistent-rollout.sh` (CSV and summary: mean, min, max, sd per mode and spread).
+
 **Likely questions:**
 - "Istio does this?" (§5.4)
 - "Reitblatt?" (cite it as the foundation)
@@ -462,6 +503,8 @@ Repeat ≥ 5 times per configuration; report mean, min, max, sd and p95.
 - "What if a sidecar can't hold two versions?" (the ordered fallback)
 - "Is halting autonomous modification?" (no)
 - "What's the target time?" (p95 ≤ 5 s at 50 pods)
+- "Isn't the propagation spread artificial?" (It models real fleets, where updates reach proxies at different times. Both strategies get exactly the same spread. E4 also reports spread 0, where naive's mixed window is only the in-flight requests at the switch.)
+- "Who counts the mixed requests?" (Each proxy counts them itself, `rpe_policy_mismatch_total`; the Operator only takes the difference since the rollout start.)
 
 ## 14. Risks and mitigations
 
@@ -684,7 +727,10 @@ Common labels: `service`, `pod`, `route`, `method`, `peer` (the other service), 
 | `rpe_wasted_work_seconds_total` | counter | `cause=expired\|cancelled` | Time the app kept working on requests already expired or cancelled |
 | `rpe_proxy_overhead_seconds` | histogram | | Time spent inside the sidecar |
 | `rpe_policy_info` | gauge (=1) | `epoch`, `version`, `hash`, `state=staged\|active` | Which policy a sidecar holds |
-| `rpe_mixed_policy_requests_total` | counter | | Requests that observed more than one epoch (computed by the hub from hop events) |
+| `rpe_policy_inflight_requests` | gauge | `epoch` | In-flight inbound requests pinned to each epoch (C3 drains the previous epoch until 0) |
+| `rpe_policy_requests_total` | counter | `epoch` | Inbound requests by the epoch they were served under |
+| `rpe_policy_mismatch_total` | counter | | Inbound requests served under another version of the policy than the epoch they carry |
+| `rpe_mixed_policy_requests_total` | counter | `mode` | Requests served under another version of a policy than the epoch they carry, during rollouts (exported by the C3 Operator from the sidecars' `rpe_policy_mismatch_total`) |
 
 **Trace span attributes** (OTel → Tempo): `rpe.rid`, `rpe.iid`, `rpe.pid`, `rpe.ttl_ms`, `rpe.rb`, `rpe.cs`, `rpe.decision`, `rpe.policy_epoch`, `rpe.bp_level`, `rpe.term`.
 
@@ -745,6 +791,8 @@ Common labels: `service`, `pod`, `route`, `method`, `peer` (the other service), 
 - `POST /api/k8s/policies` with body `{ policyId, source, recommendationId, scope: {service, route}, spec, approval: {approvedBy, decision: "approved"} }`. It returns 422 without an approval and responds `{ policy: {policyId, version, epoch, approvedBy, status, ...}, notification }`.
 - `POST /api/k8s/rollouts { policyId, version, mode: "two-phase" | "naive", requestedBy }` returns an `RPERollout`; `GET /api/k8s/rollouts/{name}` returns `status.phase` = Staging | Activating | Draining | Complete | Failed.
 - `GET /api/k8s/effective` (per service, from Redis), `GET /api/k8s/events`, `POST /api/k8s/acks`.
+- **v0.3 (17 Oct 2026):** `POST /api/k8s/rollouts` also takes `skewMs` (0–10000: a random delay per proxy delivery that models propagation spread, the same for every mode). `RPERollout.status` adds `stagedAt`, `activatedAt`, `convergenceMs`, `drainMs`, `mixedPolicyRequests`, `settled` and, per pod, `hash`, `verified`, `confirmedAt`. Two-phase drains until no target has a request pinned to the previous epoch in flight. Naive drops the previous epoch on each proxy as it switches. Rollouts run one at a time.
+- New: `GET /api/k8s/policies/{id}/status` (A3.4 shape), `GET /api/k8s/fleet` (coverage audit over namespaces labelled `rpe-injection=enabled`, per-proxy epochs and hashes, drift), `POST /api/k8s/fleet/reinject { namespace, pod }` (recreates a coverage-gap pod). Operator metrics on `rpe-policy-api.rpe-system:8081/metrics`: `rpe_injection_coverage_ratio`, `rpe_injection_gap_pods`, `rpe_drift_repairs_total`, `rpe_mixed_policy_requests_total{mode}`, `rpe_rollout_convergence_seconds{mode}`.
 - **New spec field:** `spec.routes: { "<METHOD /route>": { "deadlineMs": n } }` on the gateway policy. It sets the budget the gateway stamps for that route. C4's chain-deadline recommendations are delivered this way, and a policy scoped to the same route also keeps `spec.deadlineMs` in step.
 - C4 deliveries use `source=c4-recommendation`, its `recommendationId`, and `approvedBy` = the human reviewer.
 
@@ -755,13 +803,21 @@ Common labels: `service`, `pod`, `route`, `method`, `peer` (the other service), 
 | `PUT /rpe/v1/policy` | Body `{ epoch, version, hash, state: "staged" \| "active", policy }`. Stage or activate a policy bundle; idempotent by `hash` |
 | `POST /rpe/v1/policy/activate` | `{ epoch }`. Gateway role: start stamping new requests with `pe=epoch`. Service role: mark active |
 | `DELETE /rpe/v1/policy/{epoch}` | Retire an epoch once its in-flight count is 0 |
-| `GET /rpe/v1/policy` | `{ epochs: [{ epoch, version, hash, state }], activeEpoch }` (used by C3 drift checks) |
+| `GET /rpe/v1/policy` | `{ epochs: [{ epoch, version, hash, state, inflight }], activeEpoch, inflight: { epoch: n }, served: { epoch: n }, mismatched }` (C3 drift checks, drain and mixed-policy count; `hash` is computed by the sidecar) |
 | `GET /rpe/v1/policy/active` | The active policy document, or 404 (**implemented**). The co-located gateway app follows it every 2 s for its epoch (`pe`) and `spec.routes` deadlines. Known limitation: one active epoch per proxy, so another service's rollout also replaces the gateway's document |
 | `PUT /rpe/v1/mechanisms` | Toggle mechanisms (ablation), stored as part of the policy |
 | `POST /rpe/v1/backpressure` | Backpressure notification (A3.1) |
 | `GET /rpe/v1/health` | Liveness and readiness |
 
 **Ack:** after every successful PUT or activate, the sidecar calls `POST /api/k8s/acks { pod, service, epoch, version, hash, state, ts }`. C3 also polls `GET /rpe/v1/policy` for drift.
+
+**Implemented today (v0.3, 17 Oct 2026; added by C3 in the sidecar's policy code, for C2 to review):**
+- **Per-request pinning:** every inbound hop is served under the epoch the request carries (`pe`) when the sidecar holds it (staged or active), otherwise under the active epoch. The gateway serves the epoch it stamps.
+- **`pe` is fixed per chain at the gateway proxy:** on the gateway sidecar's outbound call, `pe` is the epoch the proxy pinned when the request entered, replacing the value the co-located application stamped (an application learns the active epoch by polling, so it can lag; this made old-epoch requests appear after a drain). A3.1 already defines `pe` as immutable along the chain.
+- **Content hash:** `hash` is computed by the sidecar: the first 16 hex digits of SHA-256 over the canonical JSON of the received `policy` member (keys sorted, no whitespace, integral numbers without a fraction). C3 computes the same value from the approved spec, so a match proves what the sidecar holds. A hash sent in the PUT body is ignored.
+- **Acks** are sent asynchronously after a successful PUT, activate and DELETE (`state=retired`) to `RPE_POLICY_API_URL` (set by the webhook).
+- **Mixed-policy hop:** a request served under another version of the same policy than the epoch it carries (epochs are named `<policyId>-v<n>`). It is counted as `mismatched` and `rpe_policy_mismatch_total`.
+- Only the sidecar's policy store, control API and metrics changed; deadline, cancellation and backpressure handling are untouched.
 
 ### A3.6 Intelligence API (owner: C4; used by the console and C3)
 
@@ -803,7 +859,7 @@ Common labels: `service`, `pod`, `route`, `method`, `peer` (the other service), 
 - Auth: OIDC-less local accounts with roles `admin`, `sre`, `viewer`. Approve, reject and rollout require `admin` or `sre`.
 
 **Implemented today (v0.2):**
-- `/api/hub/me|overview|chain|services|load`, `/api/hub/protocol/*`, `/api/hub/demos/*`, `/api/hub/sidecars`, `/api/hub/fleet`, `/api/hub/policies`, `/api/hub/rollouts`, `/api/hub/effective`.
+- `/api/hub/me|overview|chain|services|load`, `/api/hub/protocol/*`, `/api/hub/demos/*`, `/api/hub/sidecars`, `/api/hub/fleet`, `/api/hub/fleet/audit`, `POST /api/hub/fleet/reinject`, `/api/hub/policies`, `/api/hub/policies/{id}/status`, `/api/hub/rollouts`, `/api/hub/effective`.
 - `/api/hub/intel`, `/api/hub/intel/connections`, `/api/hub/intel/audit`, `POST /api/hub/intel/changes/{id}/review { approve, comment }` (a reason is required to reject), `POST /api/hub/intel/baselines/reset`.
 - Sessions use signed cookies. The viewer role is read-only.
 - Hop events, SSE and experiments are not built yet.
@@ -988,6 +1044,8 @@ Every component is tested on a local **kind** cluster (`rpe`, 1 control-plane + 
 2. A phase is only "done" when `make test-unit` and `make test-e2e` pass on a fresh cluster (`make cluster-down all`).
 3. Scripts must stay bash-3.2 compatible (stock macOS): no associative arrays and no `mapfile`.
 4. New images get a case in `scripts/build-images.sh` and manifests in `deploy/k8s/`, later in `charts/rpe`.
+
+**Update (17 Oct 2026):** suites **91 recovery** (Operator restart catch-up and mid-rollout resume, tampered-policy repair by hash, coverage gap and re-inject) and **92 consistent rollout** (naive mixed > 0 vs two-phase mixed = 0 under traffic) were added; 80 and 90 were extended. They have not yet run on a fresh cluster.
 
 **Status (16 Oct 2026):** 12 suites, 175 assertions, all passing:
 - 00 cluster;

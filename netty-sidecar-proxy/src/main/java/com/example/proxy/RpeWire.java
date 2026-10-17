@@ -114,6 +114,19 @@ final class RpeWire {
         }
     }
 
+    /**
+     * The same identity with the policy epoch replaced. {@code pe} is immutable along a chain (A3.1) and the gateway
+     * proxy is its authority: the epoch it pinned when the request entered replaces whatever the co-located
+     * application stamped on its outbound call (an application learns the active epoch by polling, so it can lag).
+     */
+    static Identity withEpoch(Identity identity, String epoch) {
+        RpeContext c = identity.context();
+        String pe = validEpoch(epoch);
+        if (pe.equals(c.policyEpoch())) return identity;
+        return new Identity(new RpeContext(c.version(), c.rid(), c.iid(), c.pid(), c.ttlMillis(), c.budgetMillis(),
+                c.retryBudget(), c.cancel(), pe, c.route(), c.unknown()), identity.requestedDeadlineMillis());
+    }
+
     /** Identity of an outbound call that carried only {@code Request_id}: a child of the stored inbound context. */
     static Identity child(Identity parent) {
         RpeContext context = parent.context();

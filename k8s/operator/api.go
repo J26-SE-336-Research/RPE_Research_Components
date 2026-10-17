@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"regexp"
@@ -23,6 +25,7 @@ type api struct {
 	bus     *bus
 	ns      string
 	waiters *waiters
+	fleet   *fleet
 }
 
 func (a *api) routes() http.Handler {
@@ -30,12 +33,15 @@ func (a *api) routes() http.Handler {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, "ok\n") })
 	mux.HandleFunc("GET /api/k8s/policies", a.listPolicies)
 	mux.HandleFunc("POST /api/k8s/policies", a.createPolicy)
+	mux.HandleFunc("GET /api/k8s/policies/{id}/status", a.policyStatus)
 	mux.HandleFunc("GET /api/k8s/rollouts", a.listRollouts)
 	mux.HandleFunc("POST /api/k8s/rollouts", a.createRollout)
 	mux.HandleFunc("GET /api/k8s/rollouts/{name}", a.getRollout)
 	mux.HandleFunc("GET /api/k8s/effective", a.effective)
 	mux.HandleFunc("GET /api/k8s/events", a.events)
 	mux.HandleFunc("POST /api/k8s/acks", a.ack)
+	mux.HandleFunc("GET /api/k8s/fleet", a.fleetReport)
+	mux.HandleFunc("POST /api/k8s/fleet/reinject", a.reinject)
 	return mux
 }
 
@@ -105,6 +111,7 @@ type rolloutRequest struct {
 	Version     int    `json:"version"`
 	Mode        string `json:"mode"`
 	RequestedBy string `json:"requestedBy"`
+	SkewMs      int    `json:"skewMs"`
 }
 
 func (a *api) createRollout(w http.ResponseWriter, r *http.Request) {
@@ -120,6 +127,10 @@ func (a *api) createRollout(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "mode must be two-phase or naive")
 		return
 	}
+	if in.SkewMs < 0 || in.SkewMs > 10000 {
+		writeErr(w, 400, "skewMs must be from 0 to 10000")
+		return
+	}
 	p, err := a.store.get(r.Context(), in.PolicyID, in.Version)
 	if err != nil {
 		writeErr(w, 404, "policy version not found")
@@ -129,7 +140,7 @@ func (a *api) createRollout(w http.ResponseWriter, r *http.Request) {
 		TypeMeta:   metav1.TypeMeta{APIVersion: GroupVersion.String(), Kind: "RPERollout"},
 		ObjectMeta: metav1.ObjectMeta{Name: rolloutName(p), Namespace: a.ns, Labels: map[string]string{"resilience.rpe.dev/policy": crName(p.PolicyID)}},
 		Spec: RolloutSpec{PolicyID: p.PolicyID, Version: p.Version, Epoch: p.Epoch, Service: p.Scope.Service, Mode: in.Mode,
-			PreviousEpoch: a.store.activeEpoch(r.Context(), p.PolicyID), RequestedBy: in.RequestedBy},
+			PreviousEpoch: a.store.activeEpoch(r.Context(), p.PolicyID), RequestedBy: in.RequestedBy, SkewMs: in.SkewMs},
 	}
 	if ro.Spec.PreviousEpoch == p.Epoch {
 		ro.Spec.PreviousEpoch = ""
@@ -178,7 +189,8 @@ func (a *api) events(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, ev)
 }
 
-// ack lets a proxy confirm a delivery itself (sidecar-initiated acknowledgement, contract A3.5).
+// ack lets a proxy confirm a delivery itself (sidecar-initiated acknowledgement, contract A3.5): the state and
+// the content hash the proxy computed from the policy it holds.
 func (a *api) ack(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Pod, Service, Epoch, Hash, State string
@@ -188,12 +200,91 @@ func (a *api) ack(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "pod and epoch are required")
 		return
 	}
-	if err := a.store.recordDelivery(r.Context(), in.Pod, in.Service, in.Epoch, in.Version, in.Hash, nonEmpty(in.State, "active"), ""); err != nil {
+	in.State = nonEmpty(in.State, "active")
+	if in.State != "staged" && in.State != "active" && in.State != "retired" {
+		writeErr(w, 400, "state must be staged, active or retired")
+		return
+	}
+	if err := a.store.confirm(r.Context(), in.Pod, in.Service, in.Epoch, in.Version, in.Hash, in.State); err != nil {
 		writeErr(w, 502, err.Error())
 		return
 	}
-	a.bus.ack(r.Context(), in.Epoch, in.Pod, nonEmpty(in.State, "active"))
+	a.bus.ack(r.Context(), in.Epoch, in.Pod, in.State)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// policyStatus is desired vs observed for one policy (contract A3.4): its latest rollout and the drift count.
+func (a *api) policyStatus(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	p, err := a.store.get(r.Context(), id, 0)
+	if err != nil {
+		writeErr(w, 404, "policy not found")
+		return
+	}
+	out := map[string]any{"policyId": p.PolicyID, "version": p.Version, "epoch": p.Epoch, "status": p.Status,
+		"activeEpoch": a.store.activeEpoch(r.Context(), id)}
+	var list RPERolloutList
+	if err := a.k.List(r.Context(), &list, client.InNamespace(a.ns)); err == nil {
+		var latest *RPERollout
+		for i := range list.Items {
+			ro := &list.Items[i]
+			if ro.Spec.PolicyID == id && (latest == nil || latest.CreationTimestamp.Before(&ro.CreationTimestamp)) {
+				latest = ro
+			}
+		}
+		if latest != nil {
+			staged, active := 0, 0
+			for _, ps := range latest.Status.Pods {
+				switch ps.State {
+				case "staged":
+					staged++
+				case "active":
+					active++
+				}
+			}
+			pct := 0
+			if latest.Status.TargetPods > 0 {
+				pct = active * 100 / latest.Status.TargetPods
+			}
+			out["rollout"], out["rolloutState"] = latest.Name, strings.ToLower(latest.Status.Phase)
+			out["stagedPods"], out["activePods"], out["totalPods"], out["convergencePct"] = staged, active, latest.Status.TargetPods, pct
+			out["mixedPolicyRequests"] = latest.Status.MixedPolicyRequests
+		}
+	}
+	var cr RPEPolicy
+	if err := a.k.Get(r.Context(), client.ObjectKey{Namespace: a.ns, Name: crName(id)}, &cr); err == nil {
+		out["driftPods"] = cr.Status.DriftPods
+	}
+	writeJSON(w, 200, out)
+}
+
+func (a *api) fleetReport(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
+	defer cancel()
+	rep, err := a.fleet.audit(ctx)
+	if err != nil {
+		writeErr(w, 502, err.Error())
+		return
+	}
+	writeJSON(w, 200, rep)
+}
+
+// reinject recreates a coverage-gap pod so that admission injects the sidecar (an admin action).
+func (a *api) reinject(w http.ResponseWriter, r *http.Request) {
+	var in struct{ Namespace, Pod string }
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&in); err != nil || in.Namespace == "" || in.Pod == "" {
+		writeErr(w, 400, "namespace and pod are required")
+		return
+	}
+	switch err := a.fleet.reinject(r.Context(), in.Namespace, in.Pod); {
+	case errors.Is(err, errNotGap):
+		writeErr(w, 409, err.Error())
+	case err != nil:
+		writeErr(w, 502, err.Error())
+	default:
+		a.bus.emit(r.Context(), "coverage-reinjected", map[string]string{"namespace": in.Namespace, "pod": in.Pod})
+		writeJSON(w, 202, map[string]string{"recreated": in.Namespace + "/" + in.Pod})
+	}
 }
 
 // waiters correlates API inserts with the NOTIFY the listener receives, so the caller sees the

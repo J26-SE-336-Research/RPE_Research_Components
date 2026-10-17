@@ -53,6 +53,19 @@ func TestResolveTargetsGatewaysFirst(t *testing.T) {
 	}
 }
 
+func TestServiceNameFollowsTheWebhook(t *testing.T) {
+	p := pod("x", "app-label", "", "", true)
+	p.Annotations["resilience.rpe.dev/service"] = "annotated"
+	if serviceOf(*p) != "annotated" {
+		t.Fatal("the resilience.rpe.dev/service annotation wins")
+	}
+	p = pod("x", "", "", "", true)
+	p.Labels["app.kubernetes.io/name"] = "named"
+	if serviceOf(*p) != "named" {
+		t.Fatal("app.kubernetes.io/name is the fallback")
+	}
+}
+
 func TestCreatePolicyRequiresHumanApproval(t *testing.T) {
 	a := &api{waiters: newWaiters()}
 	h := a.routes()
@@ -73,6 +86,17 @@ func TestCreatePolicyRequiresHumanApproval(t *testing.T) {
 	}
 }
 
+func TestAckRejectsUnknownStates(t *testing.T) {
+	h := (&api{waiters: newWaiters()}).routes()
+	for _, body := range []string{`{"epoch":"p-v1"}`, `{"pod":"p","epoch":"p-v1","state":"exploded"}`} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/k8s/acks", strings.NewReader(body)))
+		if rec.Code != 400 {
+			t.Fatalf("ack %s: want 400, got %d", body, rec.Code)
+		}
+	}
+}
+
 func TestWaitersMatchEpoch(t *testing.T) {
 	w := newWaiters()
 	ch := w.expect()
@@ -89,47 +113,78 @@ func TestWaitersMatchEpoch(t *testing.T) {
 	}
 }
 
-func TestSidecarClientAndHolds(t *testing.T) {
-	var got stagedPolicy
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodPut:
-			_ = json.NewDecoder(r.Body).Decode(&got)
-		case r.Method == http.MethodGet:
-			_, _ = w.Write([]byte(`{"epochs":[{"epoch":"p-v1","state":"active"},{"epoch":"p-v2","state":"staged"}],"activeEpoch":"p-v1"}`))
+func TestSpecHashVectors(t *testing.T) {
+	// the same vectors as netty-sidecar-proxy PolicyStoreTest: both sides must agree byte for byte
+	for spec, want := range map[string]string{
+		`{"deadlineMs":1200,"retry":{"budget":2,"budgetRatio":0.1},"leakyBucket":{"ratePerSec":0}}`:          "f114f22e7849eefa",
+		`{"b":[1,2.5,{"z":null,"a":true}],"a":"x\"y","n":1.0,"m":0.1,"e":1e-7,"big":1e16,"u":"café \u0001"}`: "6538ffb2b2a4413d",
+		``: "74234e98afe7498f",
+	} {
+		if got := specHash(json.RawMessage(spec)); got != want {
+			t.Errorf("specHash(%s) = %s, want %s", spec, got, want)
 		}
-	}))
-	defer srv.Close()
-	host, port, _ := strings.Cut(strings.TrimPrefix(srv.URL, "http://"), ":")
-	s := newSidecars()
-	s.port = atoi(port)
-	if err := s.put(context.Background(), host, stagedPolicy{Epoch: "p-v2", Version: 2, State: "staged", Policy: json.RawMessage(`{"deadlineMs":800}`)}); err != nil {
-		t.Fatal(err)
 	}
-	if got.Epoch != "p-v2" || got.State != "staged" {
-		t.Fatalf("sidecar received %+v", got)
-	}
-	e, err := s.epochs(context.Background(), host)
-	if err != nil || !e.holds("p-v1", "active") || e.holds("p-v2", "active") || !e.holds("p-v2", "staged") {
-		t.Fatalf("holds() wrong: %+v %v", e, err)
+	if specHash(json.RawMessage(`{"a":1,"b":2}`)) != specHash(json.RawMessage(`{"b":2, "a":1.0}`)) {
+		t.Fatal("spec hash must not depend on key order, whitespace or 1 vs 1.0")
 	}
 }
 
-func TestNamesAndHash(t *testing.T) {
+func TestSidecarClientVerifiesTheHash(t *testing.T) {
+	px := newFakeProxy(t, nil)
+	s := newSidecars()
+	spec := json.RawMessage(`{"deadlineMs":800}`)
+	held, err := s.put(context.Background(), px.addr(), stagedPolicy{Epoch: "p-v2", Version: 2, State: "staged", Policy: spec})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := held.verify("p-v2", specHash(spec)); err != nil {
+		t.Fatalf("the proxy holds the approved content: %v", err)
+	}
+	if err := held.verify("p-v2", specHash(json.RawMessage(`{"deadlineMs":900}`))); err == nil || !strings.Contains(err.Error(), "hash mismatch") {
+		t.Fatalf("other content must not verify: %v", err)
+	}
+	if err := held.verify("p-v9", "x"); err == nil {
+		t.Fatal("an epoch the proxy does not hold must not verify")
+	}
+}
+
+func TestDriftOf(t *testing.T) {
+	p := Policy{PolicyID: "pay", Epoch: "pay-v2", Spec: json.RawMessage(`{"deadlineMs":800}`)}
+	held := func(state, hash string) sidecarEpochs {
+		var e sidecarEpochs
+		e.Epochs = append(e.Epochs, struct {
+			Epoch   string `json:"epoch"`
+			Version int    `json:"version"`
+			Hash    string `json:"hash"`
+			State   string `json:"state"`
+		}{"pay-v2", 2, hash, state})
+		return e
+	}
+	good := specHash(p.Spec)
+	if d := driftOf("service", held("active", good), []Policy{p}); len(d) != 0 {
+		t.Fatalf("no drift expected: %v", d)
+	}
+	if d := driftOf("service", sidecarEpochs{}, []Policy{p}); len(d) != 1 || !strings.Contains(d[0], "missing") {
+		t.Fatalf("a restarted proxy holds nothing: %v", d)
+	}
+	if d := driftOf("service", held("active", "tampered"), []Policy{p}); len(d) != 1 || !strings.Contains(d[0], "hash mismatch") {
+		t.Fatalf("tampered content is drift: %v", d)
+	}
+	if d := driftOf("service", held("staged", good), []Policy{p}); len(d) != 1 || !strings.Contains(d[0], "not active") {
+		t.Fatalf("a service proxy must enforce the version: %v", d)
+	}
+	if d := driftOf("gateway", held("staged", good), []Policy{p}); len(d) != 0 {
+		t.Fatalf("a gateway holding the epoch serves it: %v", d)
+	}
+}
+
+func TestNamesAndSince(t *testing.T) {
 	p := Policy{PolicyID: "payment-deadline", Version: 3, Epoch: "payment-deadline-v3"}
 	n := rolloutName(p)
 	if !strings.HasPrefix(n, "payment-deadline-v3-") || len(n) > 63 {
 		t.Fatalf("rollout name %q", n)
 	}
-	if specHash(json.RawMessage(`{"a":1,"b":2}`)) != specHash(json.RawMessage(`{"b":2, "a":1}`)) {
-		t.Fatal("spec hash must not depend on key order or whitespace")
+	if since("2026-10-17T10:00:00.250Z", "2026-10-17T10:00:01Z") != 750 || since("", "2026-10-17T10:00:01Z") != 0 {
+		t.Fatal("since() must return milliseconds, or 0 when a timestamp is missing")
 	}
-}
-
-func atoi(s string) int {
-	n := 0
-	for _, c := range s {
-		n = n*10 + int(c-'0')
-	}
-	return n
 }

@@ -29,6 +29,8 @@ public final class ProxyServer implements AutoCloseable {
                     config.gatewayDeadlineRules().metricBudgets());
         }
         PolicyStore policies = new PolicyStore(active -> ActivePolicy.apply(config, active));
+        ActivePolicy.track(policies);
+        PolicyAcks acks = PolicyAcks.from(System.getenv(), config);
 
         if (!Epoll.isAvailable()) {
             throw new IllegalStateException("This TPROXY sidecar requires Netty native epoll on Linux",
@@ -55,7 +57,7 @@ public final class ProxyServer implements AutoCloseable {
                     config.metricsListenHost(), config.metricsListenPort());
             if (integration.adminListenPort() != 0) {
                 bind(config.metricsListenHost(), integration.adminListenPort(), false,
-                        new AdminEndpointInitializer(config, policies));
+                        new AdminEndpointInitializer(config, policies, acks));
                 System.out.printf("Control API listening on http://%s:%d/rpe/v1/%n",
                         config.metricsListenHost(), integration.adminListenPort());
             }

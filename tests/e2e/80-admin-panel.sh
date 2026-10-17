@@ -60,6 +60,11 @@ assert_eq "$(echo "${BODY}" | jq -r .allowed)" false "C3 admission simulator: re
 hub POST /api/hub/policies '{"policyId":"e2e-panel","service":"payment-svc","route":"GET /api/orders","deadlineMs":1200,"retryBudget":2}'
 assert_eq "$(echo "${BODY}" | jq -r .notification.channel)" rpe_policy_approved "C3 policy store: approval fires NOTIFY"
 assert_eq "$(echo "${BODY}" | jq -r .approvedBy)" admin "C3 policy store: logged-in user recorded as approver"
+hub GET /api/hub/policies/e2e-panel/status
+assert_eq "$(echo "${BODY}" | jq -r .policyId)" e2e-panel "C3 policy status: desired vs observed per policy"
+hub GET /api/hub/fleet/audit
+assert_eq "$(echo "${BODY}" | jq -r '.coverage.ratio')" 1 "C3 coverage audit: every eligible pod in the enabled namespaces runs the proxy"
+assert_ge "$(echo "${BODY}" | jq '[.pods[] | select(.sidecar)] | length')" 7 "C3 coverage audit: policy state read from every proxy"
 
 hub GET /api/hub/intel
 assert_eq "$(echo "${BODY}" | jq -r .health.status)" UP "C4: intelligence UP"
@@ -69,6 +74,8 @@ assert_ge "$(echo "${BODY}" | jq '.outcomes | length')" 1 "C4: analysis scenario
 hub POST /api/hub/login '{"username":"viewer","password":"viewer"}' /tmp/jar-viewer
 hub POST /api/hub/load '{"count":1}' /tmp/jar-viewer
 assert_eq "${CODE}" 403 "viewer role is read-only"
+hub POST /api/hub/fleet/reinject '{"namespace":"rpe-demo","pod":"x"}' /tmp/jar-viewer
+assert_eq "${CODE}" 403 "viewer cannot recreate pods"
 hub GET /api/hub/overview "" /tmp/jar-viewer
 assert_eq "${CODE}" 200 "viewer can read"
 hub POST /api/hub/services/reset-all

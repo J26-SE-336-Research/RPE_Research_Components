@@ -233,8 +233,11 @@ class ServiceProxyIntegrationTest {
         TestHttp.Response staged = TestHttp.send(adminPort, "PUT", "/rpe/v1/policy", headers(),
                 "{\"epoch\":\"e9\",\"version\":3,\"hash\":\"h\",\"state\":\"staged\",\"policy\":{\"routes\":{}}}");
         assertEquals(200, staged.status());
-        assertEquals("{\"epochs\":[{\"epoch\":\"e9\",\"version\":3,\"hash\":\"h\",\"state\":\"staged\"}],\"activeEpoch\":\"\"}",
+        // the hash is computed by the sidecar from the received policy (A3.5 v0.3), not taken from the request
+        assertTrue(staged.body().startsWith("{\"epochs\":[{\"epoch\":\"e9\",\"version\":3,\"hash\":\""
+                + PolicyStore.contentHash("{\"policy\":{\"routes\":{}}}") + "\",\"state\":\"staged\",\"inflight\":0}],\"activeEpoch\":\"\""),
                 staged.body());
+        assertTrue(staged.body().contains("\"mismatched\":0"), staged.body());
         TestHttp.Response activated = TestHttp.send(adminPort, "POST", "/rpe/v1/policy/activate", headers(),
                 "{\"epoch\":\"e9\"}");
         assertTrue(activated.body().contains("\"activeEpoch\":\"e9\""), activated.body());

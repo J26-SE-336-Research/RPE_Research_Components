@@ -31,10 +31,24 @@ type PolicySpec struct {
 	ApprovedAt string          `json:"approvedAt"`
 }
 
+// PolicyStatus is desired vs observed: the epoch that should be enforced, what each proxy reported holding,
+// the share of target proxies that confirmed it and how many proxies drifted from it.
 type PolicyStatus struct {
-	ActiveEpoch string `json:"activeEpoch,omitempty"`
-	Rollout     string `json:"rollout,omitempty"`
-	Phase       string `json:"phase,omitempty"`
+	ActiveEpoch    string        `json:"activeEpoch,omitempty"`
+	DesiredEpoch   string        `json:"desiredEpoch,omitempty"`
+	Rollout        string        `json:"rollout,omitempty"`
+	Phase          string        `json:"phase,omitempty"`
+	ConvergencePct int           `json:"convergencePct,omitempty"`
+	Observed       []ObservedPod `json:"observed,omitempty"`
+	DriftPods      int           `json:"driftPods,omitempty"`
+}
+
+// ObservedPod is what one proxy reported holding: the epoch, the content hash the proxy computed, the state.
+type ObservedPod struct {
+	Pod   string `json:"pod"`
+	Epoch string `json:"epoch"`
+	Hash  string `json:"hash,omitempty"`
+	State string `json:"state"`
 }
 
 type RPEPolicyList struct {
@@ -59,6 +73,9 @@ type RolloutSpec struct {
 	Mode          string `json:"mode"` // two-phase | naive
 	PreviousEpoch string `json:"previousEpoch,omitempty"`
 	RequestedBy   string `json:"requestedBy,omitempty"`
+	// SkewMs delays each delivery to a proxy by a random 0..SkewMs ms, modelling the propagation spread of a
+	// real fleet. It applies equally to every mode, so naive and two-phase are compared under the same timing.
+	SkewMs int `json:"skewMs,omitempty"`
 }
 
 // Rollout phases.
@@ -72,16 +89,29 @@ const (
 )
 
 type RolloutStatus struct {
-	Phase       string      `json:"phase,omitempty"`
-	Message     string      `json:"message,omitempty"`
-	TargetPods  int         `json:"targetPods,omitempty"`
-	Staged      int         `json:"staged,omitempty"`
-	Active      int         `json:"active,omitempty"`
-	StartedAt   string      `json:"startedAt,omitempty"`
-	CompletedAt string      `json:"completedAt,omitempty"`
-	DrainUntil  string      `json:"drainUntil,omitempty"`
-	Attempts    int         `json:"attempts,omitempty"`
-	Pods        []PodStatus `json:"pods,omitempty"`
+	Phase       string `json:"phase,omitempty"`
+	Message     string `json:"message,omitempty"`
+	TargetPods  int    `json:"targetPods,omitempty"`
+	Staged      int    `json:"staged,omitempty"`
+	Active      int    `json:"active,omitempty"`
+	StartedAt   string `json:"startedAt,omitempty"`
+	StagedAt    string `json:"stagedAt,omitempty"`
+	ActivatedAt string `json:"activatedAt,omitempty"`
+	CompletedAt string `json:"completedAt,omitempty"`
+	// ConvergenceMs: start until every target proxy enforces the new version. DrainMs: until no request pinned
+	// to the previous version is in flight (two-phase only).
+	ConvergenceMs int64 `json:"convergenceMs,omitempty"`
+	DrainMs       int64 `json:"drainMs,omitempty"`
+	// InflightPrevious: requests pinned to the previous epoch still in flight (last drain check).
+	InflightPrevious int64 `json:"inflightPrevious,omitempty"`
+	// MixedPolicyRequests: requests that a target proxy served under another version of the policy than the epoch
+	// they carry, counted by the proxies (rpe_policy_mismatch_total) since the rollout started.
+	MixedPolicyRequests int64            `json:"mixedPolicyRequests"`
+	MixedBaseline       map[string]int64 `json:"mixedBaseline,omitempty"`
+	// Settled: the mixed-policy count and the proxies' acknowledgements were read once more after completion.
+	Settled  bool        `json:"settled,omitempty"`
+	Attempts int         `json:"attempts,omitempty"`
+	Pods     []PodStatus `json:"pods,omitempty"`
 }
 
 type PodStatus struct {
@@ -90,6 +120,11 @@ type PodStatus struct {
 	Role    string `json:"role"` // gateway | service
 	State   string `json:"state"`
 	Error   string `json:"error,omitempty"`
+	// Hash is the content hash the proxy reported for the new epoch; Verified when it equals the approved spec's.
+	Hash     string `json:"hash,omitempty"`
+	Verified bool   `json:"verified,omitempty"`
+	// ConfirmedAt is when the proxy itself acknowledged the delivery (POST /api/k8s/acks).
+	ConfirmedAt string `json:"confirmedAt,omitempty"`
 }
 
 type RPERolloutList struct {

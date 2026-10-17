@@ -4,8 +4,11 @@ source "$(dirname "$0")/lib.sh"
 require go
 failed=()
 run() { local name=$1; shift; log "unit: ${name}"; if ! "$@"; then failed+=("${name}"); fi; }
+# the race detector needs cgo and a C compiler (not present on a stock Windows machine)
+race=""
+if command -v gcc >/dev/null 2>&1 || command -v cc >/dev/null 2>&1; then race="-race"; else warn "no C compiler: Go tests run without -race"; fi
 for mod in libs/rpe-go conformance-kit/go demo-app k8s/admission-webhook k8s/operator hub; do
-  run "${mod}" bash -c "cd '${ROOT}/${mod}' && go vet ./... && go test -race -count=1 ./..."
+  run "${mod}" bash -c "cd '${ROOT}/${mod}' && go vet ./... && CGO_ENABLED=\${CGO_ENABLED:-1} go test ${race} -count=1 ./..."
 done
 if [[ "${SKIP_NODE:-0}" != "1" ]] && command -v npm >/dev/null 2>&1; then
   run console bash -c "cd '${ROOT}/console' && { [[ -d node_modules ]] || npm ci --no-audit --no-fund >/dev/null; } && npm run -s build >/dev/null"

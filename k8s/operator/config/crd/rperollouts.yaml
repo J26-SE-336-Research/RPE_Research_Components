@@ -23,6 +23,7 @@ spec:
         - {name: Phase, type: string, jsonPath: .status.phase}
         - {name: Active, type: integer, jsonPath: .status.active}
         - {name: Targets, type: integer, jsonPath: .status.targetPods}
+        - {name: Mixed, type: integer, jsonPath: .status.mixedPolicyRequests}
         - {name: Age, type: date, jsonPath: .metadata.creationTimestamp}
       schema:
         openAPIV3Schema:
@@ -39,6 +40,7 @@ spec:
                 mode: {type: string, enum: [two-phase, naive]}
                 previousEpoch: {type: string}
                 requestedBy: {type: string}
+                skewMs: {type: integer, minimum: 0, maximum: 10000}
             status:
               type: object
               properties:
@@ -48,8 +50,17 @@ spec:
                 staged: {type: integer}
                 active: {type: integer}
                 startedAt: {type: string}
+                stagedAt: {type: string}
+                activatedAt: {type: string}
                 completedAt: {type: string}
-                drainUntil: {type: string}
+                convergenceMs: {type: integer}
+                drainMs: {type: integer}
+                inflightPrevious: {type: integer}
+                mixedPolicyRequests: {type: integer}
+                mixedBaseline:
+                  type: object
+                  additionalProperties: {type: integer}
+                settled: {type: boolean}
                 attempts: {type: integer}
                 pods:
                   type: array
@@ -61,3 +72,6 @@ spec:
                       role: {type: string}
                       state: {type: string}
                       error: {type: string}
+                      hash: {type: string}
+                      verified: {type: boolean}
+                      confirmedAt: {type: string}

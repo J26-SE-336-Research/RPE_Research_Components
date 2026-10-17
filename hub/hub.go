@@ -68,8 +68,11 @@ func (h *hub) routes() http.Handler {
 	// C3 Enforcement
 	api.HandleFunc("GET /api/hub/fleet", h.fleet)
 	api.HandleFunc("POST /api/hub/fleet/simulate", h.simulateAdmission)
+	api.HandleFunc("GET /api/hub/fleet/audit", h.fleetAudit)
+	api.HandleFunc("POST /api/hub/fleet/reinject", h.fleetReinject)
 	api.HandleFunc("GET /api/hub/policies", h.policies)
 	api.HandleFunc("POST /api/hub/policies", h.createPolicy)
+	api.HandleFunc("GET /api/hub/policies/{id}/status", h.policyStatus)
 	api.HandleFunc("GET /api/hub/rollouts", h.rollouts)
 	api.HandleFunc("POST /api/hub/rollouts", h.createRollout)
 	api.HandleFunc("GET /api/hub/rollouts/{name}", h.rollout)

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -127,6 +126,24 @@ func (s *store) active(ctx context.Context) ([]Policy, error) {
 	return out, rows.Err()
 }
 
+// rollingOut returns the policies that have a rollout in progress (their proxies are being moved on purpose).
+func (s *store) rollingOut(ctx context.Context) (map[string]bool, error) {
+	rows, err := s.pool.Query(ctx, `select distinct policy_id from policy.policies where status=$1`, StatusRollingOut)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]bool{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out[id] = true
+	}
+	return out, rows.Err()
+}
+
 func (s *store) activeEpoch(ctx context.Context, policyID string) string {
 	var epoch string
 	_ = s.pool.QueryRow(ctx, `select epoch from policy.policies where policy_id=$1 and status=$2 order by version desc limit 1`, policyID, StatusActive).Scan(&epoch)
@@ -166,6 +183,48 @@ func (s *store) recordDelivery(ctx context.Context, pod, service, epoch string, 
 		values ($1,$2,$3,$4,$5,$6,now(),$7)
 		on conflict (pod, epoch) do update set state=excluded.state, hash=excluded.hash, acked_at=now(), error=excluded.error`,
 		pod, service, epoch, version, hash, state, e)
+	return err
+}
+
+// confirm records a proxy's own acknowledgement (POST /api/k8s/acks): the state and the content hash the
+// proxy computed. The Operator's expected hash stays in `hash`, so verified = (confirmed_hash = hash).
+func (s *store) confirm(ctx context.Context, pod, service, epoch string, version int, hash, state string) error {
+	_, err := s.pool.Exec(ctx, `insert into policy.deliveries(pod, service, epoch, version, hash, state, acked_at, confirmed_state, confirmed_hash, confirmed_at)
+		values ($1,$2,$3,$4,$5,$6,now(),$6,$5,now())
+		on conflict (pod, epoch) do update set confirmed_state=excluded.confirmed_state, confirmed_hash=excluded.confirmed_hash, confirmed_at=now()`,
+		pod, service, epoch, version, hash, state)
+	return err
+}
+
+type confirmation struct {
+	Hash, State string
+	At          time.Time
+}
+
+// confirmations returns, per pod, the latest acknowledgement a proxy sent itself for epoch.
+func (s *store) confirmations(ctx context.Context, epoch string) (map[string]confirmation, error) {
+	rows, err := s.pool.Query(ctx, `select pod, confirmed_hash, confirmed_state, confirmed_at from policy.deliveries
+		where epoch=$1 and confirmed_at is not null`, epoch)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]confirmation{}
+	for rows.Next() {
+		var pod string
+		var c confirmation
+		if err := rows.Scan(&pod, &c.Hash, &c.State, &c.At); err != nil {
+			return nil, err
+		}
+		out[pod] = c
+	}
+	return out, rows.Err()
+}
+
+// recordMeasurements stores the consistent-rollout measurements of a finished rollout (experiment E4).
+func (s *store) recordMeasurements(ctx context.Context, name string, st RolloutStatus, skewMs int) error {
+	_, err := s.pool.Exec(ctx, `update policy.rollouts set skew_ms=$2, mixed_policy_requests=$3, convergence_ms=$4, drain_ms=$5 where name=$1`,
+		name, skewMs, st.MixedPolicyRequests, st.ConvergenceMs, st.DrainMs)
 	return err
 }
 
@@ -217,15 +276,4 @@ func (s *store) listen(ctx context.Context, url string, onNotify func(payload st
 		}
 		conn.Close(context.Background())
 	}
-}
-
-func specHash(spec json.RawMessage) string {
-	var v any
-	_ = json.Unmarshal(spec, &v)
-	b, _ := json.Marshal(v)
-	sum := 0
-	for _, c := range b {
-		sum = (sum*31 + int(c)) & 0x7fffffff
-	}
-	return fmt.Sprintf("%08x", sum)
 }

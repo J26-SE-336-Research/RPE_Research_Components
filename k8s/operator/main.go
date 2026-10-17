@@ -1,9 +1,10 @@
 // Command rpe-operator is the C3 RPE Operator and policy API.
 //
 // It detects approved policies through PostgreSQL LISTEN/NOTIFY (with catch-up from policy_events after
-// downtime), mirrors them as RPEPolicy resources, drives RPERollout resources through a two-phase
-// (stage → activate at the gateway first → drain) or naive rollout to the running proxies, records every
-// delivery, keeps a Redis fast path (events, effective policies, acks) and repairs drift.
+// downtime), mirrors them as RPEPolicy resources, drives RPERollout resources through a per-request
+// consistent two-phase rollout (stage → activate at the gateway first → drain the previous epoch's in-flight
+// requests) or a naive rollout, verifies every delivery by content hash, counts mixed-policy requests, keeps a
+// Redis fast path (events, effective policies, acks), audits injection coverage and repairs drift.
 package main
 
 import (
@@ -38,7 +39,7 @@ func main() {
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                 scheme,
 		Cache:                  cache.Options{DefaultNamespaces: map[string]cache.Config{ns: {}}},
-		Metrics:                metricsserver.Options{BindAddress: "0"},
+		Metrics:                metricsserver.Options{BindAddress: env("METRICS_ADDR", ":8081")},
 		HealthProbeBindAddress: "0",
 	})
 	must(err)
@@ -48,11 +49,14 @@ func main() {
 	b := newBus(env("REDIS_ADDR", "rpe-redis.rpe-system:6379"))
 	side := newSidecars()
 	rec := &RolloutReconciler{Client: mgr.GetClient(), reader: mgr.GetAPIReader(), store: st, bus: b, side: side, demoNS: demoNS,
-		drain: time.Duration(envInt("DRAIN_MS", 2000)) * time.Millisecond, attempts: envInt("MAX_ATTEMPTS", 30)}
+		drain:    time.Duration(envInt("DRAIN_MAX_MS", envInt("DRAIN_MS", 30000))) * time.Millisecond,
+		settle:   time.Duration(envInt("SETTLE_MS", 3000)) * time.Millisecond,
+		attempts: envInt("MAX_ATTEMPTS", 30)}
 	must(ctrl.NewControllerManagedBy(mgr).For(&RPERollout{}).Complete(rec))
 
 	w := newWaiters()
-	a := &api{k: mgr.GetClient(), store: st, bus: b, ns: ns, waiters: w}
+	fl := &fleet{reader: mgr.GetAPIReader(), writer: mgr.GetClient(), store: st, side: side, bus: b, ns: ns}
+	a := &api{k: mgr.GetClient(), store: st, bus: b, ns: ns, waiters: w, fleet: fl}
 	srv := &http.Server{Addr: ":" + env("PORT", "8080"), Handler: a.routes(), ReadHeaderTimeout: 10 * time.Second}
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -71,7 +75,8 @@ func main() {
 			w.notify(payload)
 			mirror()
 		}, mirror)
-		repairDrift(ctx, time.Duration(envInt("DRIFT_INTERVAL_MS", 10000))*time.Millisecond, mgr.GetAPIReader(), st, b, side, demoNS)
+		// coverage audit + drift detection and repair over the fleet
+		fl.run(ctx, time.Duration(envInt("DRIFT_INTERVAL_MS", 10000))*time.Millisecond, env("DRIFT_REPAIR", "true") == "true")
 	}()
 
 	log.Printf("rpe-operator: policy API on %s, rollouts in %s, proxies in %s", srv.Addr, ns, demoNS)

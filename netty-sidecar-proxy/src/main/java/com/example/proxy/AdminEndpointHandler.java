@@ -19,16 +19,18 @@ import java.nio.charset.StandardCharsets;
 
 /**
  * Control API used by Component 3 (Operator, Admin Panel) on the admin port (contract A3.5): health, and staged /
- * active policy epochs.
+ * active policy epochs. Every successful change is acknowledged to the Component 3 policy API ({@link PolicyAcks}).
  */
 public final class AdminEndpointHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
     private static final String POLICY = "/rpe/v1/policy";
     private final ProxyConfig config;
     private final PolicyStore policies;
+    private final PolicyAcks acks;
 
-    AdminEndpointHandler(ProxyConfig config, PolicyStore policies) {
+    AdminEndpointHandler(ProxyConfig config, PolicyStore policies, PolicyAcks acks) {
         this.config = config;
         this.policies = policies;
+        this.acks = acks;
     }
 
     @Override
@@ -55,12 +57,21 @@ public final class AdminEndpointHandler extends SimpleChannelInboundHandler<Full
             response = put(body);
         } else if (path.equals(POLICY + "/activate") && method.equals(HttpMethod.POST)) {
             String epoch = text(body, "epoch");
-            response = epoch != null && policies.activate(epoch) ? json(HttpResponseStatus.OK, policies.toJson())
-                    : json(HttpResponseStatus.NOT_FOUND, "{\"error\":\"unknown epoch\"}");
+            if (epoch != null && policies.activate(epoch)) {
+                acks.send(policies.get(epoch), "active");
+                response = json(HttpResponseStatus.OK, policies.toJson());
+            } else {
+                response = json(HttpResponseStatus.NOT_FOUND, "{\"error\":\"unknown epoch\"}");
+            }
         } else if (path.startsWith(POLICY + "/") && method.equals(HttpMethod.DELETE)) {
             String epoch = path.substring(POLICY.length() + 1);
-            response = policies.retire(epoch) ? json(HttpResponseStatus.OK, policies.toJson())
-                    : json(HttpResponseStatus.CONFLICT, "{\"error\":\"epoch is active or unknown\"}");
+            PolicyStore.Entry held = policies.get(epoch);
+            if (policies.retire(epoch)) {
+                acks.send(held, "retired");
+                response = json(HttpResponseStatus.OK, policies.toJson());
+            } else {
+                response = json(HttpResponseStatus.CONFLICT, "{\"error\":\"epoch is active or unknown\"}");
+            }
         } else {
             response = json(HttpResponseStatus.NOT_FOUND, "{\"error\":\"not found\"}");
         }
@@ -87,8 +98,10 @@ public final class AdminEndpointHandler extends SimpleChannelInboundHandler<Full
             return json(HttpResponseStatus.BAD_REQUEST, "{\"error\":\"state must be staged or active\"}");
         }
         JsonNode version = document.get("version");
-        policies.put(epoch, version != null && version.isNumber() ? version.asLong() : 0,
-                string(document.get("hash")), parsed, body);
+        // the stored hash is computed from the received policy, never taken from the request
+        PolicyStore.Entry entry = policies.put(epoch, version != null && version.isNumber() ? version.asLong() : 0,
+                parsed, body);
+        acks.send(entry, parsed.name().toLowerCase(java.util.Locale.ROOT));
         return json(HttpResponseStatus.OK, policies.toJson());
     }
 

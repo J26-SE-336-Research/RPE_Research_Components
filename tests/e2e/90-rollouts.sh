@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # C3: policy API + Operator. Two-phase and immediate rollouts to the running proxies, supersede/restore,
-# Redis fast path, RPEPolicy mirror, deliveries in PostgreSQL, and drift repair after a pod restart.
+# Redis fast path, RPEPolicy mirror, deliveries in PostgreSQL verified by content hash and acknowledged by the
+# proxies, drain of the previous epoch, and drift repair after a pod restart.
 source "$(dirname "$0")/lib.sh"
 for crd in rpepolicies rperollouts; do
   assert_eq "$(k get crd "${crd}.resilience.rpe.dev" -o jsonpath='{.spec.group}' 2>/dev/null)" resilience.rpe.dev "CRD ${crd} installed"
@@ -44,11 +45,25 @@ assert_ge "$(echo "${BODY}" | jq --arg r "${r1}" '[.[] | select(.type=="rollout-
 pg=$(k -n rpe-system get pod -l app=rpe-postgres -o jsonpath='{.items[0].metadata.name}')
 deliv=$(k -n rpe-system exec "${pg}" -- psql -U rpe -d rpe -At -c "select count(*) from policy.deliveries where epoch='${e1}' and state='active'")
 assert_ge "${deliv}" 2 "deliveries recorded per proxy in PostgreSQL"
+hub GET "/api/hub/rollouts/${r1}"
+assert_eq "$(echo "${BODY}" | jq '[.status.pods[] | select(.verified)] | length')" "$(echo "${BODY}" | jq -r '.status.targetPods')" "every proxy holds ${e1} with the approved content hash (verified)"
+acked=0
+for _ in $(seq 1 15); do
+  acked=$(k -n rpe-system exec "${pg}" -- psql -U rpe -d rpe -At -c "select count(*) from policy.deliveries where epoch='${e1}' and confirmed_state='active' and confirmed_hash=hash")
+  [[ "${acked}" -ge 2 ]] && break
+  sleep 1
+done
+assert_ge "${acked}" 2 "proxies acknowledged ${e1} themselves with the same hash (POST /api/k8s/acks)"
+expected_hash=$(echo "${BODY}" | jq -r '[.status.pods[] | select(.service=="payment-svc") | .hash][0]')
+client GET "http://$(pod_ip payment-svc):15020/rpe/v1/policy"
+assert_eq "$(echo "${BODY}" | jq -r --arg e "${e1}" '.epochs[] | select(.epoch==$e) | .hash')" "${expected_hash}" "the proxy reports the content hash it computed itself"
 
 # v2: new version supersedes v1; v1 is retired from the proxies after the drain
 hub POST /api/hub/policies "{\"policyId\":\"${id}\",\"service\":\"payment-svc\",\"route\":\"GET /api/orders\",\"deadlineMs\":900,\"retryBudget\":1,\"rollout\":\"two-phase\"}"
 r2=$(echo "${BODY}" | jq -r .rollout.metadata.name); e2="${id}-v2"
 assert_eq "$(wait_rollout "${r2}")" Complete "rollout of ${e2} completes"
+hub GET "/api/hub/rollouts/${r2}"
+assert_eq "$(echo "${BODY}" | jq -r '(.status.inflightPrevious // 0) == 0 and (.status.activatedAt != null)')" true "two-phase drained until no request pinned to ${e1} was in flight"
 assert_eq "$(proxy_holds payment-svc "${e1}" active)" 0 "previous version ${e1} retired from the proxies"
 hub GET /api/hub/policies
 assert_eq "$(echo "${BODY}" | jq -r --arg e "${e1}" '.policies[] | select(.epoch==$e) | .status')" superseded "store marks ${e1} superseded"

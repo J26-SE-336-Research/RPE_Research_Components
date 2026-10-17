@@ -691,7 +691,10 @@ Common labels: `service`, `pod`, `route`, `method`, `peer` (the other service), 
 | `rpe_wasted_work_seconds_total` | counter | `cause=expired\|cancelled` | Time the app kept working on requests already expired or cancelled |
 | `rpe_proxy_overhead_seconds` | histogram | | Time spent inside the sidecar |
 | `rpe_policy_info` | gauge (=1) | `epoch`, `version`, `hash`, `state=staged\|active` | Which policy a sidecar holds |
-| `rpe_mixed_policy_requests_total` | counter | | Requests that observed more than one epoch (computed by the hub from hop events) |
+| `rpe_policy_inflight_requests` | gauge | `epoch` | In-flight inbound requests pinned to each epoch (C3 drains the previous epoch until 0) |
+| `rpe_policy_requests_total` | counter | `epoch` | Inbound requests by the epoch they were served under |
+| `rpe_policy_mismatch_total` | counter | | Inbound requests served under another version of the policy than the epoch they carry |
+| `rpe_mixed_policy_requests_total` | counter | `mode` | Requests served under another version of a policy than the epoch they carry, during rollouts (exported by the C3 Operator from the sidecars' `rpe_policy_mismatch_total`) |
 
 **Trace span attributes** (OTel → Tempo): `rpe.rid`, `rpe.iid`, `rpe.pid`, `rpe.ttl_ms`, `rpe.rb`, `rpe.cs`, `rpe.decision`, `rpe.policy_epoch`, `rpe.bp_level`, `rpe.term`.
 
@@ -752,6 +755,8 @@ Common labels: `service`, `pod`, `route`, `method`, `peer` (the other service), 
 - `POST /api/k8s/policies` with body `{ policyId, source, recommendationId, scope: {service, route}, spec, approval: {approvedBy, decision: "approved"} }`. It returns 422 without an approval and responds `{ policy: {policyId, version, epoch, approvedBy, status, ...}, notification }`.
 - `POST /api/k8s/rollouts { policyId, version, mode: "two-phase" | "naive", requestedBy }` returns an `RPERollout`; `GET /api/k8s/rollouts/{name}` returns `status.phase` = Staging | Activating | Draining | Complete | Failed.
 - `GET /api/k8s/effective` (per service, from Redis), `GET /api/k8s/events`, `POST /api/k8s/acks`.
+- **v0.3 (17 Oct 2026):** `POST /api/k8s/rollouts` also takes `skewMs` (0–10000: a random delay per proxy delivery that models propagation spread, the same for every mode). `RPERollout.status` adds `stagedAt`, `activatedAt`, `convergenceMs`, `drainMs`, `mixedPolicyRequests`, `settled` and, per pod, `hash`, `verified`, `confirmedAt`. Two-phase drains until no target has a request pinned to the previous epoch in flight. Naive drops the previous epoch on each proxy as it switches. Rollouts run one at a time.
+- New: `GET /api/k8s/policies/{id}/status` (A3.4 shape), `GET /api/k8s/fleet` (coverage audit over namespaces labelled `rpe-injection=enabled`, per-proxy epochs and hashes, drift), `POST /api/k8s/fleet/reinject { namespace, pod }` (recreates a coverage-gap pod). Operator metrics on `rpe-policy-api.rpe-system:8081/metrics`: `rpe_injection_coverage_ratio`, `rpe_injection_gap_pods`, `rpe_drift_repairs_total`, `rpe_mixed_policy_requests_total{mode}`, `rpe_rollout_convergence_seconds{mode}`.
 - **New spec field:** `spec.routes: { "<METHOD /route>": { "deadlineMs": n } }` on the gateway policy. It sets the budget the gateway stamps for that route. C4's chain-deadline recommendations are delivered this way, and a policy scoped to the same route also keeps `spec.deadlineMs` in step.
 - C4 deliveries use `source=c4-recommendation`, its `recommendationId`, and `approvedBy` = the human reviewer.
 
@@ -762,13 +767,21 @@ Common labels: `service`, `pod`, `route`, `method`, `peer` (the other service), 
 | `PUT /rpe/v1/policy` | Body `{ epoch, version, hash, state: "staged" \| "active", policy }`. Stage or activate a policy bundle; idempotent by `hash` |
 | `POST /rpe/v1/policy/activate` | `{ epoch }`. Gateway role: start stamping new requests with `pe=epoch`. Service role: mark active |
 | `DELETE /rpe/v1/policy/{epoch}` | Retire an epoch once its in-flight count is 0 |
-| `GET /rpe/v1/policy` | `{ epochs: [{ epoch, version, hash, state }], activeEpoch }` (used by C3 drift checks) |
+| `GET /rpe/v1/policy` | `{ epochs: [{ epoch, version, hash, state, inflight }], activeEpoch, inflight: { epoch: n }, served: { epoch: n }, mismatched }` (C3 drift checks, drain and mixed-policy count; `hash` is computed by the sidecar) |
 | `GET /rpe/v1/policy/active` | The active policy document, or 404 (**implemented**). The co-located gateway app follows it every 2 s for its epoch (`pe`) and `spec.routes` deadlines. Known limitation: one active epoch per proxy, so another service's rollout also replaces the gateway's document |
 | `PUT /rpe/v1/mechanisms` | Toggle mechanisms (ablation), stored as part of the policy |
 | `POST /rpe/v1/backpressure` | Backpressure notification (A3.1) |
 | `GET /rpe/v1/health` | Liveness and readiness |
 
 **Ack:** after every successful PUT or activate, the sidecar calls `POST /api/k8s/acks { pod, service, epoch, version, hash, state, ts }`. C3 also polls `GET /rpe/v1/policy` for drift.
+
+**Implemented today (v0.3, 17 Oct 2026; added by C3 in the sidecar's policy code, for C2 to review):**
+- **Per-request pinning:** every inbound hop is served under the epoch the request carries (`pe`) when the sidecar holds it (staged or active), otherwise under the active epoch. The gateway serves the epoch it stamps.
+- **`pe` is fixed per chain at the gateway proxy:** on the gateway sidecar's outbound call, `pe` is the epoch the proxy pinned when the request entered, replacing the value the co-located application stamped (an application learns the active epoch by polling, so it can lag; this made old-epoch requests appear after a drain). A3.1 already defines `pe` as immutable along the chain.
+- **Content hash:** `hash` is computed by the sidecar: the first 16 hex digits of SHA-256 over the canonical JSON of the received `policy` member (keys sorted, no whitespace, integral numbers without a fraction). C3 computes the same value from the approved spec, so a match proves what the sidecar holds. A hash sent in the PUT body is ignored.
+- **Acks** are sent asynchronously after a successful PUT, activate and DELETE (`state=retired`) to `RPE_POLICY_API_URL` (set by the webhook).
+- **Mixed-policy hop:** a request served under another version of the same policy than the epoch it carries (epochs are named `<policyId>-v<n>`). It is counted as `mismatched` and `rpe_policy_mismatch_total`.
+- Only the sidecar's policy store, control API and metrics changed; deadline, cancellation and backpressure handling are untouched.
 
 ### A3.6 Intelligence API (owner: C4; used by the console and C3)
 
@@ -810,7 +823,7 @@ Common labels: `service`, `pod`, `route`, `method`, `peer` (the other service), 
 - Auth: OIDC-less local accounts with roles `admin`, `sre`, `viewer`. Approve, reject and rollout require `admin` or `sre`.
 
 **Implemented today (v0.2):**
-- `/api/hub/me|overview|chain|services|load`, `/api/hub/protocol/*`, `/api/hub/demos/*`, `/api/hub/sidecars`, `/api/hub/fleet`, `/api/hub/policies`, `/api/hub/rollouts`, `/api/hub/effective`.
+- `/api/hub/me|overview|chain|services|load`, `/api/hub/protocol/*`, `/api/hub/demos/*`, `/api/hub/sidecars`, `/api/hub/fleet`, `/api/hub/fleet/audit`, `POST /api/hub/fleet/reinject`, `/api/hub/policies`, `/api/hub/policies/{id}/status`, `/api/hub/rollouts`, `/api/hub/effective`.
 - `/api/hub/intel`, `/api/hub/intel/connections`, `/api/hub/intel/audit`, `POST /api/hub/intel/changes/{id}/review { approve, comment }` (a reason is required to reject), `POST /api/hub/intel/baselines/reset`.
 - Sessions use signed cookies. The viewer role is read-only.
 - Hop events, SSE and experiments are not built yet.
@@ -995,6 +1008,8 @@ Every component is tested on a local **kind** cluster (`rpe`, 1 control-plane + 
 2. A phase is only "done" when `make test-unit` and `make test-e2e` pass on a fresh cluster (`make cluster-down all`).
 3. Scripts must stay bash-3.2 compatible (stock macOS): no associative arrays and no `mapfile`.
 4. New images get a case in `scripts/build-images.sh` and manifests in `deploy/k8s/`, later in `charts/rpe`.
+
+**Update (17 Oct 2026):** suites **91 recovery** (Operator restart catch-up and mid-rollout resume, tampered-policy repair by hash, coverage gap and re-inject) and **92 consistent rollout** (naive mixed > 0 vs two-phase mixed = 0 under traffic) were added; 80 and 90 were extended. They have not yet run on a fresh cluster.
 
 **Status (16 Oct 2026):** 12 suites, 175 assertions, all passing:
 - 00 cluster;

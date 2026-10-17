@@ -27,6 +27,8 @@ spec:
             - {name: DEFAULT_DEADLINE_MS, value: "1000"}
             # every injected sidecar exports its spans to Tempo (the services themselves do not trace)
             - {name: OTEL_EXPORTER_OTLP_ENDPOINT, value: "http://rpe-tempo.rpe-system:4318"}
+            # sidecars acknowledge every policy delivery to the C3 policy API (POST /api/k8s/acks)
+            - {name: POLICY_API_URL, value: "http://rpe-policy-api.rpe-system"}
           readinessProbe:
             httpGet: {path: /healthz, port: 8443, scheme: HTTPS}
             periodSeconds: 3

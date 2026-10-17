@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -391,6 +392,7 @@ type policyInput struct {
 	RetryRatio  float64 `json:"retryRatio"`
 	RatePerSec  int     `json:"ratePerSec"`
 	Rollout     string  `json:"rollout"` // "", two-phase, naive
+	SkewMs      int     `json:"skewMs"`  // simulated propagation spread per proxy (same for every mode)
 }
 
 // createPolicy publishes a new approved version (the signed-in user is the approver) and optionally
@@ -439,7 +441,7 @@ func (h *hub) createPolicy(w http.ResponseWriter, r *http.Request) {
 		"approvedBy": created.Policy.ApprovedBy, "notification": created.Notification}
 	if in.Rollout == "two-phase" || in.Rollout == "naive" {
 		_, _, rb, _, err := h.call(r.Context(), http.MethodPost, h.cfg.policyAPIURL+"/api/k8s/rollouts",
-			map[string]any{"policyId": created.Policy.PolicyID, "version": created.Policy.Version, "mode": in.Rollout, "requestedBy": u.Name})
+			map[string]any{"policyId": created.Policy.PolicyID, "version": created.Policy.Version, "mode": in.Rollout, "requestedBy": u.Name, "skewMs": in.SkewMs})
 		if err == nil {
 			out["rollout"] = json.RawMessage(rb)
 		}
@@ -460,12 +462,37 @@ func (h *hub) createRollout(w http.ResponseWriter, r *http.Request) {
 		PolicyID string `json:"policyId"`
 		Version  int    `json:"version"`
 		Mode     string `json:"mode"`
+		SkewMs   int    `json:"skewMs"`
 	}
 	if err := decode(r, &in); err != nil {
 		writeErr(w, 400, err.Error())
 		return
 	}
-	h.relay(w, r, http.MethodPost, "/api/k8s/rollouts", map[string]any{"policyId": in.PolicyID, "version": in.Version, "mode": in.Mode, "requestedBy": userOf(r.Context()).Name})
+	h.relay(w, r, http.MethodPost, "/api/k8s/rollouts", map[string]any{"policyId": in.PolicyID, "version": in.Version, "mode": in.Mode,
+		"requestedBy": userOf(r.Context()).Name, "skewMs": in.SkewMs})
+}
+
+func (h *hub) policyStatus(w http.ResponseWriter, r *http.Request) {
+	h.relay(w, r, http.MethodGet, "/api/k8s/policies/"+url.PathEscape(r.PathValue("id"))+"/status", nil)
+}
+
+// fleetAudit is the Operator's fleet view: coverage audit over every RPE-enabled namespace, the epochs and
+// content hashes each proxy holds, and drift.
+func (h *hub) fleetAudit(w http.ResponseWriter, r *http.Request) {
+	h.relay(w, r, http.MethodGet, "/api/k8s/fleet", nil)
+}
+
+// fleetReinject recreates a pod that runs without the sidecar (coverage gap) so admission injects it.
+func (h *hub) fleetReinject(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Namespace string `json:"namespace"`
+		Pod       string `json:"pod"`
+	}
+	if err := decode(r, &in); err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	h.relay(w, r, http.MethodPost, "/api/k8s/fleet/reinject", in)
 }
 
 func (h *hub) effective(w http.ResponseWriter, r *http.Request) {

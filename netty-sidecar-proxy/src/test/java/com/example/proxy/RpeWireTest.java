@@ -31,6 +31,23 @@ class RpeWireTest {
     }
 
     @Test
+    void withEpochReplacesOnlyThePolicyEpoch() {
+        RpeWire.Identity identity = RpeWire.readRequest(new DefaultHttpHeaders().set(RpeWire.CONTEXT, CONTEXT), 10_000);
+        RpeWire.Identity pinned = RpeWire.withEpoch(identity, "e2");
+        assertEquals("e2", pinned.context().policyEpoch());
+        assertEquals(identity.context().rid(), pinned.context().rid());
+        assertEquals(identity.context().iid(), pinned.context().iid());
+        assertEquals(identity.context().ttlMillis(), pinned.context().ttlMillis());
+        assertEquals(identity.context().retryBudget(), pinned.context().retryBudget());
+        assertEquals(identity.context().cancel(), pinned.context().cancel());
+        assertEquals(identity.context().route(), pinned.context().route());
+        assertEquals(identity.context().unknown(), pinned.context().unknown());
+        assertEquals(identity.requestedDeadlineMillis(), pinned.requestedDeadlineMillis());
+        assertSame(identity, RpeWire.withEpoch(identity, "e1"), "nothing to replace");
+        assertEquals("", RpeWire.withEpoch(identity, "").context().policyEpoch(), "a chain stamped without an epoch stays without one");
+    }
+
+    @Test
     void cancellationStatesMapToTheFlags() {
         HttpHeaders expired = new DefaultHttpHeaders().set(RpeWire.CONTEXT, CONTEXT.replace("cs=none", "cs=expired"));
         RpeWire.readRequest(expired, 0);

@@ -21,6 +21,8 @@ spec:
         - {name: Version, type: integer, jsonPath: .spec.version}
         - {name: Active, type: string, jsonPath: .status.activeEpoch}
         - {name: Phase, type: string, jsonPath: .status.phase}
+        - {name: Converged, type: integer, jsonPath: .status.convergencePct}
+        - {name: Drift, type: integer, jsonPath: .status.driftPods}
         - {name: Approved-By, type: string, jsonPath: .spec.approvedBy}
       schema:
         openAPIV3Schema:
@@ -42,5 +44,17 @@ spec:
               type: object
               properties:
                 activeEpoch: {type: string}
+                desiredEpoch: {type: string}
                 rollout: {type: string}
                 phase: {type: string}
+                convergencePct: {type: integer}
+                driftPods: {type: integer}
+                observed:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      pod: {type: string}
+                      epoch: {type: string}
+                      hash: {type: string}
+                      state: {type: string}

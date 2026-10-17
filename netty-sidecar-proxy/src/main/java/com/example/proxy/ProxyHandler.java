@@ -302,6 +302,12 @@ public final class ProxyHandler extends SimpleChannelInboundHandler<FullHttpRequ
                     : RpeWire.root(requestId, chainMethod, route, budgetMillis,
                             config.integration().rootRetryBudget(), ActivePolicy.epoch());
         }
+        if (gatewaySidecar && outboundRedirect && identity != null && storedContext != null) {
+            // Component 3 per-request consistency: the epoch pinned when the request entered the gateway proxy is
+            // the chain's epoch; the application's own (polled, possibly lagging) value must not replace it.
+            RpeWire.Identity root = RpeWire.restore(storedContext.get(RpeWire.STORED_CONTEXT));
+            if (root != null) identity = RpeWire.withEpoch(identity, root.context().policyEpoch());
+        }
         final RpeWire.Identity activeIdentity = identity;
         HttpHeaders contextHeaders = new DefaultHttpHeaders();
         contextHeaders.set(REQUEST_ID, requestId);
@@ -331,6 +337,13 @@ public final class ProxyHandler extends SimpleChannelInboundHandler<FullHttpRequ
         Span requestSpan = ProxyTelemetry.startHop(request.method().name(), route, requestId, budgetMillis,
                 deadline, outboundRedirect, outboundRedirect ? destination.getHostString() : "", parentContext,
                 RpeWire.isRequestId(requestId) ? requestId : null);
+        if (!outboundRedirect) {
+            // Component 3 per-request policy consistency: this hop serves the request under the policy epoch it
+            // carries (pe) when held here; the pin is released when the hop completes.
+            String pinnedEpoch = ActivePolicy.pin(hop,
+                    activeIdentity == null ? "" : activeIdentity.context().policyEpoch(), gatewayInbound);
+            if (!pinnedEpoch.isEmpty()) requestSpan.setAttribute("rpe.policy_epoch", pinnedEpoch);
+        }
         boolean ownsContext = false;
         Object contextGeneration = null;
         if (storedContext == null) {
