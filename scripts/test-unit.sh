@@ -14,7 +14,8 @@ if [[ "${SKIP_JAVA:-0}" != "1" ]]; then
   # C1: rpe-java must pass the shared conformance vectors and agree with rpe-go on the differential corpus
   run differential-corpus bash -c "cd '${ROOT}/conformance-kit/go' && go run ./cmd/difffuzz -n 5000 -seed \"\${RPE_FUZZ_SEED:-1}\" ../generated/differential.json"
   run rpe-java bash -c "cd '${ROOT}/libs/rpe-java' && ./mvnw -q -B verify"
-  run sidecar bash -c "cd '${ROOT}/sidecar' && ./mvnw -q -B verify"
+  # C2 sidecar (netty-sidecar-proxy) builds against rpe-java; its integration tests need Linux epoll (skipped elsewhere)
+  run sidecar bash -c "cd '${ROOT}/libs/rpe-java' && ./mvnw -q -B -DskipTests install && ./mvnw -q -B -f '${ROOT}/netty-sidecar-proxy/pom.xml' verify"
   run intelligence bash -c "cd '${ROOT}/intelligence' && ./mvnw -q -B test"
 fi
 if [[ ${#failed[@]} -gt 0 ]]; then die "unit tests failed: ${failed[*]}"; fi
