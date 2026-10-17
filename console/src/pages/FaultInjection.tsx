@@ -207,10 +207,9 @@ function ExperimentsTab() {
         {d ? (
           <div className="kpis">
             <Kpi label="Client response" value={<Status tone={httpTone(d.chain.status)}>{d.chain.status}</Status>} foot={`after ${d.chain.ms} ms`} />
-            <Kpi label="Retryable" value={d.chain.result?.term === "?1" ? "No" : "Yes"} />
-            <Kpi label="Payments charged" value={d.payment.cards_charged ?? 0} />
-            <Kpi label="Payment work abandoned" value={d.payment.work_abandoned ?? 0} />
-            <Kpi label="Stock reserved" value={d.inventory.stock_reserved ?? 0} foot="committed before the deadline" />
+            <Kpi label="Cancellation signal" value={d.chain.result?.cs ?? "none"} foot="set by the sidecars when the deadline passed" />
+            <Kpi label="Payments charged" value={d.payment.cards_charged ?? 0} foot="critical work completes even when late" />
+            <Kpi label="Stock reserved" value={d.inventory.stock_reserved ?? 0} />
           </div>
         ) : (
           <Empty>Not run yet.</Empty>

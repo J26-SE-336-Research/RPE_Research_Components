@@ -110,8 +110,8 @@ func delta(after, before map[string]int64) map[string]int64 {
 	return out
 }
 
-// demoDeadline: slow payment beyond the gateway budget, then show the terminal 504 and that payment
-// abandoned its work before the point of no return (no card charged) while inventory committed.
+// demoDeadline: slow payment beyond the gateway budget. Signal, never reject: the late request is still served,
+// the sidecars signal the cancellation (cs=expired in X-RPE-Result) and payment's critical work completes.
 func (h *hub) demoDeadline(w http.ResponseWriter, r *http.Request) {
 	var in struct{ LatencyMs int }
 	_ = decode(r, &in)
@@ -123,7 +123,7 @@ func (h *hub) demoDeadline(w http.ResponseWriter, r *http.Request) {
 	time.Sleep(500 * time.Millisecond)
 	payBefore, invBefore := h.counters(r, "payment-svc"), h.counters(r, "inventory-svc")
 	res := h.runChain(r.Context(), "/api/orders")
-	time.Sleep(time.Duration(min(in.LatencyMs, 2500))*time.Millisecond + 300*time.Millisecond) // let payment observe its deadline
+	time.Sleep(300 * time.Millisecond) // let the counters settle
 	pay, inv := delta(h.counters(r, "payment-svc"), payBefore), delta(h.counters(r, "inventory-svc"), invBefore)
 	_, _, _, _, _ = h.call(r.Context(), http.MethodPost, svcURL("payment-svc", "/admin/faults"), map[string]any{})
 	writeJSON(w, 200, map[string]any{"latencyMs": in.LatencyMs, "chain": res, "payment": pay, "inventory": inv})
