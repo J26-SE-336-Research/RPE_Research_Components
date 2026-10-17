@@ -5,7 +5,7 @@ A closed-loop resilience ecosystem for HTTP microservices, built by four SLIIT f
 | # | Component | Owner | Code |
 |---|---|---|---|
 | C1 | Protocol & Specification Layer: `X-RPE-*` context, Java/Go libraries, conformance, in-band trail | Ruwanmali K.H | `spec/`, `libs/rpe-go/`, `libs/rpe-java/`, `conformance-kit/`, `bench/`, `services/protocol-service/` |
-| C2 | Service Interceptor Layer: HTTP sidecar enforcing deadline, cancellation, backpressure, retry budget | R.R.D Pinto | `sidecar/`, `scenarios/` |
+| C2 | Service Interceptor Layer: HTTP sidecar propagating deadline and cancellation signals, backpressure handling (retry budget next) | R.R.D Pinto | `netty-sidecar-proxy/`, `scenarios/` |
 | C3 | Kubernetes Enforcement Layer: sidecar injection, PostgreSQL policy store, Operator, consistent rollout | Kalhara D.M.R | `k8s/`, `charts/rpe/` |
 | C4 | Resilience Intelligence Layer: health classification, joint recommendations, human approval | R.M.S.B. Rathnayake | `intelligence/` |
 | Shared | Demo app, **Admin Panel** (console + rpe-hub), Prometheus + Tempo, e2e tests | team | `demo-app/`, `console/`, `hub/`, `tests/e2e/`, `deploy/` |
@@ -56,8 +56,8 @@ kubectl --context kind-rpe -n rpe-e2e exec e2e-client -- \
 | `00-cluster` | Platform and demo topology are available |
 | `10-webhook-injection` | C3: 100% injection coverage, opt-out, namespace scoping, admission validation |
 | `20-traffic-interception` | C2/C3: inbound and outbound traffic through sidecars, **including root containers** (legacy uid-0 bypass fixed) |
-| `30-context-propagation` | C1: `X-RPE-Context` rules R-T01..R-T06, budget conservation, trust boundary, unknown edge, invalid/expired rejection |
-| `35-deadline-cancellation` | C1/C2: deadline enforced, cooperative cancellation, point of no return (no charge after expiry), terminal results |
+| `30-context-propagation` | C1: `X-RPE-Context` rules R-T01..R-T06, budget conservation, trust boundary, unknown edge, invalid-context rejection, expired-on-arrival request served with `cs=expired` |
+| `35-deadline-cancellation` | C1/C2: signal, never reject: a late chain is served and signalled as `cs=expired` downstream and upstream; non-critical work is skipped, critical work (payment) completes |
 | `40-fanout` | C1: partial vs whole fan-out outcomes with per-child annotation |
 | `50-sidecar-control-api` | C2/C3 contract: health, staged/active policy epochs, metrics |
 | `60-policy-store` | C3: approval required (FR10), NOTIFY on approval, append-only policies |
@@ -74,7 +74,7 @@ kubectl --context kind-rpe -n rpe-e2e exec e2e-client -- \
 libs/rpe-go/              C1  Go library: X-RPE-Context codec, context guard, deadline, ledger, splitter, middleware + transport
 libs/rpe-java/            C1  Java library: same codec/guard/splitter, admission step, java.net.http adapter
 conformance-kit/          C1  103 shared vectors (rpe-go and rpe-java both 100%) + Java-vs-Go differential corpus
-sidecar/                  C2  Java 21 + Netty sidecar (pass-through skeleton: pooled proxying, control API, contract metrics)
+netty-sidecar-proxy/      C2  Java 21 + Netty sidecar: deadline/cancellation signal propagation, backpressure, control API, contract metrics
 k8s/admission-webhook/    C3  Mutating webhook (hardened: UID/GID 1337, REDIRECT/TPROXY modes, tests)
 k8s/policy-store/         C3  PostgreSQL schema: approval-enforced, append-only, LISTEN/NOTIFY (+ Redis fast path, deploy/k8s/platform/redis.yaml)
 intelligence/             C4  Spring Boot intelligence layer: live Prometheus/Tempo analysis, approval queue, delivery to C3, audit

@@ -46,6 +46,7 @@ Example tasks:
 | Netty sidecar | **Exists** in `_research/old_shits/netty-sidecar-proxy/` (Java 17, Netty 4.1.115, about 1,400 LOC, **1 trivial test**). Works for deadline and cancellation *flags* in a TPROXY setup: the gateway creates a request id and an absolute deadline per route (`GatewayDeadlineRules`); sidecars store context per request id and detect expiry with a timer; OTel spans and Prometheus metrics exist |
 | Problems | (1) Doesn't use C1's library; uses its own headers `Request_id`, `deadlinevalue`, `deadlineExceded` (misspelled), `cancellation_Triggered`, `Request_route`, `Request_deadline_millis`, `Request_method`. (2) **A new TCP connection per request** (new `Bootstrap` each time, no pooling), which would ruin the overhead results. (3) Cancellation only flips a flag; nothing is delivered to the app or downstream connections. (4) **Retry budget missing.** (5) **Backpressure missing** in this repo (C2's newer code with 7 `X-Proxy-*`/`X-Backpressure-*` headers isn't committed). (6) A static global `ConcurrentHashMap` keyed by request id; a 500-line god class (`ProxyHandler`); INFO log per request; `HttpObjectAggregator` buffers whole bodies (10 MB) |
 | Worth reusing | TPROXY original-destination handling; loopback forwarding for inbound (avoids re-interception); gateway trust boundary (regenerate the context at the edge, never trust the client); `GatewayDeadlineRules` (method + path-template → budget); OTel / Prometheus setup in `ProxyTelemetry` and `ProxyMetrics`; the `DEADLINE_TPROXY_GUIDE.md` notes |
+| **Update (16 Oct 2026)** | The `sidecar/` skeleton below was replaced by `netty-sidecar-proxy/` (deadline/cancellation signal propagation, backpressure, control API, contract metrics) and removed from the repository. The image is still `rpe/sidecar:dev`. |
 | **Built in the monorepo (15 Oct 2026)** | `sidecar/`: a clean Java 21 + Netty **pass-through skeleton** (P1.1 done). It has:
 - an outbound listener 15001 (destination from the Host header or absolute URI);
 - an inbound listener 15006 (REDIRECT → `127.0.0.1:RPE_APP_PORT`; TPROXY keeps the original port);
@@ -710,7 +711,7 @@ Common labels: `service`, `pod`, `route`, `method`, `peer` (the other service), 
   - **new, gateway only:** `rpe_chain_requests_total{method,route}` and `rpe_chain_deadline_exceeded_total{method,route}`. They are counted from `X-RPE-Result` and capped at 64 routes.
 - Prometheus adds the `service`, `namespace` and `pod` target labels.
 - C4 counts service errors as `outcome="failed"` only, because a 429 or 504 means a protection is working, not that the service failed. It uses `avg_over_time` of `rpe_inflight_requests` as mean concurrency.
-- **Traces:** the demo services export OTLP/HTTP to `rpe-tempo.rpe-system:4318` and sample every trace.
+- **Traces:** the RPE sidecars (not the services) export OTLP/HTTP to `rpe-tempo.rpe-system:4318` and sample every trace; the webhook passes the endpoint to every injected sidecar.
   - Server spans carry `http.request.method`, `rpe.chain.route`, `rpe.direction=inbound`, `rpe.rid`, `rpe.ttl_ms`, `rpe.deadline.budget_ms`, `rpe.rb`, `rpe.policy_epoch` and `rpe.status_code`.
   - Client spans carry `rpe.direction=outbound` and `peer.service`.
   - `rpe-go`'s `Transport` keeps a same-trace `traceparent`, so the span tree stays intact.
