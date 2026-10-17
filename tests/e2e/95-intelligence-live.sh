@@ -56,7 +56,8 @@ gw_budget_is() { gateway_policy; [[ "${GW_ORDERS_BUDGET}" == "$1" ]]; }
 wait_for 90 "the gateway to enforce 100 ms" gw_budget_is 100
 sleep 3
 client GET "${GW}/api/orders"
-assert_eq "${CODE}" 504 "requests now fail on the deadline"
+assert_eq "${CODE}" 200 "requests are still served: the deadline is signalled, never enforced by rejecting"
+assert_contains "$(header X-RPE-Result)" "cs=expired" "but every chain now exceeds its deadline (cs=expired)"
 
 proposal() {
   intel_status

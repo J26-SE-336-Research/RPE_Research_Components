@@ -70,6 +70,8 @@ for _ in $(seq 1 40); do
   sleep 1
 done
 assert_eq "${repaired}" 1 "drift repaired: the new payment-svc pod received ${e1} without a new rollout"
+# leave no terminating pod behind for the next suite (95 counts the scraped sidecars)
+k -n rpe-demo wait --for=delete pod/"${old}" --timeout=120s >/dev/null 2>&1 || true
 client GET http://rpe-policy-api.rpe-system/api/k8s/events
 assert_ge "$(echo "${BODY}" | jq '[.[] | select(.type=="drift-repaired")] | length')" 1 "drift repair recorded in the event stream"
 finish
