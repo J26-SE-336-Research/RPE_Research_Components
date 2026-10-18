@@ -85,8 +85,11 @@ Source: the user's `BACKPRESSURE_HANDLING_GUIDE.md` (netty-proxy, port 9090, `BA
 - Decided: no maximum outbound concurrency; the user does not want it.
 - Done: internal `X-Proxy-*` headers are stripped from application requests; metrics use `rpe_*` names; queue waiting
   time counts against the deadline (the timer starts before the request is queued).
-- Open: rates could be made configurable per service via the C3 policy store (today: env vars and
-  `/backpressure/config`).
+- Done (18 Oct 2026, with the C2 owner's agreement): a rate-limit policy delivered by C3 sets the inbound
+  leaky-bucket rate when it is activated (`policy.leakyBucket.ratePerSec` only; staged policies are not enforced, a
+  policy without a valid rate leaves the rate alone). The queue capacity is never changed by a policy (a `queueCapacity`
+  in a policy is ignored) and the bucket's mechanism is unchanged (`ActivePolicy`,
+  `BackpressureController.applyPolicyRate`). Env vars and `/backpressure/config` still work.
 
 ## Observability belongs to the proxy (user decision, 16 Oct 2026)
 

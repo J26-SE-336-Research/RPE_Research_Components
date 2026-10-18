@@ -694,7 +694,7 @@ Common labels: `service`, `pod`, `route`, `method`, `peer` (the other service), 
 | `rpe_policy_inflight_requests` | gauge | `epoch` | In-flight inbound requests pinned to each epoch (C3 drains the previous epoch until 0) |
 | `rpe_policy_requests_total` | counter | `epoch` | Inbound requests by the epoch they were served under |
 | `rpe_policy_mismatch_total` | counter | | Inbound requests served under another version of the policy than the epoch they carry |
-| `rpe_mixed_policy_requests_total` | counter | `mode` | Requests served under another version of a policy than the epoch they carry, during rollouts (exported by the C3 Operator from the sidecars' `rpe_policy_mismatch_total`) |
+| `rpe_mixed_policy_requests_total` | counter | `mode` | Requests served under another version of a policy than the epoch they carry, during rollouts (exported by the C3 Operator from the sidecars' `rpe_policy_mismatch_total`). Informational version skew: it shows that versions overlapped during a rollout, not that a request was handled wrongly |
 
 **Trace span attributes** (OTel → Tempo): `rpe.rid`, `rpe.iid`, `rpe.pid`, `rpe.ttl_ms`, `rpe.rb`, `rpe.cs`, `rpe.decision`, `rpe.policy_epoch`, `rpe.bp_level`, `rpe.term`.
 
@@ -755,6 +755,7 @@ Common labels: `service`, `pod`, `route`, `method`, `peer` (the other service), 
 - `POST /api/k8s/policies` with body `{ policyId, source, recommendationId, scope: {service, route}, spec, approval: {approvedBy, decision: "approved"} }`. It returns 422 without an approval and responds `{ policy: {policyId, version, epoch, approvedBy, status, ...}, notification }`.
 - `POST /api/k8s/rollouts { policyId, version, mode: "two-phase" | "naive", requestedBy }` returns an `RPERollout`; `GET /api/k8s/rollouts/{name}` returns `status.phase` = Staging | Activating | Draining | Complete | Failed.
 - `GET /api/k8s/effective` (per service, from Redis), `GET /api/k8s/events`, `POST /api/k8s/acks`.
+- **Delivery targets (v0.3.1, 18 Oct 2026):** a policy is delivered only to the sidecars its scope names. A policy scoped to `gateway` (the chain deadline, `spec.routes[route].deadlineMs`) goes to the gateway sidecars only; a policy scoped to any other service (rate limit `spec.leakyBucket.ratePerSec`, retry ratio `spec.retry.budgetRatio`) goes to that service's sidecars only, never to the gateway. The three controls are independent versions. Delivery succeeds when the target sidecar holds the version with the approved content hash and has acknowledged it; enforcing the rate limit and the retry ratio is the sidecar's job (C2). The hub's `POST /api/hub/policies` takes `control` (`chain-deadline`, `rate-limit` or `retry-ratio`) and merges only that control into the service's current policy.
 - **v0.3 (17 Oct 2026):** `POST /api/k8s/rollouts` also takes `skewMs` (0–10000: a random delay per proxy delivery that models propagation spread, the same for every mode). `RPERollout.status` adds `stagedAt`, `activatedAt`, `convergenceMs`, `drainMs`, `mixedPolicyRequests`, `settled` and, per pod, `hash`, `verified`, `confirmedAt`. Two-phase drains until no target has a request pinned to the previous epoch in flight. Naive drops the previous epoch on each proxy as it switches. Rollouts run one at a time.
 - New: `GET /api/k8s/policies/{id}/status` (A3.4 shape), `GET /api/k8s/fleet` (coverage audit over namespaces labelled `rpe-injection=enabled`, per-proxy epochs and hashes, drift), `POST /api/k8s/fleet/reinject { namespace, pod }` (recreates a coverage-gap pod). Operator metrics on `rpe-policy-api.rpe-system:8081/metrics`: `rpe_injection_coverage_ratio`, `rpe_injection_gap_pods`, `rpe_drift_repairs_total`, `rpe_mixed_policy_requests_total{mode}`, `rpe_rollout_convergence_seconds{mode}`.
 - **New spec field:** `spec.routes: { "<METHOD /route>": { "deadlineMs": n } }` on the gateway policy. It sets the budget the gateway stamps for that route. C4's chain-deadline recommendations are delivered this way, and a policy scoped to the same route also keeps `spec.deadlineMs` in step.
@@ -781,7 +782,8 @@ Common labels: `service`, `pod`, `route`, `method`, `peer` (the other service), 
 - **Content hash:** `hash` is computed by the sidecar: the first 16 hex digits of SHA-256 over the canonical JSON of the received `policy` member (keys sorted, no whitespace, integral numbers without a fraction). C3 computes the same value from the approved spec, so a match proves what the sidecar holds. A hash sent in the PUT body is ignored.
 - **Acks** are sent asynchronously after a successful PUT, activate and DELETE (`state=retired`) to `RPE_POLICY_API_URL` (set by the webhook).
 - **Mixed-policy hop:** a request served under another version of the same policy than the epoch it carries (epochs are named `<policyId>-v<n>`). It is counted as `mismatched` and `rpe_policy_mismatch_total`.
-- Only the sidecar's policy store, control API and metrics changed; deadline, cancellation and backpressure handling are untouched.
+- **Rate limit is enforced (v0.3.2, 18 Oct 2026, with C2's agreement):** activating a policy whose `policy.leakyBucket.ratePerSec` is valid (above 0, at most 1000000) sets the release rate of the inbound leaky bucket. Only the rate is applied (the value the runtime update `POST :15090/backpressure/config` also sets); the queue capacity is never changed by a policy, and the bucket's mechanism is unchanged. A staged policy is not enforced, a policy without a valid rate leaves the current rate alone, and `queueCapacity` and `burst` in a policy are ignored. The sidecar acknowledges after it applied the rate; the effective rate is `rpe_backpressure_inbound_rate_per_second`.
+- Apart from that rate, only the sidecar's policy store, control API and metrics changed; deadline and cancellation handling are untouched.
 
 ### A3.6 Intelligence API (owner: C4; used by the console and C3)
 
@@ -838,7 +840,9 @@ PostgreSQL stays the **system of record** (approvals, immutable versions, rollou
 | `rpe:effective:<service>` | hash | The policy the service currently enforces (`policyId`, `version`, `epoch`, `spec`, `approvedBy`, `updatedAt`) |
 | `rpe:acks:<epoch>` | hash | pod → `staged \| active \| retired \| failed` (24 h TTL) |
 | `rpe:policy:changed` | pub/sub | `{service, policyId, version, epoch}` when a version becomes active (C4 and C2 may subscribe) |
-| `rpe:operator:last-event-id` | string | The Operator's catch-up checkpoint into `policy.policy_events` |
+| `rpe:operator:last-event-id` | string | Legacy only (read once to carry the position over): the Operator's catch-up checkpoint now lives in PostgreSQL, `policy.operator_state` |
+
+**Redis is disposable (v0.3.3, 18 Oct 2026).** Redis runs without persistence and may be empty after a restart or a flush. Nothing correct depends on it: the catch-up position is in PostgreSQL, and the Operator rebuilds any `rpe:effective:<service>` entry that is missing from the newest approved active policy in PostgreSQL (without publishing a change message; it never replaces an entry that exists). Components that read `GET /api/k8s/effective` (the hub, C4's bridge) can therefore rely on it to build the next version of a service's policy.
 
 ## A4. Who owns what on shared topics (one novelty per person)
 
