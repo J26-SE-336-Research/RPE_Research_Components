@@ -1,6 +1,7 @@
 package org.rrpe.intelligence.adaptive;
 
 import static org.rrpe.intelligence.adaptive.AdaptiveModels.*;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import java.time.Instant;
 import java.util.*;
 import org.springframework.stereotype.Component;
@@ -19,19 +20,62 @@ public class TempoWindows {
         this.http = http; this.connections = connections; this.settings = settings;
     }
     private record Span(String id, String parent, String service, String route, String method, long start, long end, boolean server, String peer) {}
+    /**
+     * One parsed trace. {@code status} is the gateway root's {@code http.response.status_code} (null if absent);
+     * {@code deadlineEvent} is true when any span carries the proxy's {@code deadline.exceeded} event.
+     */
     public record TraceSample(String id, String route, String method, List<String> services, double durationMs, long start, long end,
-            Double deadlineMs, int orphanSpans) {
+            Double deadlineMs, int orphanSpans, Integer status, boolean deadlineEvent) {
+        public TraceSample(String id, String route, String method, List<String> services, double durationMs, long start, long end,
+                Double deadlineMs, int orphanSpans) {
+            this(id, route, method, services, durationMs, start, end, deadlineMs, orphanSpans, null, false);
+        }
         public TraceSample(String id, String route, String method, List<String> services, double durationMs, long start, long end, Double deadlineMs) {
             this(id, route, method, services, durationMs, start, end, deadlineMs, 0);
         }
     }
     public record PathEvidence(List<String> services, int traceCount, double p99Ms) {}
     public record Coverage(int traceCount, Double prometheusCount, Double tolerance, boolean accepted) {}
+    /** {@code samples} feeds deadline v2; it is not part of the JSON API (a window can hold thousands of requests). */
     public record Collection(ChainWindow window, Double currentDeadlineMs, List<String> problems,
-            List<PathEvidence> paths, Coverage coverage) {
+            List<PathEvidence> paths, Coverage coverage, @JsonIgnore ChainSamples samples) {
+        public Collection(ChainWindow window, Double currentDeadlineMs, List<String> problems, List<PathEvidence> paths, Coverage coverage) {
+            this(window, currentDeadlineMs, problems, paths, coverage, null);
+        }
         public Collection(ChainWindow window, Double currentDeadlineMs, List<String> problems) {
             this(window, currentDeadlineMs, problems, List.of(), null);
         }
+    }
+
+    /** Share of the budget within which a 504 counts as "cut at the deadline" by a rejecting middleware. */
+    static final double NEAR_DEADLINE = .05;
+
+    /**
+     * Turns parsed traces into deadline v2 samples (guide §5.1, §5.3, §5.4). Excluded, by reason: backpressure 503s (the
+     * rate lever's), 4xx client errors, traces without a stamped budget. Kept but marked {@code cut}: 504 near the
+     * deadline (an older rejecting middleware), other 504 and 499 (outer timeout or client abort), 502 (abnormal end).
+     * Slow 5xx are kept. Expiry: the {@code deadline.exceeded} span event, else {@code duration >= budget} (inferred).
+     */
+    public static ChainSamples deadlineSamples(List<TraceSample> traces) {
+        var samples = new ArrayList<DeadlineSample>(); var excluded = new TreeMap<String, Integer>();
+        for (TraceSample trace : traces) {
+            int status = trace.status() == null ? 0 : trace.status();
+            String reason = null;
+            if (trace.deadlineMs() == null || trace.deadlineMs() <= 0) reason = "NO_BUDGET";
+            else if (status == 503) reason = "BACKPRESSURE_503";
+            else if (status >= 400 && status < 499) reason = "CLIENT_4XX";
+            if (reason != null) { excluded.merge(reason, 1, Integer::sum); continue; }
+            long budget = Math.round(trace.deadlineMs());
+            String hint = null;
+            if (status == 504) hint = Math.abs(trace.durationMs() - budget) <= budget * NEAR_DEADLINE ? "REJECTING_MIDDLEWARE" : "OUTER_TIMEOUT_OR_CLIENT";
+            else if (status == 499) hint = "OUTER_TIMEOUT_OR_CLIENT";
+            else if (status == 502) hint = "ABNORMAL_END";
+            boolean late = trace.durationMs() >= budget;
+            samples.add(new DeadlineSample(trace.id(), trace.method(), trace.route(), Instant.ofEpochSecond(0, trace.end()),
+                    trace.durationMs(), status, budget, new TreeSet<>(trace.services()), trace.deadlineEvent() || late,
+                    !trace.deadlineEvent() && late, hint != null, hint, null));
+        }
+        return new ChainSamples(samples, excluded);
     }
 
     public static double coverageTolerance(double count) { return Math.max(1.0, count * .10); }
@@ -110,7 +154,8 @@ public class TempoWindows {
             windows.add(new Collection(new ChainWindow(group.getKey(), List.copyOf(services), start, end, Source.TEMPO, covered,
                     count, failures, percentile99(samples.stream().mapToDouble(TraceSample::durationMs).toArray()), chainHealth,
                     samples.stream().map(TraceSample::id).limit(5).toList()), deadline, List.copyOf(problems), paths,
-                    new Coverage(samples.size(), count, count != null && Double.isFinite(count) && count > 0 ? coverageTolerance(count) : null, covered)));
+                    new Coverage(samples.size(), count, count != null && Double.isFinite(count) && count > 0 ? coverageTolerance(count) : null, covered),
+                    deadlineSamples(samples)));
         }
         return windows;
     }
@@ -123,11 +168,14 @@ public class TempoWindows {
         if (!resourceSpans.isArray()) resourceSpans = trace.path("batches");
         if (!resourceSpans.isArray()) throw new IllegalArgumentException("Missing OTLP resource spans");
         var spans = new ArrayList<Span>();
+        boolean deadlineEvent = false;
         for (var resource : resourceSpans) {
             String service = attributes(resource.path("resource").path("attributes")).get("service.name");
             var scopes = resource.path("scopeSpans"); if (!scopes.isArray()) scopes = resource.path("instrumentationLibrarySpans");
             for (var scope : scopes) for (var raw : scope.path("spans")) {
                 var attrs = attributes(raw.path("attributes"));
+                // The proxy records a "deadline.exceeded" (or ".propagated") span event when it detects the chain expired.
+                for (var event : raw.path("events")) if (event.path("name").asString("").startsWith("deadline.exceeded")) deadlineEvent = true;
                 String name = attrs.getOrDefault("service.name", service);
                 long from = Long.parseLong(raw.path("startTimeUnixNano").asString()); long to = Long.parseLong(raw.path("endTimeUnixNano").asString());
                 if (name == null || to <= from) throw new IllegalArgumentException("Incomplete span timing or service");
@@ -160,15 +208,19 @@ public class TempoWindows {
         // An outbound hop without a downstream server span was answered by the transport or a proxy (e.g. a local
         // deadline rejection); the request duration is still complete, so the trace stays valid.
         if (services.isEmpty() || !services.get(0).equals(connections.gatewayService())) throw new IllegalArgumentException("Ordered path must start at gateway");
-        String budget = null;
+        String budget = null; String status = null;
         for (var resource : resourceSpans) {
             var scopes = resource.path("scopeSpans"); if (!scopes.isArray()) scopes = resource.path("instrumentationLibrarySpans");
             for (var scope : scopes) for (var span : scope.path("spans")) if (root.id().equals(span.path("spanId").asString())) {
-                budget = attributes(span.path("attributes")).get("rpe.deadline.budget_ms");
+                var rootAttributes = attributes(span.path("attributes"));
+                budget = rootAttributes.get("rpe.deadline.budget_ms");
+                status = rootAttributes.get("http.response.status_code");
             }
         }
+        Integer statusCode = null;
+        try { if (status != null) statusCode = Integer.valueOf(status); } catch (NumberFormatException ignored) { /* unknown status */ }
         return new TraceSample(id, root.route(), root.method(), List.copyOf(services), (root.end() - root.start()) / 1_000_000.0, root.start(), root.end(),
-                budget == null ? null : Double.valueOf(budget), orphans);
+                budget == null ? null : Double.valueOf(budget), orphans, statusCode, deadlineEvent);
     }
     private Map<String, String> attributes(JsonNode attributes) {
         var result = new HashMap<String, String>();
@@ -176,6 +228,8 @@ public class TempoWindows {
             var value = item.path("value");
             if (value.has("stringValue")) result.put(item.path("key").asString(), value.path("stringValue").asString());
             else if (value.has("intValue")) result.put(item.path("key").asString(), value.path("intValue").asString());
+            else if (value.has("boolValue")) result.put(item.path("key").asString(), value.path("boolValue").asString());
+            else if (value.has("doubleValue")) result.put(item.path("key").asString(), value.path("doubleValue").asString());
         }
         return result;
     }

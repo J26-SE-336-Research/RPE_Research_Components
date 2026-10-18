@@ -37,6 +37,39 @@ public class PrometheusWindows {
         queries.put("scrapeSamples", "min(count_over_time(up" + selector + range + "))");
         return Map.copyOf(queries);
     }
+    /**
+     * Per-service load signals used by deadline v2 (guide §5.2), with the real sidecar metric names. Each query
+     * aggregates to one series. CPU, throttling and memory come from cAdvisor / kube-state-metrics, which the RPE
+     * Prometheus does not scrape today: they return no data and are treated as unavailable.
+     */
+    public Map<String, String> loadQueries(String service) {
+        String selector = "{service=\"" + TelemetryHttp.escape(service) + "\",namespace=\"" + TelemetryHttp.escape(connections.namespace()) + "\"}";
+        String range = "[" + settings.window().toSeconds() + "s]";
+        var queries = new LinkedHashMap<String, String>();
+        queries.put("loadQueuePressurePercent", "max(max_over_time(rpe_backpressure_inbound_queue_utilization_percent" + selector + range + "))");
+        queries.put("loadOverloadRejections", "sum(increase(rpe_rejections_total" + selector.replace("}", ",reason=\"overload\"}") + range + "))");
+        queries.put("loadBackpressureRejections", "sum(increase(rpe_backpressure_inbound_rejected_total" + selector + range + "))");
+        queries.put("loadBreakerOpenPeers", "max(max_over_time(rpe_circuit_breaker_open_peers" + selector + range + "))");
+        String app = selector.replace("}", ",container!=\"rpe-sidecar\"}");
+        queries.put("loadCpuUtilisation", "sum(rate(container_cpu_usage_seconds_total" + app + range + ")) / sum(kube_pod_container_resource_limits"
+                + app.replace("}", ",resource=\"cpu\"}") + ")");
+        queries.put("loadCpuThrottling", "sum(rate(container_cpu_cfs_throttled_periods_total" + app + range + ")) / sum(rate(container_cpu_cfs_periods_total" + app + range + "))");
+        queries.put("loadMemoryUtilisation", "max(container_memory_working_set_bytes" + app + ") / max(kube_pod_container_resource_limits"
+                + app.replace("}", ",resource=\"memory\"}") + ")");
+        return Map.copyOf(queries);
+    }
+    /** Collects {@link #loadQueries}; never throws and never affects {@link #collect}: a failed query is just unavailable. */
+    public ServiceLoadSnapshot collectLoad(String service, Instant end) {
+        var values = new HashMap<String, Double>(); var problems = new ArrayList<String>();
+        for (var query : loadQueries(service).entrySet()) {
+            try { Double value = http.prometheus(query.getValue(), end); if (value != null) values.put(query.getKey(), value); }
+            catch (RuntimeException exception) { problems.add(query.getKey() + ": " + exception.getMessage()); }
+            if (Thread.currentThread().isInterrupted()) break;
+        }
+        return new ServiceLoadSnapshot(service, values.get("loadQueuePressurePercent"), values.get("loadOverloadRejections"),
+                values.get("loadBackpressureRejections"), values.get("loadBreakerOpenPeers"), values.get("loadCpuUtilisation"),
+                values.get("loadCpuThrottling"), values.get("loadMemoryUtilisation"), null, problems);
+    }
     public Collection collect(String service, Instant end) {
         var values = new HashMap<String, Double>(); var problems = new ArrayList<String>();
         Map<String, String> queries = queries(service);
