@@ -75,6 +75,8 @@ func main() {
 			w.notify(payload)
 			mirror()
 		}, mirror)
+		// Redis is a fast path that can be flushed at any time: rebuild what it lost from PostgreSQL
+		go rehydrate(ctx, time.Duration(envInt("DRIFT_INTERVAL_MS", 10000))*time.Millisecond, st, b)
 		// coverage audit + drift detection and repair over the fleet
 		fl.run(ctx, time.Duration(envInt("DRIFT_INTERVAL_MS", 10000))*time.Millisecond, env("DRIFT_REPAIR", "true") == "true")
 	}()
@@ -83,9 +85,22 @@ func main() {
 	must(mgr.Start(ctx))
 }
 
-// catchUp mirrors every approval after the Redis checkpoint into an RPEPolicy resource.
+// catchUpPosition is the last policy_events id the Operator handled. It is kept in PostgreSQL (policy.operator_state),
+// not in Redis; the first time after an upgrade the position the old Operator kept in Redis is carried over.
+func catchUpPosition(ctx context.Context, st *store, b *bus) int64 {
+	if id, found := st.checkpoint(ctx); found {
+		return id
+	}
+	legacy := b.legacyCheckpoint(ctx)
+	if legacy > 0 {
+		_ = st.setCheckpoint(ctx, legacy)
+	}
+	return legacy
+}
+
+// catchUp mirrors every approval after the stored checkpoint into an RPEPolicy resource.
 func catchUp(ctx context.Context, k client.Client, st *store, b *bus, ns string, autoRollout bool) {
-	events, err := st.approvalsSince(ctx, b.checkpoint(ctx))
+	events, err := st.approvalsSince(ctx, catchUpPosition(ctx, st, b))
 	if err != nil {
 		log.Printf("catch-up: %v", err)
 		return
@@ -102,7 +117,10 @@ func catchUp(ctx context.Context, k client.Client, st *store, b *bus, ns string,
 				_ = k.Create(ctx, ro)
 			}
 		}
-		b.setCheckpoint(ctx, e.ID)
+		if err := st.setCheckpoint(ctx, e.ID); err != nil {
+			log.Printf("catch-up: cannot store the checkpoint %d: %v", e.ID, err)
+			return
+		}
 	}
 }
 

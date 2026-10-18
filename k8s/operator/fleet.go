@@ -122,6 +122,15 @@ func (f *fleet) audit(ctx context.Context) (fleetReport, error) {
 		byService[p.Scope.Service] = append(byService[p.Scope.Service], p)
 		all = append(all, p)
 	}
+	// A proxy must hold the active policies scoped to its own service, and only those: the gateway holds the
+	// gateway-scoped (chain deadline) policies, a service holds its rate limit and retry ratio.
+	expectedFor := func(fp *fleetPod) []Policy {
+		exp := byService[fp.Service]
+		if fp.Role == "gateway" && fp.Service != gatewayService {
+			exp = append(append([]Policy{}, exp...), byService[gatewayService]...)
+		}
+		return exp
+	}
 	var pods []*fleetPod
 	for _, ns := range nss.Items {
 		var list corev1.PodList
@@ -144,10 +153,7 @@ func (f *fleet) audit(ctx context.Context) (fleetReport, error) {
 			}
 			if fp.Sidecar && p.Status.PodIP != "" && p.Status.Phase == corev1.PodRunning && ns.Name == f.demoNS() {
 				fp.ip = p.Status.PodIP
-				fp.expected = byService[fp.Service]
-				if fp.Role == "gateway" {
-					fp.expected = all
-				}
+				fp.expected = expectedFor(fp)
 			}
 			pods = append(pods, fp)
 		}
@@ -180,7 +186,7 @@ func (f *fleet) audit(ctx context.Context) (fleetReport, error) {
 			for _, e := range held.Epochs {
 				fp.Epochs = append(fp.Epochs, heldEpoch{Epoch: e.Epoch, Version: e.Version, Hash: e.Hash, State: e.State, Inflight: held.Inflight[e.Epoch]})
 			}
-			fp.Drift = driftOf(fp.Role, held, fp.expected)
+			fp.Drift = driftOf(held, fp.expected)
 		}(fp)
 	}
 	wg.Wait()
@@ -227,10 +233,9 @@ func describe(p corev1.Pod) *fleetPod {
 	return fp
 }
 
-// driftOf lists how a proxy differs from the approved active policies it should hold. Every reason starts
-// with the epoch. A service proxy must hold the epoch active; a gateway holding it is enough (it stamps the
-// epoch of the last policy it activated, and serves every held epoch).
-func driftOf(role string, held sidecarEpochs, expected []Policy) []string {
+// driftOf lists how a proxy differs from the approved active policies it should hold: not held at all, held with
+// other content (hash mismatch), or held but not active. Every reason starts with the epoch.
+func driftOf(held sidecarEpochs, expected []Policy) []string {
 	var out []string
 	for _, p := range expected {
 		switch h := held.hashOf(p.Epoch); {
@@ -238,7 +243,7 @@ func driftOf(role string, held sidecarEpochs, expected []Policy) []string {
 			out = append(out, p.Epoch+" missing")
 		case h != specHash(p.Spec):
 			out = append(out, fmt.Sprintf("%s hash mismatch (holds %s, approved %s)", p.Epoch, h, specHash(p.Spec)))
-		case role == "service" && !held.holds(p.Epoch, "active"):
+		case !held.holds(p.Epoch, "active"):
 			out = append(out, p.Epoch+" not active")
 		}
 	}
@@ -262,7 +267,7 @@ func (f *fleet) repair(ctx context.Context, fp fleetPod) {
 		if err == nil {
 			err = held.verify(p.Epoch, payload.Hash)
 		}
-		if err == nil && (fp.Role == "service" || held.ActiveEpoch == "" || held.ActiveEpoch == p.Epoch) {
+		if err == nil {
 			_, err = f.side.activate(ctx, fp.ip, p.Epoch)
 		}
 		if err != nil {

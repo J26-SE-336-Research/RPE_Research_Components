@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -108,9 +109,11 @@ func (s *store) list(ctx context.Context) ([]Policy, error) {
 	return out, rows.Err()
 }
 
-// active returns the currently active version of every policy (used for drift repair).
+// active returns the currently active version of every policy (used for drift repair), oldest approval first: when a
+// restarted proxy is repaired the policies are re-delivered in this order, so the most recently approved one is
+// applied last and wins.
 func (s *store) active(ctx context.Context) ([]Policy, error) {
-	rows, err := s.pool.Query(ctx, `select `+policyCols+` from policy.policies where status=$1`, StatusActive)
+	rows, err := s.pool.Query(ctx, `select `+policyCols+` from policy.policies where status=$1 order by approved_at, version`, StatusActive)
 	if err != nil {
 		return nil, err
 	}
@@ -225,6 +228,24 @@ func (s *store) confirmations(ctx context.Context, epoch string) (map[string]con
 func (s *store) recordMeasurements(ctx context.Context, name string, st RolloutStatus, skewMs int) error {
 	_, err := s.pool.Exec(ctx, `update policy.rollouts set skew_ms=$2, mixed_policy_requests=$3, convergence_ms=$4, drain_ms=$5 where name=$1`,
 		name, skewMs, st.MixedPolicyRequests, st.ConvergenceMs, st.DrainMs)
+	return err
+}
+
+// checkpoint returns the Operator's position in policy.policy_events (change catch-up after downtime). found is
+// false when none has been stored yet. It lives in PostgreSQL, the system of record, so losing Redis never replays
+// old approvals.
+func (s *store) checkpoint(ctx context.Context) (id int64, found bool) {
+	var v string
+	if err := s.pool.QueryRow(ctx, `select value from policy.operator_state where key='last-event-id'`).Scan(&v); err != nil {
+		return 0, false
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
+	return n, err == nil
+}
+
+func (s *store) setCheckpoint(ctx context.Context, id int64) error {
+	_, err := s.pool.Exec(ctx, `insert into policy.operator_state(key, value) values ('last-event-id', $1)
+		on conflict (key) do update set value=excluded.value, updated_at=now()`, strconv.FormatInt(id, 10))
 	return err
 }
 

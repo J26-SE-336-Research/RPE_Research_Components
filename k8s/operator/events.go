@@ -14,7 +14,7 @@ import (
 //   - hash    rpe:effective:<service>    the policy each service currently enforces
 //   - hash    rpe:acks:<epoch>           per-pod delivery state for fast convergence counting
 //   - pubsub  rpe:policy:changed         broadcast when a policy becomes active
-//   - string  rpe:operator:last-event-id the Operator's catch-up checkpoint into policy_events
+//   - string  rpe:operator:last-event-id legacy only: the catch-up position now lives in PostgreSQL (policy.operator_state)
 type bus struct{ rdb *redis.Client }
 
 const (
@@ -71,11 +71,18 @@ func (b *bus) ack(ctx context.Context, epoch, pod, state string) {
 	_ = b.rdb.Expire(ctx, keyAcks+epoch, 24*time.Hour).Err()
 }
 
-func (b *bus) setEffective(ctx context.Context, p Policy) {
-	_ = b.rdb.HSet(ctx, keyEffective+p.Scope.Service, map[string]any{
+// restoreEffective writes the effective-policy entry of a service without announcing a change. It rebuilds an entry
+// that Redis lost from PostgreSQL (the system of record); nothing changed, so nothing is published.
+func (b *bus) restoreEffective(ctx context.Context, p Policy) error {
+	return b.rdb.HSet(ctx, keyEffective+p.Scope.Service, map[string]any{
 		"policyId": p.PolicyID, "version": p.Version, "epoch": p.Epoch, "route": p.Scope.Route,
 		"spec": string(p.Spec), "approvedBy": p.ApprovedBy, "updatedAt": time.Now().UTC().Format(time.RFC3339),
 	}).Err()
+}
+
+// setEffective records the policy a service now enforces (a rollout completed) and announces the change.
+func (b *bus) setEffective(ctx context.Context, p Policy) {
+	_ = b.restoreEffective(ctx, p)
 	msg, _ := json.Marshal(map[string]any{"service": p.Scope.Service, "policyId": p.PolicyID, "version": p.Version, "epoch": p.Epoch})
 	_ = b.rdb.Publish(ctx, chanChanged, msg).Err()
 }
@@ -92,14 +99,12 @@ func (b *bus) effective(ctx context.Context) (map[string]map[string]string, erro
 	return out, iter.Err()
 }
 
-func (b *bus) checkpoint(ctx context.Context) int64 {
+// legacyCheckpoint reads the catch-up position an earlier Operator kept in Redis. It is only used once, to carry the
+// position over to PostgreSQL (policy.operator_state) so an upgrade does not replay old approvals.
+func (b *bus) legacyCheckpoint(ctx context.Context) int64 {
 	v, _ := b.rdb.Get(ctx, keyCheckpoint).Result()
 	n, _ := strconv.ParseInt(v, 10, 64)
 	return n
-}
-
-func (b *bus) setCheckpoint(ctx context.Context, id int64) {
-	_ = b.rdb.Set(ctx, keyCheckpoint, id, 0).Err()
 }
 
 func (b *bus) ping(ctx context.Context) error { return b.rdb.Ping(ctx).Err() }

@@ -31,8 +31,14 @@ func serviceOf(p corev1.Pod) string {
 	return ""
 }
 
-// resolveTargets returns the proxies a policy for `service` must reach: every ready proxy of the
-// service, plus the gateway proxies (they stamp the policy epoch into new requests at the ingress).
+// gatewayService is the RPE service name of the API gateway. A policy scoped to it (the chain deadline, which only
+// the gateway applies) reaches the gateway proxies; a policy scoped to any other service reaches only that
+// service's proxies. The gateway is never a target of a service-scoped policy: activating one on the gateway
+// would replace the chain deadlines it enforces.
+var gatewayService = env("GATEWAY_SERVICE", "gateway")
+
+// resolveTargets returns the proxies a policy for `service` must reach: the ready proxies of that service (the
+// gateway proxies when the policy is scoped to the gateway), and nothing else.
 func resolveTargets(ctx context.Context, r client.Reader, ns, service string) ([]target, error) {
 	var pods corev1.PodList
 	if err := r.List(ctx, &pods, client.InNamespace(ns)); err != nil {
@@ -47,11 +53,12 @@ func resolveTargets(ctx context.Context, r client.Reader, ns, service string) ([
 		if p.Annotations["resilience.rpe.dev/role"] == "gateway" {
 			role = "gateway"
 		}
-		if svc := serviceOf(p); svc == service || role == "gateway" {
+		svc := serviceOf(p)
+		if svc == service || (role == "gateway" && service == gatewayService) {
 			out = append(out, target{Pod: p.Name, Service: svc, Role: role, IP: p.Status.PodIP})
 		}
 	}
-	// gateways first: the two-phase flip happens at the ingress
+	// gateways first (only present for a gateway-scoped policy)
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Role == "gateway" && out[j].Role != "gateway" })
 	return out, nil
 }
@@ -303,11 +310,16 @@ func (r *RolloutReconciler) stage(ctx context.Context, ro *RPERollout, p Policy)
 func (r *RolloutReconciler) activate(ctx context.Context, ro *RPERollout, p Policy) (time.Duration, error) {
 	naive := ro.Spec.Mode == "naive"
 	prev := ro.Spec.PreviousEpoch
-	// two-phase: gateways first; only after every gateway stamps the new epoch do services switch.
-	for _, role := range []string{"gateway", "service"} {
-		if naive && role == "service" {
-			break
-		}
+	// Two-phase: gateways first, then services. A policy scoped to a service has no gateway among its targets, so
+	// that pass only runs when the targets include a gateway.
+	roles := []string{"service"}
+	switch {
+	case naive:
+		roles = []string{"all"} // every target switches in one pass
+	case hasRole(ro, "gateway"):
+		roles = []string{"gateway", "service"}
+	}
+	for _, role := range roles {
 		_, err := r.forEachPod(ctx, ro, "active", func(t target, ps *PodStatus) error {
 			if !naive && t.Role != role {
 				return fmt.Errorf("waiting for gateways")
@@ -561,6 +573,15 @@ func countLive(ro *RPERollout) int {
 		}
 	}
 	return n
+}
+
+func hasRole(ro *RPERollout, role string) bool {
+	for _, p := range ro.Status.Pods {
+		if p.Role == role {
+			return true
+		}
+	}
+	return false
 }
 
 func allRole(ro *RPERollout, role, state string) bool {
