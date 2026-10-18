@@ -63,4 +63,16 @@ latest=$(echo "${BODY}" | jq -c --arg p "${pol}" '[.policies[] | select(.policyI
 assert_eq "$(echo "${latest}" | jq -r '.spec.parts | length')" 2 "the new version still has both parts"
 assert_eq "$(echo "${latest}" | jq -r '.spec.parts[] | select(.scope.service=="gateway") | .spec.routes["GET /api/orders"].deadlineMs')" 1000 "the gateway's part is kept unchanged"
 assert_eq "$(rate_gauge payment-svc)" 50 "payment enforces the changed rate"
+
+# --- 5. every hop keeps the version the gateway stamped while the gateway switches (C1 rule R-T01) --------------------
+hub POST /api/hub/policies "{\"policyId\":\"${pol}\",\"rollout\":\"two-phase\",\"changes\":[{\"control\":\"chain-deadline\",\"route\":\"GET /api/orders\",\"deadlineMs\":1200},{\"control\":\"rate-limit\",\"service\":\"payment-svc\",\"ratePerSec\":100}]}"
+broken=0; checked=0
+for _ in $(seq 1 30); do
+  hub POST /api/hub/chain '{"path":"/api/orders"}'
+  [[ "$(echo "${BODY}" | jq '.hops | length')" == 7 ]] || continue
+  checked=$((checked+1))
+  [[ "$(echo "${BODY}" | jq '[.hops[].checks[] | select(.pass==false)] | length')" == 0 ]] || broken=$((broken+1))
+done
+assert_ge "${checked}" 20 "chain requests ran while the gateway switched versions (${checked})"
+assert_eq "${broken}" 0 "every hop of every chain kept the version the gateway stamped (C1 rule R-T01)"
 finish
