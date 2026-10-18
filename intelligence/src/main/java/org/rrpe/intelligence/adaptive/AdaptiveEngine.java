@@ -234,6 +234,40 @@ public class AdaptiveEngine {
         final List<Instant> proposalTimes = new ArrayList<>();
         DeadlineEvidence evidence; List<String> lines = List.of();
         UUID lastProposalId; Long lastProposedMs; Map<String, Double> lastMeasurements = Map.of(); List<String> lastProposalEvidence = List.of(); String lastRule;
+        DeadlineCase lastProposalCase;
+        // Phase 4: verification after APPLIED, pause and audit de-duplication.
+        UUID trackedApplied; Settling settling; String verification;
+        String pausedReason; Instant pauseCauseLastSeen;
+        final DeadlineSafety safety = new DeadlineSafety();
+        Proportion lastH; String lastAuditedDecision;
+    }
+    /** An applied change being verified: skip {@code settleLeft} counted windows, then collect {@code verify-windows} at the new budget. */
+    private static class Settling {
+        final DeadlineCase applied; final long fromMs, toMs; final Proportion hBefore; int settleLeft, verified;
+        final List<LabelledSample> pool = new ArrayList<>();
+        Settling(DeadlineCase applied, long fromMs, long toMs, Proportion hBefore, int settleLeft) {
+            this.applied = applied; this.fromMs = fromMs; this.toMs = toMs; this.hBefore = hBefore; this.settleLeft = settleLeft;
+        }
+    }
+    private AuditLog audit = AuditLog.NONE;
+    @Autowired(required = false) public void setAudit(AuditLog audit) { this.audit = audit == null ? AuditLog.NONE : audit; }
+
+    /** Configuration conflict (the stamped budget differs from the last approved policy): the chain is paused. */
+    public void pauseChain(String chain, Source source, String reason) {
+        State state = chains.computeIfAbsent(key(chain, source), ignored -> new State());
+        synchronized (state) {
+            ChainV2 v = v2.computeIfAbsent(key(chain, source), ignored -> new ChainV2());
+            var before = v.state;
+            Policy policy = workflow.current(chain, source);
+            pause(v, reason, clock.instant(), chain, source);
+            if (v.evidence != null) v.evidence = withState(v.evidence, v.state, "PAUSED");
+            if (before != v.state) audit.deadline(AuditLog.DEADLINE_STATE_CHANGED, chain, source, policy == null || policy.deadlineMs() == null ? 0 : policy.deadlineMs(),
+                    null, v.state.name(), before + " → " + v.state + ": " + reason);
+        }
+    }
+    private void pause(ChainV2 v, String reason, Instant now, String chain, Source source) {
+        if (v.state != ChainDeadlineState.PAUSED) workflow.withdraw(chain, Action.CHAIN_DEADLINE, source, "Chain paused: " + reason);
+        v.state = ChainDeadlineState.PAUSED; v.pausedReason = reason; v.pauseCauseLastSeen = now; v.settling = null; v.lastProposedMs = null;
     }
 
     /** Latest v2 evidence per live chain (MOCK chains excluded), for the API. */
@@ -302,10 +336,63 @@ public class AdaptiveEngine {
         boolean pendingRate = services.stream().anyMatch(s -> workflow.pending(s, Action.LEAKY_BUCKET, source).isPresent());
         Instant now = clock.instant();
         v.proposalTimes.removeIf(t -> Duration.between(t, now).compareTo(Duration.ofHours(1)) >= 0);
+        ChainDeadlineState stateBefore = v.state;
+
+        // ---- Phase 4: pause, applied-change detection and verification (guide §6.6, §6.7) ----
+        if (v.state == ChainDeadlineState.PAUSED && v.pauseCauseLastSeen != null && Duration.between(v.pauseCauseLastSeen, now).compareTo(deadline.pauseClear()) >= 0) {
+            v.state = model.ready() ? ChainDeadlineState.READY : ChainDeadlineState.LEARNING; v.pausedReason = null;
+        }
+        if (counted && "REJECTING_MIDDLEWARE".equals(cutHint) && cutShare > deadline.cutMaxShare()) {
+            audit.deadline(AuditLog.DEADLINE_CUT_DETECTED, chain, source, current == null ? windowBudget : current, null, cutHint,
+                    String.format(Locale.ROOT, "%.1f%% of requests cut by another timer (%s); not used for learning", 100 * cutShare, cutHint));
+            String reason = v.safety.rejectingMiddleware(now);
+            if (reason != null) pause(v, reason, now, chain, source);
+        }
+        if (v.lastProposalId != null && !v.lastProposalId.equals(v.trackedApplied) && v.state != ChainDeadlineState.PAUSED) {
+            PolicyChange applied = null;
+            try { applied = workflow.find(v.lastProposalId); } catch (IllegalArgumentException ignored) { /* trimmed history */ }
+            if (applied != null && applied.delivery() == Delivery.APPLIED) {
+                v.trackedApplied = applied.proposal().id();
+                long from = Math.round(applied.proposal().currentValue()), to = Math.round(applied.proposal().proposedValue());
+                DeadlineCase appliedCase = v.lastProposalCase != null ? v.lastProposalCase : to > from ? DeadlineCase.A_RAISE : DeadlineCase.D_TIGHTEN;
+                v.settling = new Settling(appliedCase, from, to, v.lastH, deadline.settleWindows());
+                v.state = ChainDeadlineState.SETTLING; v.verification = null;
+                String reason = v.safety.applied(from, to, now);
+                if (reason != null) pause(v, reason, now, chain, source);
+            }
+        }
+        boolean revert = false; long revertTo = 0;
+        if (counted && v.state == ChainDeadlineState.SETTLING && v.settling != null && !mixed && windowBudget == v.settling.toMs) {
+            var s = v.settling;
+            if (s.settleLeft > 0) s.settleLeft--;
+            else {
+                for (var l : labelled) if (!l.sample().cut()) s.pool.add(l);
+                if (++s.verified >= deadline.verifyWindows()) {
+                    var hAfter = proportionOf(s.pool, RequestLabel.H); var oAfter = proportionOf(s.pool, RequestLabel.O);
+                    boolean cleared = share(s.pool, l -> l.label() == RequestLabel.O) < deadline.shareThreshold();
+                    var result = DeadlineVerifier.verify(s.applied, s.hBefore, hAfter, oAfter, cleared, deadline, settings.minimumChainRequests());
+                    v.verification = result.result() + " after " + s.applied + " " + s.fromMs + " → " + s.toMs + " ms: " + result.detail();
+                    audit.deadline(AuditLog.DEADLINE_VERIFICATION, chain, source, s.toMs, null, result.result().name(), v.verification);
+                    v.settling = null;
+                    if (result.result() == DeadlineVerifier.Result.FAIL) {
+                        String reason = v.safety.verificationFailed(now);
+                        if (reason != null) pause(v, reason, now, chain, source);
+                        else { revert = true; revertTo = s.fromMs; v.state = ChainDeadlineState.READY; }
+                    } else v.state = model.ready() ? ChainDeadlineState.READY : ChainDeadlineState.LEARNING;
+                }
+            }
+        }
 
         var changes = new ArrayList<PolicyChange>();
         DeadlinePolicy.DeadlineDecision decision;
         if (current == null) decision = DeadlinePolicy.hold("WAITING_FOR_POLICY", "waiting for the current route deadline");
+        else if (counted && v.state == ChainDeadlineState.PAUSED) decision = DeadlinePolicy.hold("PAUSED", v.pausedReason);
+        else if (counted && v.state == ChainDeadlineState.SETTLING) decision = DeadlinePolicy.hold("SETTLING", "verifying the applied change before deciding again");
+        else if (counted && revert) {
+            final long back = revertTo;
+            decision = new DeadlinePolicy.DeadlineDecision(back > current ? DeadlineCase.A_RAISE : DeadlineCase.D_TIGHTEN, back, "VERIFICATION_FAILED", false,
+                    healthy.predictedExceed(key, back), null, "VERIFICATION_FAILED: revert to " + back + " ms (" + v.verification + ")");
+        }
         else if (!counted) {
             decision = DeadlinePolicy.hold("NOT_COUNTED", "overlaps the last counted window");
             // Keep a pending proposal fresh between counted windows while its basis still holds.
@@ -323,7 +410,8 @@ public class AdaptiveEngine {
             decision = DeadlinePolicy.decide(ctx, deadline, settings.maximumDeadlineMs());
         }
 
-        String advisory = decision.holdReason() != null && decision.holdReason().startsWith("LEVER_")
+        // Advisory whenever the overload is a rate or capacity problem (also when the deadline signal already fires).
+        String advisory = oShare >= deadline.shareThreshold() && (leverResult.lever() == Lever.RATE || leverResult.lever() == Lever.CAPACITY)
                 ? "Consider the " + (leverResult.lever() == Lever.RATE ? "inbound rate" : "capacity") + " at " + String.join(", ", overloadedOnOPaths) + " (" + leverResult.reason() + ")" : null;
         String headline = headline(decision, current, model, hExceed, oExceed, windowBudget);
         var lines = new ArrayList<String>();
@@ -361,12 +449,10 @@ public class AdaptiveEngine {
                         Map.copyOf(measurements), decision.rule(), proposalEvidence);
                 changes.add(change);
                 if (!change.proposal().id().equals(v.lastProposalId) || pending.isEmpty()) v.proposalTimes.add(now);
-                v.lastProposalId = change.proposal().id(); v.lastProposedMs = decision.proposedMs();
+                v.lastProposalId = change.proposal().id(); v.lastProposedMs = decision.proposedMs(); v.lastProposalCase = decision.decisionCase();
                 v.lastMeasurements = Map.copyOf(measurements); v.lastProposalEvidence = List.copyOf(proposalEvidence); v.lastRule = decision.rule();
             } else if (decision.decisionCase() == DeadlineCase.C_KEEP_FIRING) {
-                if (pending.isPresent() && pending.get().proposal().proposedValue() > current) {
-                    workflow.withdraw(chain, Action.CHAIN_DEADLINE, source, "Case C: the overload signal fires; the pending increase is withdrawn");
-                }
+                workflow.withdrawPendingIncrease(chain, source, current, "Case C: the overload signal fires; the pending increase is withdrawn");
             } else if (pending.isPresent() && WITHDRAW_ON.contains(decision.holdReason())) {
                 workflow.withdraw(chain, Action.CHAIN_DEADLINE, source, "Conditions no longer support the change (" + decision.holdReason() + ")");
             }
@@ -374,13 +460,31 @@ public class AdaptiveEngine {
         // A counted window that no longer proposes the same value stops the refresh: an outdated proposal then goes stale.
         if (counted && !decision.proposes()) v.lastProposedMs = null;
         boolean stillPending = workflow.pending(chain, Action.CHAIN_DEADLINE, source).isPresent();
-        v.state = stillPending ? ChainDeadlineState.PROPOSED : model.ready() ? ChainDeadlineState.READY : ChainDeadlineState.LEARNING;
+        if (v.state != ChainDeadlineState.PAUSED && v.state != ChainDeadlineState.SETTLING) {
+            v.state = stillPending ? ChainDeadlineState.PROPOSED : model.ready() ? ChainDeadlineState.READY : ChainDeadlineState.LEARNING;
+        }
+        if (counted && v.state != ChainDeadlineState.SETTLING) v.lastH = hExceed; // the "before" of the next applied change
+        if (!counted && v.evidence != null && v.evidence.state() != v.state) v.evidence = withState(v.evidence, v.state, v.evidence.holdReason());
         if (counted || v.evidence == null) {
             v.evidence = new DeadlineEvidence(decision.decisionCase(), decision.holdReason(), current == null ? windowBudget : current,
                     decision.proposedMs(), model, hExceed, oExceed, oShare, stressedShare, unknownShare, cutShare, cutHint,
-                    decision.predictedH(), decision.predictedO(), leverResult.lever(), leverResult.inferred(), reasons, v.state, null,
+                    decision.predictedH(), decision.predictedO(), leverResult.lever(), leverResult.inferred(), reasons, v.state, v.verification,
                     samples.stream().map(DeadlineSample::traceId).limit(5).toList(), advisory);
             v.lines = List.copyOf(lines);
+        }
+        // ---- audit (append-only; only on change to avoid noise) ----
+        double auditCurrent = current == null ? windowBudget : current;
+        if (stateBefore != v.state) audit.deadline(AuditLog.DEADLINE_STATE_CHANGED, chain, source, auditCurrent, null, v.state.name(),
+                stateBefore + " → " + v.state + (v.pausedReason == null || v.state != ChainDeadlineState.PAUSED ? "" : ": " + v.pausedReason));
+        if (counted) {
+            String decisionKey = decision.decisionCase() + ":" + decision.holdReason() + ":" + decision.proposedMs();
+            if (!decisionKey.equals(v.lastAuditedDecision)) {
+                v.lastAuditedDecision = decisionKey;
+                audit.deadline(AuditLog.DEADLINE_DECISION, chain, source, auditCurrent, decision.proposedMs() == null ? null : decision.proposedMs().doubleValue(),
+                        decision.decisionCase() + (decision.holdReason() == null ? "" : ":" + decision.holdReason()), v.evidence);
+            }
+            if (healthy.consumeRelearned(key)) audit.deadline(AuditLog.DEADLINE_HEALTHY_RELEARNED, chain, source, auditCurrent, null, model.status(),
+                    "Healthy time re-learned after drift: " + modelLine(model));
         }
         signals.put("healthyExceedRate", hExceed.p()); signals.put("overloadShare", oShare); signals.put("stressedShare", stressedShare);
         var evidenceLines = new ArrayList<>(v.lines); evidenceLines.addAll(supportingEvidence);
@@ -407,6 +511,17 @@ public class AdaptiveEngine {
         }
         int events = (int) pool.stream().filter(l -> l.sample().expired()).count();
         return RobustStatistics.wilsonOneSided(events, pool.size(), deadline.z(), deadline.designEffect());
+    }
+    private static DeadlineEvidence withState(DeadlineEvidence e, ChainDeadlineState state, String holdReason) {
+        boolean paused = state == ChainDeadlineState.PAUSED;
+        return new DeadlineEvidence(paused ? DeadlineCase.HOLD : e.decisionCase(), holdReason, e.currentMs(), paused ? null : e.proposedMs(), e.model(),
+                e.hExceed(), e.oExceed(), e.oShare(), e.stressedShare(), e.unknownShare(), e.cutShare(), e.cutHint(), e.predictedHExceed(),
+                e.predictedOExceed(), e.lever(), e.leverInferred(), e.serviceLoadReasons(), state, e.verification(), e.exampleTraceIds(), e.advisory());
+    }
+    private Proportion proportionOf(List<LabelledSample> pool, RequestLabel label) {
+        int n = 0, x = 0;
+        for (var l : pool) if (l.label() == label) { n++; if (l.sample().expired()) x++; }
+        return RobustStatistics.wilsonOneSided(x, n, deadline.z(), deadline.designEffect());
     }
     private static double share(List<LabelledSample> all, java.util.function.Predicate<LabelledSample> p) {
         return all.isEmpty() ? 0 : all.stream().filter(p).count() / (double) all.size();

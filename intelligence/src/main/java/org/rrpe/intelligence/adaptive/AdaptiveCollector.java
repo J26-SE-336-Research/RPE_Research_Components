@@ -59,6 +59,8 @@ public class AdaptiveCollector {
                         && !workflow.observeConfiguredDeadline(chain.chain(), measurement.currentDeadlineMs(), end)) {
                     errors.add(chain.chain() + ": observed configuration conflicts with a confirmed applied policy");
                     workflow.withdraw(chain.chain(), Action.CHAIN_DEADLINE, Source.TEMPO, "Current deadline configuration conflict");
+                    engine.pauseChain(chain.chain(), Source.TEMPO, "CONFIGURATION_CONFLICT: the stamped budget " + Math.round(measurement.currentDeadlineMs())
+                            + " ms differs from the last approved policy");
                     continue;
                 }
                 var evidence = new ArrayList<String>();
