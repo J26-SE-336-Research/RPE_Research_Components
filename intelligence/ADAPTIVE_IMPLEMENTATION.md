@@ -1,3 +1,8 @@
+> **Deadline recommendation v2 (Oct 2026) replaces the deadline rules below.** The recent p99 × (1 + 10/20/30%) bands, the
+> censored increase and the max(baseline × 1.10, current × 0.90) restoration are no longer used; see
+> [C4-DEADLINE-V2-IMPLEMENTATION.md](C4-DEADLINE-V2-IMPLEMENTATION.md) and the README. The old logic is kept on branch
+> `component-4-intelligence-on-main`.
+
 > **Historical (from the RPE_POC1 prototype).** Kept for algorithm background. The run instructions, `/adaptive.html` dashboard, PowerShell paths and `sidecar_*` metric names no longer apply. The current behaviour (human approval for every recommendation, `rpe_*` metrics, delivery to C3, audit) is described in [README.md](README.md).
 
 # Corrected adaptive intelligence — deadline validation first

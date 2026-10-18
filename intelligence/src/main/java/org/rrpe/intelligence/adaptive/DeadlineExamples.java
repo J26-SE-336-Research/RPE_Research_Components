@@ -24,15 +24,16 @@ public final class DeadlineExamples {
     private static PathTraffic path(double share, Profile profile, String... services) { return new PathTraffic(share, profile, services); }
     private static Phase healthy(int cycles, List<PathTraffic> paths) { return new Phase("healthy (learn)", cycles, paths); }
 
-    public static List<Example> all() {
+    public static List<Example> all() { return all(LEARN); }
+    public static List<Example> all(int learn) {
         return List.of(
             new Example("deadline-too-long-under-overload", "Example 1: deadline too long under overload", new Script("GET /api/orders", 2000, List.of(
-                    healthy(LEARN, List.of(path(1, H400, GW, "order", "payment"))),
+                    healthy(learn, List.of(path(1, H400, GW, "order", "payment"))),
                     new Phase("payment overloaded (~900 ms)", 120, List.of(path(1, O900, GW, "order", "payment")), Map.of("payment", Health.OVERLOADED), Map.of()),
                     new Phase("recovered", 120, List.of(path(1, H400, GW, "order", "payment"))))),
                     "decreases only, until the overload fires (≥5% expired); after recovery tighten into [D*, 1.25·D*]"),
             new Example("services-slowing", "Example 2: services slowing (inventory STRESSED)", new Script("GET /api/orders", 1250, List.of(
-                    healthy(LEARN, List.of(path(.7, H1000, GW, "order", "payment"), path(.3, H1000, GW, "order", "inventory"))),
+                    healthy(learn, List.of(path(.7, H1000, GW, "order", "payment"), path(.3, H1000, GW, "order", "inventory"))),
                     new Phase("inventory stressed, its paths slower", 120, List.of(path(.7, H1000, GW, "order", "payment"), path(.3, SLOW, GW, "order", "inventory")),
                             Map.of("inventory", Health.STRESSED), Map.of()))),
                     "no increase (stress gate); late requests on the stressed path are signalled"),
@@ -40,23 +41,24 @@ public final class DeadlineExamples {
                     new Phase("healthy, 25% over 300 ms", 200, List.of(path(1, DAY1, GW, "order"))))),
                     "raise in a few steps until healthy exceedance ≤1% (300 → 450 → 680)"),
             new Example("queue-rate-not-deadline", "Example 4: queue rate too low, not the deadline", new Script("GET /api/stock", 800, List.of(
-                    healthy(LEARN, List.of(path(1, H600, GW, "inventory"))),
+                    healthy(learn, List.of(path(1, H600, GW, "inventory"))),
                     new Phase("inventory queue full (pressure 95%, 503s, queue wait 75%)", 120,
                             List.of(path(.95, QUEUED, GW, "inventory"), new PathTraffic(List.of(GW, "inventory"), .05, SHED, 503, false)),
                             Map.of("inventory", Health.STRESSED),
                             Map.of("inventory", new ServiceLoadSnapshot("inventory", 95.0, null, 6.0, 0.0, .25, null, null, .75, List.of()))))),
                     "no deadline change; advise raising the inventory rate"),
             new Example("mixed-paths", "Example 5: mixed paths (cache 70% / database 30%), database STRESSED", new Script("GET /api/catalog", 700, List.of(
-                    healthy(LEARN, List.of(path(.7, CACHE, GW, "catalog-cache"), path(.3, DB, GW, "catalog-db"))),
+                    healthy(learn, List.of(path(.7, CACHE, GW, "catalog-cache"), path(.3, DB, GW, "catalog-db"))),
                     new Phase("database stressed", 120, List.of(path(.7, CACHE, GW, "catalog-cache"), path(.3, DB_SLOW, GW, "catalog-db")),
                             Map.of("catalog-db", Health.STRESSED), Map.of()))),
                     "no change; the healthy time stays near the mixed p99 (not the cache p99)"),
             new Example("rejecting-middleware-504", "Example 6: an older rejecting middleware cuts requests at the deadline (504)", new Script("GET /api/orders", 1000, List.of(
-                    healthy(LEARN, List.of(path(1, H600, GW, "order"))),
+                    healthy(learn, List.of(path(1, H600, GW, "order"))),
                     new Phase("3% cut by 504 at ≈D", 60, List.of(path(.97, H600, GW, "order"), new PathTraffic(List.of(GW, "order"), .03, H600, 504, true))))),
                     "no change; hold and report the cutting middleware"));
     }
-    public static Example byScenario(String scenario) {
-        return all().stream().filter(e -> e.scenario().equals(scenario)).findFirst().orElseThrow(() -> new IllegalArgumentException("Unknown scenario"));
+    public static Example byScenario(String scenario) { return byScenario(scenario, LEARN); }
+    public static Example byScenario(String scenario, int learn) {
+        return all(learn).stream().filter(e -> e.scenario().equals(scenario)).findFirst().orElseThrow(() -> new IllegalArgumentException("Unknown scenario"));
     }
 }

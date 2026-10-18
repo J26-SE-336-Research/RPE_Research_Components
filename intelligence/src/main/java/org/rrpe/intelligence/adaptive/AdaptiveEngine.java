@@ -239,7 +239,7 @@ public class AdaptiveEngine {
         UUID trackedApplied; Settling settling; String verification;
         String pausedReason; Instant pauseCauseLastSeen;
         final DeadlineSafety safety = new DeadlineSafety();
-        Proportion lastH; String lastAuditedDecision;
+        Proportion lastH; String lastAuditedDecision; Instant conflictSince;
     }
     /** An applied change being verified: skip {@code settleLeft} counted windows, then collect {@code verify-windows} at the new budget. */
     private static class Settling {
@@ -252,7 +252,21 @@ public class AdaptiveEngine {
     private AuditLog audit = AuditLog.NONE;
     @Autowired(required = false) public void setAudit(AuditLog audit) { this.audit = audit == null ? AuditLog.NONE : audit; }
 
-    /** Configuration conflict (the stamped budget differs from the last approved policy): the chain is paused. */
+    /**
+     * The stamped budget differs from the last approved policy. A rollout briefly shows this while the gateway catches up
+     * with Component 3, so the chain is paused only when the conflict persists for {@code persistence-windows} window lengths.
+     */
+    public void configurationConflict(String chain, Source source, String reason) {
+        State state = chains.computeIfAbsent(key(chain, source), ignored -> new State());
+        synchronized (state) {
+            ChainV2 v = v2.computeIfAbsent(key(chain, source), ignored -> new ChainV2());
+            Instant now = clock.instant();
+            if (v.conflictSince == null) v.conflictSince = now;
+            if (v.state == ChainDeadlineState.PAUSED) { if (reason.startsWith(String.valueOf(v.pausedReason).split(":")[0])) v.pauseCauseLastSeen = now; return; }
+            if (Duration.between(v.conflictSince, now).compareTo(settings.window().multipliedBy(deadline.persistenceWindows())) >= 0) pauseChain(chain, source, reason);
+        }
+    }
+    /** Pauses the chain now (guide §6.6). */
     public void pauseChain(String chain, Source source, String reason) {
         State state = chains.computeIfAbsent(key(chain, source), ignored -> new State());
         synchronized (state) {
@@ -283,6 +297,7 @@ public class AdaptiveEngine {
         String chain = window.chain(); Source source = window.source(); Instant end = window.end();
         String key = key(chain, source);
         ChainV2 v = v2.computeIfAbsent(key, ignored -> new ChainV2());
+        v.conflictSince = null; // this window had no configuration conflict
         var samples = input.samples().samples();
 
         // Service load and per-request labels (by each request's own path).

@@ -30,10 +30,47 @@ public class MockScenarios {
         public Clock withZone(ZoneId zone) { return this; }
     }
     static final List<String> SERVICE_SCENARIOS = List.of("healthy", "stressed", "overloaded", "retry-stressed", "recovery");
+    /** Guide §7 worked examples (deadline v2), run with a simulated reviewer that approves every proposal. */
+    static final List<String> EXAMPLE_SCENARIOS = DeadlineExamples.all().stream().map(DeadlineExamples.Example::scenario).toList();
     public Map<String, Object> run(String scenario) {
         if (scenario.equals("multiple-chains")) return multipleChains();
         if (List.of("deadline-increase", "deadline-recovery").contains(scenario)) return deadlineScenario(scenario);
+        if (EXAMPLE_SCENARIOS.contains(scenario)) return example(scenario);
         if (!SERVICE_SCENARIOS.contains(scenario)) throw new IllegalArgumentException("Unknown scenario");
+        var response = new LinkedHashMap<>(serviceScenario(scenario));
+        var chainPart = chainPartOf(scenario);
+        if (chainPart != null) {
+            @SuppressWarnings("unchecked") var changes = new ArrayList<>((List<PolicyChange>) response.get("changes"));
+            @SuppressWarnings("unchecked") var chainChanges = (List<PolicyChange>) chainPart.get("changes");
+            changes.addAll(chainChanges);
+            response.put("changes", changes);
+            response.put("chains", chainPart.get("chains")); response.put("deadlineEvidence", chainPart.get("deadlineEvidence"));
+        }
+        return response;
+    }
+    /** The deadline side of the service scenarios: overloaded → Case B (or C), stressed and retry-stressed → no increase. */
+    private Map<String, Object> chainPartOf(String scenario) {
+        int learn = learningCycles() + perWindow(), decide = decisionCycles() + 10;
+        String chain = "POST /api/orders | mock-api-gateway > mock-order-service";
+        var learnPhase = new Phase("healthy (learning)", learn, List.of(new PathTraffic(1, HEALTHY_400, "mock-api-gateway", "mock-order-service")));
+        return switch (scenario) {
+            case "overloaded" -> simulate(scenario, List.of(new Script(chain, 600, List.of(learnPhase,
+                    new Phase("order overloaded, not signalled", decide, List.of(new PathTraffic(1, profile(520, 580, 585, 590, 595), "mock-api-gateway", "mock-order-service")),
+                            Map.of("mock-order-service", Health.OVERLOADED), Map.of())))), false, "");
+            case "stressed", "retry-stressed" -> simulate(scenario, List.of(new Script(chain, 600, List.of(learnPhase,
+                    new Phase("order stressed, slower", decide, List.of(new PathTraffic(1, profile(300, 560, 600, 620, 640), "mock-api-gateway", "mock-order-service")),
+                            Map.of("mock-order-service", Health.STRESSED), Map.of())))), false, "");
+            default -> null;
+        };
+    }
+    private Map<String, Object> example(String scenario) {
+        var e = DeadlineExamples.byScenario(scenario, Math.max(DeadlineExamples.LEARN, learningCycles() + perWindow()));
+        var response = simulate(scenario, List.of(e.script()), true,
+                "Isolated synthetic simulation of " + e.title() + ". A simulated reviewer approves every proposal; nothing is sent to Component 3. Expected: " + e.expectation());
+        response.put("simulatedApprovals", true);
+        return response;
+    }
+    private Map<String, Object> serviceScenario(String scenario) {
         var clock = new SimulationClock(Instant.now().minusSeconds(settings.baselineSamples() * settings.cycle().toSeconds() + 900));
         var workflow = new PolicyWorkflow(connections, clock); var engine = new AdaptiveEngine(settings, workflow, clock);
         String service = "mock-order-service";
@@ -66,10 +103,8 @@ public class MockScenarios {
     /** Healthy time ≈ 1000 ms. */
     static final Profile HEALTHY_1000 = profile(500, 950, 980, 1000, 1020);
 
-    private int learningCycles() {
-        long perWindow = Math.max(1, settings.window().toSeconds() / settings.cycle().toSeconds());
-        return (int) (deadline.minLearningWindows() * perWindow);
-    }
+    private int perWindow() { return (int) Math.max(1, settings.window().toSeconds() / settings.cycle().toSeconds()); }
+    private int learningCycles() { return deadline.minLearningWindows() * perWindow(); }
     private int decisionCycles() {
         long perWindow = Math.max(1, settings.window().toSeconds() / settings.cycle().toSeconds());
         return (int) ((deadline.persistenceWindows() + 2) * perWindow);
@@ -80,16 +115,22 @@ public class MockScenarios {
         var engine = new AdaptiveEngine(settings, workflow, clock); engine.configureDeadline(deadline, load, lever);
         var result = ChainSimulation.run(engine, workflow, clock, settings, scripts, approve, 300);
         var chains = new ArrayList<TempoWindows.Collection>(); var evidence = new ArrayList<Map<String, Object>>();
+        var outcomes = new ArrayList<Outcome>();
         for (var c : result.chains()) {
             chains.add(c.lastWindow());
             var entry = new LinkedHashMap<String, Object>();
-            entry.put("chain", c.chain()); entry.put("finalDeadlineMs", c.finalMs()); entry.put("steps", c.steps());
+            entry.put("chain", c.chain()); entry.put("initialDeadlineMs", c.phaseStartMs().isEmpty() ? null : c.phaseStartMs().get(0));
+            entry.put("finalDeadlineMs", c.finalMs()); entry.put("steps", c.steps());
             if (c.lastEvidence() != null) entry.put("evidence", c.lastEvidence());
             evidence.add(entry);
         }
+        // the last outcome of each chain (a simulation runs hundreds of cycles)
+        var last = new LinkedHashMap<String, Outcome>();
+        for (var o : result.outcomes()) last.put(o.assessment().target(), o);
+        outcomes.addAll(last.values());
         var response = new LinkedHashMap<String, Object>();
         response.put("scenario", scenario); response.put("source", "MOCK"); response.put("virtualTime", true);
-        response.put("message", message); response.put("outcomes", result.outcomes()); response.put("changes", workflow.list());
+        response.put("message", message); response.put("outcomes", outcomes); response.put("changes", workflow.list());
         response.put("chains", chains); response.put("deadlineEvidence", evidence);
         return response;
     }

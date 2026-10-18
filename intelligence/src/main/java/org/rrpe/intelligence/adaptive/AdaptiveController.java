@@ -32,10 +32,15 @@ public class AdaptiveController {
         this.connectionChecks = connectionChecks;
         this.audit = audit;
     }
+    /** {@code deadlineEvidence} (deadline v2, per live chain) is additive; the other fields are unchanged. */
     @GetMapping public Map<String, Object> status() {
-        return Map.of("collection", collector.status(), "assessments", engine.assessments(), "changes", workflow.list(), "mockEnabled", mockEnabled);
+        return Map.of("collection", collector.status(), "assessments", engine.assessments(), "changes", workflow.list(), "mockEnabled", mockEnabled,
+                "deadlineEvidence", engine.deadlineEvidence());
     }
-    @GetMapping("/queries") public Map<String, String> queries(@RequestParam String service) { return prometheus.queries(service); }
+    /** The service-window PromQL, plus the deadline v2 load queries (keys starting with {@code load}). */
+    @GetMapping("/queries") public Map<String, String> queries(@RequestParam String service) {
+        var all = new java.util.TreeMap<>(prometheus.queries(service)); all.putAll(prometheus.loadQueries(service)); return all;
+    }
     @GetMapping("/connections") public Object connections() { return connectionChecks.check(); }
     /** Audit trail of recommendations, human decisions and deliveries (persisted in PostgreSQL when configured). */
     @GetMapping("/audit") public Map<String, Object> audit(@RequestParam(defaultValue = "200") int limit) {

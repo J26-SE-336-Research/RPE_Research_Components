@@ -79,6 +79,7 @@ assert_eq "$(echo "${REC}" | jq -r '.proposal.currentValue | floor')" 100 "the r
 assert_ge "${proposed}" 101 "it proposes an increase (${proposed} ms)"
 assert_lt "${proposed}" 151 "within the bounded step of +50% per change"
 assert_contains "$(echo "${REC}" | jq -r '.proposal.evidence | join(" ")')" "censored" "the evidence explains that observed latency is cut at the deadline"
+assert_ne "$(echo "${INTEL}" | jq -r '.deadlineEvidence["GET /api/orders"].decisionCase // empty')" "" "C4 publishes its deadline v2 evidence for the chain"
 
 hub GET /api/hub/policies
 assert_eq "$(echo "${BODY}" | jq --arg id "${id}" '[.policies[] | select(.recommendationId==$id)] | length')" 0 "nothing is delivered while the recommendation awaits review"

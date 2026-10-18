@@ -182,3 +182,22 @@ STRESSED at ≥ 50, OVERLOADED at ≥ 80. Expiry uses the existing `deadline.exc
   `Component3Bridge` payload (`spec.routes["METHOD /path"].deadlineMs`, two-phase rollout); `intel.audit` schema;
   scenario names; env var names; `X-RPE-Control-Token`; "signal, never reject" (nothing expects a 504).
 - Rate (`bucket`) and retry logic: unchanged; v2 only reads whether a rate proposal is pending.
+
+## 7. Implementation notes and deviations from the guide (Phases 1–5)
+
+| # | Guide says | Implemented | Why |
+|---|---|---|---|
+| I1 | Feature flag `deadline.engine=v1\|v2` | Not built | Owner decision D1: v2 only; old logic on `component-4-intelligence-on-main` |
+| I2 | Verification FAIL → revert after A, B or D | A: PASS / **CONTINUE** (p_H fell but still above target) / FAIL; B: FAIL only if healthy requests are harmed, CONTINUE while overload is not yet signalled; D: as the guide | The guide's own examples step more than once (ex. 1: 2000 → 1500 → 1130 → 850; ex. 3: 300 → 450 → 680). A strict rule would revert the first step |
+| I3 | Row 1 INCONSISTENT | Kept as a defensive check (`DeadlinePolicy.inconsistent`) | With one healthy-time status per chain, A (D < D\* or censored) and B (identified, D > 1.1·D\*) exclude each other; a grid test proves it |
+| I4 | Configuration conflict → PAUSED | PAUSED only if the conflict persists for `persistence-windows` window lengths | A rollout briefly shows a stamped budget that differs from the synced C3 policy; pausing on that would block e2e `95` for 30 min |
+| I5 | Case C then row 3 (wrong lever) | Same order; the RATE/CAPACITY **advisory** is also shown when Case C keeps the deadline | Example 4's queued requests already exceed the deadline, so Case C matches first |
+| I6 | Windows without healthy requests are learning windows | Only windows with healthy requests enter the learning set | Otherwise a full overload pushes the healthy history out and T_h is lost (Case B needs an identified T_h) |
+| I7 | Drift compares the window p99 with T_h | Compares with T_h when the drift started; windows with a coverage gap are not used for σ̂ or drift | The pooled T_h follows the drifting windows; a change in the path mix is not drift |
+| I8 | A pending proposal holds the chain | The same value is re-offered each cycle (refresh); a different decision holds and stops the refresh, so the outdated proposal goes stale | The existing staleness rule supersedes proposals after 2 cycles; counted windows come every 4–5 cycles |
+| I9 | `min-window-requests` 30 on the demo cluster | Reuses `minimum-chain-requests` (≥ 100, validated by the existing settings) with low-traffic widening | Guide §8.3: reuse an existing property |
+| I10 | `ABNORMAL_END` for an error that ended before the budget | 502 → `ABNORMAL_END`; 504 near D → `REJECTING_MIDDLEWARE`; other 504 and 499 → `OUTER_TIMEOUT_OR_CLIENT` | No other signal for an abnormal end exists in the traces |
+| I11 | e2e `95`: assert no increase during the overload phase | Not added | `95` has no overload phase; it gains an additive evidence check only |
+| I12 | New scenarios in the Admin Panel | Available on the intelligence API only | `hub/features.go` has a scenario allow-list; the hub is outside this work |
+| I13 | Update §2 Status in `docs/components/C4-Intelligence-Rathnayake.md` | Not changed | Outside the files allowed for this work; proposed text in the final report |
+| I14 | Tests updated: 8 expected | 12 updated (8 + the 4 `DeadlineMathTests` rewritten, no engine switch) and the `LiveDeadlineCollectionTests` fixture (healthy duration 900 ms instead of exactly the 1000 ms budget, and null for the new load queries) | v2 counts `duration ≥ budget` as an exceedance |

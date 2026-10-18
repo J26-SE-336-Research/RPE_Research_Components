@@ -96,6 +96,41 @@ class DeadlineVerifierTests {
         assertEquals(ChainDeadlineState.READY, states.get(states.size() - 1), "the cause has cleared for 30 minutes");
     }
 
+    @Test void aBriefConfigurationConflictDuringARolloutDoesNotPauseButAPersistentOneDoes() {
+        var settings = DeadlineExamplesTests.settings();
+        var clock = new ChainSimulation.VirtualClock(Instant.parse("2026-10-13T00:00:00Z"));
+        var workflow = new PolicyWorkflow(AdaptiveEngineTests.connections(""), settings, clock);
+        var engine = new AdaptiveEngine(settings, workflow, clock); engine.configureDeadline(AdaptiveConfig.DeadlineSettings.demo(), null, null);
+        var paths = List.of(new ChainSimulation.PathTraffic(1, DeadlineExamples.H400, "gateway", "order"));
+        ChainSimulation.run(engine, workflow, clock, settings, List.of(new ChainSimulation.Script("GET /r", 600, List.of(new ChainSimulation.Phase("h", 16, paths)))), true, 300);
+        engine.configurationConflict("GET /r", Source.MOCK, "CONFIGURATION_CONFLICT: rollout lag");
+        clock.now = clock.now.plusSeconds(60);
+        engine.configurationConflict("GET /r", Source.MOCK, "CONFIGURATION_CONFLICT: rollout lag");
+        assertNotEquals(ChainDeadlineState.PAUSED, engine.deadlineEvidence("GET /r", Source.MOCK).state(), "one cycle of lag");
+        clock.now = clock.now.plusSeconds(600);
+        engine.configurationConflict("GET /r", Source.MOCK, "CONFIGURATION_CONFLICT: persistent");
+        assertEquals(ChainDeadlineState.PAUSED, engine.deadlineEvidence("GET /r", Source.MOCK).state(), "k = 2 window lengths of conflict");
+    }
+    @Test void aBaselineResetRestartsLearning() {
+        var settings = DeadlineExamplesTests.settings();
+        var clock = new ChainSimulation.VirtualClock(Instant.parse("2026-10-13T00:00:00Z"));
+        var workflow = new PolicyWorkflow(AdaptiveEngineTests.connections(""), settings, clock);
+        var engine = new AdaptiveEngine(settings, workflow, clock); engine.configureDeadline(AdaptiveConfig.DeadlineSettings.demo(), null, null);
+        var paths = List.of(new ChainSimulation.PathTraffic(1, DeadlineExamples.H400, "gateway", "order"));
+        // a live (TEMPO) chain: reset applies to live sources only
+        workflow.putPolicy(new Policy("GET /r", "v1", clock.now.plusSeconds(86400), null, null, null, 600.0), Source.TEMPO);
+        var phase = new ChainSimulation.Phase("h", 1, paths);
+        for (int i = 0; i < 16; i++) {
+            var set = ChainSimulation.samples(phase, i, 600, 300, clock.now, "GET", "/r", "t");
+            var w = new ChainWindow("GET /r", List.of("gateway", "order"), clock.now.minus(settings.window()), clock.now, Source.TEMPO, true, 300.0, 0.0, 420.0,
+                    Health.HEALTHY, List.of());
+            engine.chain(w, new ChainEvidence(set, Map.of(), Map.of("gateway", Health.HEALTHY, "order", Health.HEALTHY), Set.of()), Map.of(), List.of());
+            clock.now = clock.now.plusSeconds(60);
+        }
+        assertEquals(ChainDeadlineState.READY, engine.deadlineEvidence().get("GET /r").state());
+        engine.resetBaselines();
+        assertTrue(engine.deadlineEvidence().isEmpty(), "healthy time, streaks and chain state start again");
+    }
     @Test void withdrawPendingIncreaseLeavesOtherProposalsAlone() {
         var clock = new AdaptiveEngineTests.TestClock();
         var workflow = new PolicyWorkflow(AdaptiveEngineTests.connections(""), clock);
