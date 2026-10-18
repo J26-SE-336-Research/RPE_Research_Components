@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# C3: policy API + Operator. Two-phase and immediate rollouts to the running proxies, supersede/restore,
+# C3: policy API + Operator. Two-phase and immediate rollouts to the target sidecars only, supersede/restore,
 # Redis fast path, RPEPolicy mirror, deliveries in PostgreSQL verified by content hash and acknowledged by the
 # proxies, drain of the previous epoch, and drift repair after a pod restart.
 source "$(dirname "$0")/lib.sh"
@@ -27,7 +27,7 @@ wait_rollout() {
 }
 
 # v1: two-phase rollout created together with the policy
-hub POST /api/hub/policies "{\"policyId\":\"${id}\",\"service\":\"payment-svc\",\"route\":\"GET /api/orders\",\"deadlineMs\":1200,\"retryBudget\":2,\"rollout\":\"two-phase\"}"
+hub POST /api/hub/policies "{\"policyId\":\"${id}\",\"control\":\"rate-limit\",\"service\":\"payment-svc\",\"ratePerSec\":120,\"rollout\":\"two-phase\"}"
 assert_eq "${CODE}" 201 "policy v1 published with a two-phase rollout"
 assert_eq "$(echo "${BODY}" | jq -r .notification.channel)" rpe_policy_approved "approval fired NOTIFY (event-driven change detection)"
 r1=$(echo "${BODY}" | jq -r .rollout.metadata.name)
@@ -35,7 +35,8 @@ e1="${id}-v1"
 assert_eq "$(wait_rollout "${r1}")" Complete "two-phase rollout of ${e1} completes"
 assert_eq "$(echo "${BODY}" | jq -r '.status.active')" "$(echo "${BODY}" | jq -r '.status.targetPods')" "every target proxy confirmed the new version"
 assert_ge "$(proxy_holds payment-svc "${e1}" active)" 1 "payment-svc proxies enforce ${e1}"
-assert_ge "$(proxy_holds gateway "${e1}" active)" 1 "gateway proxies stamp ${e1} (flipped first at the ingress)"
+assert_eq "$(rate_gauge payment-svc)" 120 "the delivered rate limit (120 requests/s) is enforced by the payment-svc sidecar"
+assert_eq "$(proxy_holds gateway "${e1}" active)" 0 "a payment-svc policy is not delivered to the gateway"
 assert_eq "$(proxy_holds inventory-svc "${e1}" active)" 0 "proxies outside the policy scope are untouched"
 assert_eq "$(k -n rpe-system get rpepolicy "${id}" -o jsonpath='{.status.activeEpoch}')" "${e1}" "RPEPolicy mirror reports the active version"
 hub GET /api/hub/effective
@@ -44,27 +45,28 @@ client GET http://rpe-policy-api.rpe-system/api/k8s/events
 assert_ge "$(echo "${BODY}" | jq --arg r "${r1}" '[.[] | select(.type=="rollout-complete" and .fields.rollout==$r)] | length')" 1 "Redis event stream recorded the completed rollout"
 pg=$(k -n rpe-system get pod -l app=rpe-postgres -o jsonpath='{.items[0].metadata.name}')
 deliv=$(k -n rpe-system exec "${pg}" -- psql -U rpe -d rpe -At -c "select count(*) from policy.deliveries where epoch='${e1}' and state='active'")
-assert_ge "${deliv}" 2 "deliveries recorded per proxy in PostgreSQL"
+assert_ge "${deliv}" 1 "deliveries recorded per target sidecar in PostgreSQL"
 hub GET "/api/hub/rollouts/${r1}"
 assert_eq "$(echo "${BODY}" | jq '[.status.pods[] | select(.verified)] | length')" "$(echo "${BODY}" | jq -r '.status.targetPods')" "every proxy holds ${e1} with the approved content hash (verified)"
 acked=0
 for _ in $(seq 1 15); do
   acked=$(k -n rpe-system exec "${pg}" -- psql -U rpe -d rpe -At -c "select count(*) from policy.deliveries where epoch='${e1}' and confirmed_state='active' and confirmed_hash=hash")
-  [[ "${acked}" -ge 2 ]] && break
+  [[ "${acked}" -ge 1 ]] && break
   sleep 1
 done
-assert_ge "${acked}" 2 "proxies acknowledged ${e1} themselves with the same hash (POST /api/k8s/acks)"
+assert_ge "${acked}" 1 "the target sidecars acknowledged ${e1} themselves with the same hash (POST /api/k8s/acks)"
 expected_hash=$(echo "${BODY}" | jq -r '[.status.pods[] | select(.service=="payment-svc") | .hash][0]')
 client GET "http://$(pod_ip payment-svc):15020/rpe/v1/policy"
 assert_eq "$(echo "${BODY}" | jq -r --arg e "${e1}" '.epochs[] | select(.epoch==$e) | .hash')" "${expected_hash}" "the proxy reports the content hash it computed itself"
 
 # v2: new version supersedes v1; v1 is retired from the proxies after the drain
-hub POST /api/hub/policies "{\"policyId\":\"${id}\",\"service\":\"payment-svc\",\"route\":\"GET /api/orders\",\"deadlineMs\":900,\"retryBudget\":1,\"rollout\":\"two-phase\"}"
+hub POST /api/hub/policies "{\"policyId\":\"${id}\",\"control\":\"rate-limit\",\"service\":\"payment-svc\",\"ratePerSec\":150,\"rollout\":\"two-phase\"}"
 r2=$(echo "${BODY}" | jq -r .rollout.metadata.name); e2="${id}-v2"
 assert_eq "$(wait_rollout "${r2}")" Complete "rollout of ${e2} completes"
 hub GET "/api/hub/rollouts/${r2}"
 assert_eq "$(echo "${BODY}" | jq -r '(.status.inflightPrevious // 0) == 0 and (.status.activatedAt != null)')" true "two-phase drained until no request pinned to ${e1} was in flight"
 assert_eq "$(proxy_holds payment-svc "${e1}" active)" 0 "previous version ${e1} retired from the proxies"
+assert_eq "$(rate_gauge payment-svc)" 150 "the new rate limit (150 requests/s) replaced the old one on the payment-svc sidecar"
 hub GET /api/hub/policies
 assert_eq "$(echo "${BODY}" | jq -r --arg e "${e1}" '.policies[] | select(.epoch==$e) | .status')" superseded "store marks ${e1} superseded"
 assert_eq "$(echo "${BODY}" | jq -r --arg e "${e2}" '.policies[] | select(.epoch==$e) | .status')" active "store marks ${e2} active"
@@ -74,6 +76,7 @@ hub POST /api/hub/rollouts "{\"policyId\":\"${id}\",\"version\":1,\"mode\":\"nai
 r3=$(echo "${BODY}" | jq -r .metadata.name)
 assert_eq "$(wait_rollout "${r3}")" Complete "immediate rollout restores ${e1}"
 assert_ge "$(proxy_holds payment-svc "${e1}" active)" 1 "payment-svc enforces the restored ${e1}"
+assert_eq "$(rate_gauge payment-svc)" 120 "the restored rate limit (120 requests/s) is enforced by the payment-svc sidecar"
 
 # drift repair: a restarted pod comes up with no policy; the Operator re-delivers it
 old=$(pod_of payment-svc)

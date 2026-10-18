@@ -24,7 +24,7 @@ k -n rpe-system scale deploy/rpe-operator --replicas=0 >/dev/null
 k -n rpe-system wait --for=delete pod -l app=rpe-operator --timeout=90s >/dev/null 2>&1
 # another writer of the store (the schema still enforces the approval record)
 psql "insert into policy.policies(policy_id, version, epoch, scope, spec, source, approved_by, approved_at)
-      values ('${catchup}', 1, '${catchup}-v1', '{\"service\":\"payment-svc\"}', '{\"deadlineMs\":900}', 'admin', 'e2e-sre', now())" >/dev/null
+      values ('${catchup}', 1, '${catchup}-v1', '{\"service\":\"payment-svc\"}', '{\"leakyBucket\":{\"ratePerSec\":90}}', 'admin', 'e2e-sre', now())" >/dev/null
 k -n rpe-system scale deploy/rpe-operator --replicas=1 >/dev/null
 operator_ready
 mirrored=""
@@ -50,7 +50,7 @@ assert_ge "$(proxy_holds payment-svc "${catchup}-v1" active)" 1 "payment-svc enf
 
 # --- 3. tampered proxy: drift detected by content hash and repaired --------------------------------------
 pay=$(pod_of payment-svc)
-hub PUT "/api/hub/sidecars/${pay}/policy" "{\"epoch\":\"${catchup}-v1\",\"version\":1,\"state\":\"active\",\"policy\":{\"deadlineMs\":1}}"
+hub PUT "/api/hub/sidecars/${pay}/policy" "{\"epoch\":\"${catchup}-v1\",\"version\":1,\"state\":\"active\",\"policy\":{\"leakyBucket\":{\"ratePerSec\":1}}}"
 hub GET /api/hub/fleet/audit
 assert_contains "$(echo "${BODY}" | jq -r --arg p "${pay}" '.pods[] | select(.pod==$p) | (.drift // []) | join(";")')" "hash mismatch" "tampered policy content detected by hash"
 want=$(psql "select hash from policy.deliveries where pod='${pay}' and epoch='${catchup}-v1'")

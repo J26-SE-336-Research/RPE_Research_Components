@@ -1,33 +1,35 @@
 # C3 experiments
 
-Scripts that measure the Kubernetes enforcement layer on the running platform (`make deploy`). Results are
-written to `results/` as CSV (one row per trial, plus a summary with mean, min, max and sd).
+Scripts that measure the Kubernetes enforcement layer on the running platform (`scripts/deploy.sh`). Results are
+written to `results/` as CSV (one row per trial, plus a summary with mean, min, max, sd and p95).
 
 | Script | Experiment | What it measures |
 |---|---|---|
-| `e4-consistent-rollout.sh` | E4: consistent rollout (main novelty) | Mixed-policy requests, convergence time and drain time of immediate (naive) vs two-phase rollouts, under the same traffic and the same propagation spread per proxy |
+| `e3-convergence.sh` | E3: propagation time and delivery success | Time from the approval of a policy version until the last target sidecar has acknowledged it, and whether every target holds the approved content, for 1, 2, 3 ... replicas of a service |
 
 ## How the numbers are produced
 
-- **Mixed-policy request:** a request that a proxy served under a different version of the policy than the
-  epoch the request carries (`pe` in `X-RPE-Context`). Each proxy counts these (`rpe_policy_mismatch_total`,
-  and `mismatched` in `GET /rpe/v1/policy`). The Operator subtracts the count at the rollout start and reads it
-  again after the rollout settles (`SETTLE_MS`), then stores it in `RPERollout.status.mixedPolicyRequests` and
-  in `policy.rollouts.mixed_policy_requests`.
-- **Convergence time:** from the rollout start until every target proxy enforces the new version, verified by
-  the content hash the proxy computed (`status.convergenceMs`).
-- **Drain time (two-phase only):** from activation until no target proxy has a request pinned to the previous
-  epoch in flight (`status.drainMs`), read from the per-epoch in-flight counts the proxies report.
-- **Propagation spread (`skewMs`):** every delivery to a proxy starts after a random delay from 0 to `skewMs`.
-  This models a real fleet, where updates reach proxies at different times. It applies equally to both
-  strategies, so they are compared under the same delivery timing. Report the spread with every result.
+- **Targets:** a policy reaches only the sidecars its scope names: the chain deadline the gateway sidecars, a rate
+  limit or retry ratio the sidecars of the target service. The gateway is never a target of a service policy.
+- **Propagation time:** `policy.deliveries.confirmed_at` (the sidecar's own acknowledgement, state `active`)
+  minus `policy.policies.approved_at`, both stamped by PostgreSQL, so no clock needs to agree between machines.
+  The time includes staging, the content-hash check and activation (the default two-phase delivery).
+- **Delivery success:** the rollout completed and every target sidecar acknowledged the version with the same
+  content hash the Operator approved (`confirmed_hash = hash`).
+- **Convergence time (`convergence_ms`):** the Operator's own measure, from the rollout start until every target
+  enforces the version.
 
-## E4 usage
+## E3 usage
 
 ```bash
-experiments/c3/e4-consistent-rollout.sh                          # 5 runs, spreads 0 / 1000 / 2000 ms
-RUNS=10 SKEWS="500 2000" CONCURRENCY=12 experiments/c3/e4-consistent-rollout.sh
+experiments/c3/e3-convergence.sh                                      # 5 deliveries at 1, 2 and 3 replicas
+RUNS=10 REPLICAS="1 3 5" SERVICE=payment-svc experiments/c3/e3-convergence.sh
+MODE=naive experiments/c3/e3-convergence.sh                           # immediate delivery, for comparison
 ```
 
-The same comparison runs as an e2e check in `tests/e2e/92-consistent-rollout.sh`, and live in the Admin Panel
-(Rollouts, Consistency check).
+The script scales the service to each replica count, waits until every pod holds the current policy, and restores
+the original replica count when it ends. The rate-limit values are only delivered and acknowledged; enforcing them
+is the sidecar's job (C2).
+
+The same delivery guarantees run as e2e checks in `tests/e2e/92-targeted-delivery.sh` and live in the Admin Panel
+(Rollouts, Policy delivery).

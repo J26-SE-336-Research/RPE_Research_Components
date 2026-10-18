@@ -98,6 +98,23 @@ load_start() {
   LOAD_PID=$!
 }
 load_wait() { wait "${LOAD_PID}" 2>/dev/null; LOAD_SENT=$(tail -1 /tmp/rpe-load.out 2>/dev/null | tr -dc 0-9); }
+# queue_capacity SERVICE -> waiting-queue capacity of the inbound leaky bucket on the first sidecar of SERVICE
+queue_capacity() {
+  local ip; ip=$(pod_ip "$1")
+  k -n rpe-e2e exec e2e-client -- curl -s --max-time 5 "http://${ip}:15090/metrics" \
+    | awk '/^rpe_backpressure_inbound_queue_capacity / {printf "%g", $2}'
+}
+# rate_gauge SERVICE -> inbound release rate (requests/s) the first sidecar of SERVICE enforces right now
+rate_gauge() {
+  local ip; ip=$(pod_ip "$1")
+  k -n rpe-e2e exec e2e-client -- curl -s --max-time 5 "http://${ip}:15090/metrics" \
+    | awk '/^rpe_backpressure_inbound_rate_per_second / {printf "%g", $2}'
+}
+# burst N -> latency in ms of the slowest of N concurrent chain requests through the gateway
+burst() {
+  k -n rpe-e2e exec e2e-client -- sh -c "rm -f /tmp/burst.out; i=0; while [ \$i -lt $1 ]; do curl -s -o /dev/null --max-time 60 -w '%{time_total}\n' ${GW}/api/orders >> /tmp/burst.out & i=\$((i+1)); done; wait; sort -n /tmp/burst.out | tail -1" \
+    | awk '{printf "%d", $1 * 1000}'
+}
 # proxy_holds SERVICE EPOCH STATE -> number of that service's proxies holding EPOCH in STATE
 proxy_holds() {
   hub GET /api/hub/sidecars

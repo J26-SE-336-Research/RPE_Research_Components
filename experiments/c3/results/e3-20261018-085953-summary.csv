@@ -1,0 +1,2 @@
+replicas,deliveries,success_rate,propagation_ms_mean,propagation_ms_min,propagation_ms_max,propagation_ms_sd,propagation_ms_p95
+1,8,1.00,240.1,224,330,36.4,330

@@ -60,6 +60,10 @@ assert_eq "$(echo "${BODY}" | jq -r .allowed)" false "C3 admission simulator: re
 hub POST /api/hub/policies '{"policyId":"e2e-panel","service":"payment-svc","route":"GET /api/orders","deadlineMs":1200,"retryBudget":2}'
 assert_eq "$(echo "${BODY}" | jq -r .notification.channel)" rpe_policy_approved "C3 policy store: approval fires NOTIFY"
 assert_eq "$(echo "${BODY}" | jq -r .approvedBy)" admin "C3 policy store: logged-in user recorded as approver"
+hub POST /api/hub/policies '{"control":"rate-limit","service":"gateway","ratePerSec":10}'
+assert_eq "${CODE}" 400 "C3 policy store: a service control cannot be aimed at the gateway"
+hub POST /api/hub/policies '{"control":"chain-deadline","service":"payment-svc","route":"GET /api/orders","deadlineMs":900}'
+assert_eq "${CODE}" 400 "C3 policy store: the chain deadline can only target the gateway"
 hub GET /api/hub/policies/e2e-panel/status
 assert_eq "$(echo "${BODY}" | jq -r .policyId)" e2e-panel "C3 policy status: desired vs observed per policy"
 hub GET /api/hub/fleet/audit

@@ -1,0 +1,9 @@
+replicas,run,mode,target_pods,acknowledged_ok,success,propagation_ms,convergence_ms,rollout
+1,1,two-phase,1,1,1,224,211,e3-1792294193-v1-c55805
+1,2,two-phase,1,1,1,230,214,e3-1792294193-v2-1b2305
+1,3,two-phase,1,1,1,226,216,e3-1792294193-v3-ea5335
+1,4,two-phase,1,1,1,228,212,e3-1792294193-v4-1881e8
+1,5,two-phase,1,1,1,225,206,e3-1792294193-v5-adf878
+1,6,two-phase,1,1,1,330,311,e3-1792294193-v6-0806ea
+1,7,two-phase,1,1,1,230,215,e3-1792294193-v7-949af5
+1,8,two-phase,1,1,1,228,213,e3-1792294193-v8-7eebad
