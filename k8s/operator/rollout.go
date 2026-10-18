@@ -288,7 +288,10 @@ func (r *RolloutReconciler) forEachPod(ctx context.Context, ro *RPERollout, done
 	for i := range ro.Status.Pods {
 		ps := &ro.Status.Pods[i]
 		if ps.State == done {
+			// deliveries started earlier in this loop also update count
+			mu.Lock()
 			count++
+			mu.Unlock()
 			continue
 		}
 		t, ok := ips[ps.Name]
