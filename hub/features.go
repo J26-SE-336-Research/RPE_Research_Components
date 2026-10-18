@@ -393,6 +393,96 @@ type policyInput struct {
 	RatePerSec  int     `json:"ratePerSec"`
 	Rollout     string  `json:"rollout"` // "", two-phase, naive
 	SkewMs      int     `json:"skewMs"`  // simulated propagation spread per proxy (same for every mode)
+	// Control selects one independent control: chain-deadline (gateway), rate-limit or retry-ratio (a service).
+	// Empty keeps the combined form below.
+	Control string `json:"control"`
+}
+
+// Independent controls, each its own policy version and delivered to its own sidecars (A3.4): the chain deadline
+// to the gateway, the rate limit and the retry ratio to the target service.
+const (
+	controlChainDeadline = "chain-deadline"
+	controlRateLimit     = "rate-limit"
+	controlRetryRatio    = "retry-ratio"
+)
+
+// effectivePolicy returns the policy a service currently enforces according to Component 3 (id, route, spec), so a
+// change to one control keeps the service's other settings, exactly as Component 4's bridge does.
+func (h *hub) effectivePolicy(r *http.Request, service string) (id, route string, spec map[string]any) {
+	_, _, b, _, err := h.call(r.Context(), http.MethodGet, h.cfg.policyAPIURL+"/api/k8s/effective", nil)
+	if err != nil {
+		return
+	}
+	var all map[string]map[string]string
+	if json.Unmarshal(b, &all) != nil {
+		return
+	}
+	e, ok := all[service]
+	if !ok {
+		return
+	}
+	id, route = e["policyId"], e["route"]
+	_ = json.Unmarshal([]byte(e["spec"]), &spec)
+	return
+}
+
+// controlSpec builds the policy of a single control: the spec (the service's current one with only that control
+// changed), the scope and the policy id. It returns an error message for an invalid request.
+func (h *hub) controlSpec(r *http.Request, in policyInput) (id, service, route string, spec map[string]any, problem string) {
+	switch in.Control {
+	case controlChainDeadline:
+		if in.Service != "" && in.Service != "gateway" {
+			return "", "", "", nil, "a chain deadline is applied by the gateway: its service must be gateway"
+		}
+		if in.Route == "" || in.DeadlineMs <= 0 {
+			return "", "", "", nil, "a chain deadline needs a route (METHOD /path) and deadlineMs > 0"
+		}
+		service = "gateway"
+	case controlRateLimit:
+		if in.Service == "" || in.Service == "gateway" || in.RatePerSec <= 0 || in.RatePerSec > 1_000_000 {
+			return "", "", "", nil, "a rate limit needs a target service (not the gateway) and ratePerSec from 1 to 1000000"
+		}
+		service = in.Service
+	case controlRetryRatio:
+		if in.Service == "" || in.Service == "gateway" || in.RetryRatio < 0 || in.RetryRatio > 1 {
+			return "", "", "", nil, "a retry ratio needs a target service (not the gateway) and a ratio from 0 to 1"
+		}
+		service = in.Service
+	default:
+		return "", "", "", nil, "control must be chain-deadline, rate-limit or retry-ratio"
+	}
+	id, route, spec = h.effectivePolicy(r, service)
+	if spec == nil {
+		spec = map[string]any{}
+	}
+	object := func(parent map[string]any, key string) map[string]any {
+		if m, ok := parent[key].(map[string]any); ok {
+			return m
+		}
+		m := map[string]any{}
+		parent[key] = m
+		return m
+	}
+	switch in.Control {
+	case controlChainDeadline:
+		// the gateway creates root contexts: a route deadline is the budget it stamps for that route
+		object(object(spec, "routes"), in.Route)["deadlineMs"] = in.DeadlineMs
+		if route == "" || route == in.Route {
+			route = in.Route
+			spec["deadlineMs"] = in.DeadlineMs
+		}
+	case controlRateLimit:
+		object(spec, "leakyBucket")["ratePerSec"] = in.RatePerSec
+	case controlRetryRatio:
+		object(spec, "retry")["budgetRatio"] = in.RetryRatio
+	}
+	if in.PolicyID != "" {
+		id = in.PolicyID
+	}
+	if id == "" {
+		id = service + "-resilience"
+	}
+	return id, service, route, spec, ""
 }
 
 // createPolicy publishes a new approved version (the signed-in user is the approver) and optionally
@@ -404,11 +494,21 @@ func (h *hub) createPolicy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u := userOf(r.Context())
-	spec := map[string]any{"deadlineMs": in.DeadlineMs, "retry": map[string]any{"budget": in.RetryBudget, "budgetRatio": in.RetryRatio},
-		"leakyBucket": map[string]any{"ratePerSec": in.RatePerSec}}
-	if in.Service == "gateway" && in.Route != "" && in.DeadlineMs > 0 {
-		// the gateway creates root contexts: a route deadline is the budget it stamps for that route (A3.4)
-		spec["routes"] = map[string]any{in.Route: map[string]any{"deadlineMs": in.DeadlineMs}}
+	var spec map[string]any
+	if in.Control != "" {
+		id, service, route, s, problem := h.controlSpec(r, in)
+		if problem != "" {
+			writeErr(w, 400, problem)
+			return
+		}
+		in.PolicyID, in.Service, in.Route, spec = id, service, route, s
+	} else {
+		spec = map[string]any{"deadlineMs": in.DeadlineMs, "retry": map[string]any{"budget": in.RetryBudget, "budgetRatio": in.RetryRatio},
+			"leakyBucket": map[string]any{"ratePerSec": in.RatePerSec}}
+		if in.Service == "gateway" && in.Route != "" && in.DeadlineMs > 0 {
+			// the gateway creates root contexts: a route deadline is the budget it stamps for that route (A3.4)
+			spec["routes"] = map[string]any{in.Route: map[string]any{"deadlineMs": in.DeadlineMs}}
+		}
 	}
 	body := map[string]any{
 		"policyId": in.PolicyID,

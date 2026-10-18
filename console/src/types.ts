@@ -84,7 +84,6 @@ export type Rollout = {
     convergenceMs?: number;
     drainMs?: number;
     inflightPrevious?: number;
-    mixedPolicyRequests?: number;
     settled?: boolean;
     pods?: RolloutPod[];
   };
@@ -105,7 +104,6 @@ export type AuditPod = {
   gap?: string;
   activeEpoch?: string;
   epochs?: HeldEpoch[];
-  mismatched: number;
   drift?: string[];
   error?: string;
 };
@@ -130,6 +128,7 @@ export const EVENT_LABEL: Record<string, string> = {
   "rollout-settled": "Rollout measured",
   "coverage-gap": "Pod without proxy",
   "coverage-reinjected": "Pod recreated for injection",
+  "effective-restored": "Policy cache rebuilt from PostgreSQL",
 };
 
 export function eventSubject(e: PolicyEvent) {

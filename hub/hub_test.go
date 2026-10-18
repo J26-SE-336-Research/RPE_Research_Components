@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -169,5 +170,87 @@ func TestCounterDelta(t *testing.T) {
 	d := delta(map[string]int64{"cards_charged": 5, "work_abandoned": 3, "same": 2}, map[string]int64{"cards_charged": 5, "work_abandoned": 1, "same": 2})
 	if len(d) != 1 || d["work_abandoned"] != 2 {
 		t.Fatalf("delta = %v", d)
+	}
+}
+
+// A policy of one control is built from the service's current policy with only that control changed, and goes to
+// the service the control belongs to: the chain deadline to the gateway, the rate limit and the retry ratio to the
+// target service.
+func TestSingleControlPoliciesAreScopedAndMerged(t *testing.T) {
+	var posted []map[string]any
+	c3 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/api/k8s/effective":
+			_, _ = w.Write([]byte(`{"payment-svc":{"policyId":"pay-policy","route":"","spec":"{\"retry\":{\"budgetRatio\":0.1}}"},` +
+				`"gateway":{"policyId":"gw-policy","route":"GET /api/orders","spec":"{\"deadlineMs\":1000,\"routes\":{\"GET /api/orders\":{\"deadlineMs\":1000},\"POST /api/pay\":{\"deadlineMs\":2000}}}"}}`))
+		case r.Method == "POST" && r.URL.Path == "/api/k8s/policies":
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			posted = append(posted, body)
+			_, _ = w.Write([]byte(`{"policy":{"policyId":"x","version":3,"epoch":"x-v3"},"notification":null}`))
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer c3.Close()
+	h, _ := newHub(config{policyAPIURL: c3.URL, users: "alice:pw:sre", sessionSecret: "s"})
+	srv := h.routes()
+	post := func(body string) int {
+		req := httptest.NewRequest("POST", "/api/hub/policies", strings.NewReader(body))
+		req.AddCookie(&http.Cookie{Name: sessionCookie, Value: h.auth.issue(h.auth.users["alice"], time.Hour)})
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	scopeOf := func(p map[string]any) string { return p["scope"].(map[string]any)["service"].(string) }
+	specOf := func(p map[string]any) map[string]any { return p["spec"].(map[string]any) }
+
+	// rate limit: only the target service; its current retry ratio is kept
+	if code := post(`{"control":"rate-limit","service":"payment-svc","ratePerSec":250}`); code != 201 {
+		t.Fatalf("rate limit = %d", code)
+	}
+	p := posted[0]
+	if scopeOf(p) != "payment-svc" || p["policyId"] != "pay-policy" {
+		t.Fatalf("rate limit scope/id: %v", p)
+	}
+	if specOf(p)["leakyBucket"].(map[string]any)["ratePerSec"] != float64(250) || specOf(p)["retry"].(map[string]any)["budgetRatio"] != 0.1 {
+		t.Fatalf("rate limit spec must change only the rate: %v", specOf(p))
+	}
+	// chain deadline: always the gateway; only that route changes, the other route and settings are kept
+	if code := post(`{"control":"chain-deadline","route":"GET /api/orders","deadlineMs":1500}`); code != 201 {
+		t.Fatalf("chain deadline = %d", code)
+	}
+	p = posted[1]
+	routes := specOf(p)["routes"].(map[string]any)
+	if scopeOf(p) != "gateway" || p["policyId"] != "gw-policy" ||
+		routes["GET /api/orders"].(map[string]any)["deadlineMs"] != float64(1500) || routes["POST /api/pay"].(map[string]any)["deadlineMs"] != float64(2000) {
+		t.Fatalf("chain deadline must go to the gateway and change only its route: %v", p)
+	}
+	// a retry ratio for a service without a current policy gets a new one
+	if code := post(`{"control":"retry-ratio","service":"inventory-svc","retryRatio":0.2}`); code != 201 {
+		t.Fatalf("retry ratio = %d", code)
+	}
+	p = posted[2]
+	if scopeOf(p) != "inventory-svc" || p["policyId"] != "inventory-svc-resilience" || specOf(p)["retry"].(map[string]any)["budgetRatio"] != 0.2 {
+		t.Fatalf("retry ratio: %v", p)
+	}
+	// misdirected or invalid controls are refused before anything is sent
+	before := len(posted)
+	for _, body := range []string{
+		`{"control":"chain-deadline","service":"payment-svc","route":"GET /x","deadlineMs":100}`, // not the gateway
+		`{"control":"chain-deadline","deadlineMs":100}`,                                          // no route
+		`{"control":"rate-limit","service":"gateway","ratePerSec":10}`,                           // the gateway has no service rate limit
+		`{"control":"rate-limit","service":"payment-svc","ratePerSec":2000000}`,                  // above what a sidecar accepts
+		`{"control":"rate-limit","service":"payment-svc"}`,                                       // no rate
+		`{"control":"retry-ratio","service":"payment-svc","retryRatio":1.5}`,                     // out of range
+		`{"control":"mystery","service":"payment-svc"}`,
+	} {
+		if code := post(body); code != 400 {
+			t.Fatalf("%s = %d, want 400", body, code)
+		}
+	}
+	if len(posted) != before {
+		t.Fatal("an invalid control must not reach the policy API")
 	}
 }

@@ -28,65 +28,87 @@ function specSummary(p: PolicyRow) {
   return parts.join(" · ") || "—";
 }
 
+type Control = "chain-deadline" | "rate-limit" | "retry-ratio";
+const CONTROL_LABEL: Record<Control, string> = { "chain-deadline": "Chain deadline (gateway)", "rate-limit": "Rate limit (service)", "retry-ratio": "Retry ratio (service)" };
+
 function NewPolicy({ onClose, onCreated }: { onClose: () => void; onCreated: (c: Created) => void }) {
-  const [f, setF] = useState({ policyId: "", service: "payment-svc", route: "GET /api/orders", deadlineMs: 1000, retryBudget: 2, retryRatio: 0.1, ratePerSec: 100, rollout: "two-phase" });
+  const [f, setF] = useState({ control: "rate-limit" as Control, policyId: "", service: "payment-svc", route: "GET /api/orders", value: 150, rollout: "two-phase" });
   const create = useAction(async () => {
-    const r = await api<Created>("POST", "/policies", { ...f, policyId: f.policyId || `${f.service}-resilience` });
+    const body: Record<string, unknown> = { control: f.control, rollout: f.rollout };
+    if (f.policyId) body.policyId = f.policyId;
+    if (f.control === "chain-deadline") {
+      body.route = f.route;
+      body.deadlineMs = f.value;
+    } else {
+      body.service = f.service;
+      if (f.control === "rate-limit") body.ratePerSec = f.value;
+      else body.retryRatio = f.value;
+    }
+    const r = await api<Created>("POST", "/policies", body);
     onCreated(r);
     onClose();
     return r;
   });
-  const num = (k: keyof typeof f) => (e: React.ChangeEvent<HTMLInputElement>) => setF({ ...f, [k]: Number(e.target.value) });
+  const unit = f.control === "chain-deadline" ? "ms" : f.control === "rate-limit" ? "requests per second" : "0 to 1";
   return (
     <Modal
-      title="New policy"
+      title="New policy version"
       onClose={onClose}
       footer={
         <>
           <Button onClick={onClose}>Cancel</Button>
           <Button variant="primary" write onClick={() => create.run()} busy={create.busy}>
-            {f.rollout ? "Approve and roll out" : "Approve"}
+            {f.rollout ? "Approve and deliver" : "Approve"}
           </Button>
         </>
       }
     >
       <Alert>{create.error}</Alert>
       <div className="form-grid">
-        <Field label="Policy name" hint="Lowercase, digits and dashes">
-          <input value={f.policyId} placeholder={`${f.service}-resilience`} onChange={(e) => setF({ ...f, policyId: e.target.value.toLowerCase() })} />
-        </Field>
-        <Field label="Service">
-          <select value={f.service} onChange={(e) => setF({ ...f, service: e.target.value })}>
-            {SERVICES.map((s) => (
-              <option key={s}>{s}</option>
+        <Field label="Control" hint={f.control === "chain-deadline" ? "Delivered to the gateway sidecars only" : "Delivered to the target service's sidecars only"}>
+          <select
+            value={f.control}
+            onChange={(e) => {
+              const control = e.target.value as Control;
+              setF({ ...f, control, value: control === "chain-deadline" ? 1000 : control === "rate-limit" ? 150 : 0.1 });
+            }}
+          >
+            {(Object.keys(CONTROL_LABEL) as Control[]).map((k) => (
+              <option key={k} value={k}>
+                {CONTROL_LABEL[k]}
+              </option>
             ))}
           </select>
         </Field>
-        <Field label="Route">
-          <input value={f.route} onChange={(e) => setF({ ...f, route: e.target.value })} />
+        {f.control === "chain-deadline" ? (
+          <Field label="Route" hint="Budget the gateway stamps for this route">
+            <input value={f.route} onChange={(e) => setF({ ...f, route: e.target.value })} />
+          </Field>
+        ) : (
+          <Field label="Target service">
+            <select value={f.service} onChange={(e) => setF({ ...f, service: e.target.value })}>
+              {SERVICES.filter((s) => s !== "gateway").map((s) => (
+                <option key={s}>{s}</option>
+              ))}
+            </select>
+          </Field>
+        )}
+        <Field label={`New value (${unit})`}>
+          <input type="number" min={f.control === "retry-ratio" ? 0 : 1} max={f.control === "retry-ratio" ? 1 : undefined} step={f.control === "retry-ratio" ? 0.05 : 1} value={f.value} onChange={(e) => setF({ ...f, value: Number(e.target.value) })} />
         </Field>
-        <Field label="Deadline (ms)">
-          <input type="number" min={1} value={f.deadlineMs} onChange={num("deadlineMs")} />
+        <Field label="Policy name" hint="Leave empty to extend the service's current policy">
+          <input value={f.policyId} placeholder="current policy" onChange={(e) => setF({ ...f, policyId: e.target.value.toLowerCase() })} />
         </Field>
-        <Field label="Retry budget">
-          <input type="number" min={0} max={255} value={f.retryBudget} onChange={num("retryBudget")} />
-        </Field>
-        <Field label="Retry ratio">
-          <input type="number" min={0} max={1} step={0.05} value={f.retryRatio} onChange={num("retryRatio")} />
-        </Field>
-        <Field label="Rate limit (req/s)">
-          <input type="number" min={1} value={f.ratePerSec} onChange={num("ratePerSec")} />
-        </Field>
-        <Field label="Rollout">
+        <Field label="Delivery">
           <select value={f.rollout} onChange={(e) => setF({ ...f, rollout: e.target.value })}>
-            <option value="two-phase">Two-phase (recommended)</option>
+            <option value="two-phase">Verify, then activate (recommended)</option>
             <option value="naive">Immediate</option>
-            <option value="">Don't roll out yet</option>
+            <option value="">Don't deliver yet</option>
           </select>
         </Field>
       </div>
       <p className="muted" style={{ marginBottom: 0 }}>
-        You are recorded as the approver. Each change publishes a new immutable version.
+        You are recorded as the approver. Each change publishes a new immutable version; the service's other settings are kept.
       </p>
     </Modal>
   );

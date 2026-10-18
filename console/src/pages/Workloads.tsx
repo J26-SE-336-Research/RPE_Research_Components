@@ -192,7 +192,6 @@ function PolicyState({ audit }: { audit?: FleetAudit }) {
                 <th>Proxy</th>
                 <th>Active version</th>
                 <th>Held versions</th>
-                <th className="num">Mixed-policy requests</th>
                 <th>Drift</th>
               </tr>
             </thead>
@@ -213,7 +212,6 @@ function PolicyState({ audit }: { audit?: FleetAudit }) {
                     ))}
                     {p.error && <span className="muted">{p.error}</span>}
                   </td>
-                  <td className="num">{p.mismatched}</td>
                   <td>{p.drift?.length ? p.drift.map((d) => <div key={d}><Tag tone="amber">{d}</Tag></div>) : <Status tone="green">In sync</Status>}</td>
                 </tr>
               ))}
