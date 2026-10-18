@@ -112,3 +112,17 @@ func stampedBudget(next func(*http.Request) (string, time.Duration)) func(*http.
 		return route, budget
 	}
 }
+
+// stampedEpoch does the same for the policy epoch (pe). The gateway sidecar forwards the epoch it stamped on the
+// request, so the application must start the chain with that epoch too, not with the polled copy; otherwise, while a
+// rollout switches the gateway, the gateway hop and the next hop carry different epochs (rule R-T01: pe never
+// changes along a chain). Without a received context the configured epoch source applies.
+func stampedEpoch(cfg rpe.SignalConfig, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c := cfg
+		if in, err := rpe.DecodeContext(r.Header.Get(rpe.HeaderContext)); err == nil {
+			c.Epoch = func() string { return in.PolicyEpoch }
+		}
+		rpe.SignalMiddleware(c, next).ServeHTTP(w, r)
+	})
+}

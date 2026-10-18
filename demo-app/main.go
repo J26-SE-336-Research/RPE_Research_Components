@@ -93,13 +93,18 @@ func main() {
 		if env("ROLE", "service") == "gateway" {
 			budgets = stampedBudget(budgets)
 		}
-		app = rpe.SignalMiddleware(rpe.SignalConfig{
+		cfg := rpe.SignalConfig{
 			Gateway:     env("ROLE", "service") == "gateway",
 			RouteBudget: budgets,
 			RetryBudget: int64(envInt("RETRY_BUDGET", 3)),
 			Epoch:       epoch,
 			Now:         s.now,
-		}, app)
+		}
+		if cfg.Gateway {
+			app = stampedEpoch(cfg, app)
+		} else {
+			app = rpe.SignalMiddleware(cfg, app)
+		}
 	}
 	// Metrics and traces are produced by the RPE sidecar next to this service, not by the service itself.
 	mux.Handle("/", app)

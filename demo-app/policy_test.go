@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	rpe "github.com/J26-SE-336-Research/rpe/libs/rpe-go"
 )
 
 func TestPolicyFollowerAppliesActiveRouteDeadline(t *testing.T) {
@@ -50,5 +52,25 @@ func TestGatewayUsesTheDeadlineItsSidecarStamped(t *testing.T) {
 	r.Header.Set("X-RPE-Context", "garbage")
 	if _, d := budget(r); d != time.Second {
 		t.Fatalf("an unreadable context falls back: %v", d)
+	}
+}
+
+func TestGatewayUsesTheEpochItsSidecarStamped(t *testing.T) {
+	var started string
+	app := stampedEpoch(rpe.SignalConfig{Gateway: true, Epoch: func() string { return "polled-v1" }},
+		http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+			c, _ := rpe.FromContext(r.Context())
+			started = c.Ctx.PolicyEpoch
+		}))
+	r := httptest.NewRequest("GET", "/api/orders", nil)
+	app.ServeHTTP(httptest.NewRecorder(), r)
+	if started != "polled-v1" {
+		t.Fatalf("without a received context the configured epoch applies: %q", started)
+	}
+	r = httptest.NewRequest("GET", "/api/orders", nil)
+	r.Header.Set("X-RPE-Context", `v=1, rid="4bf92f3577b34da6a3ce929d0e0e4736", iid="00f067aa0ba902b7", pid="0000000000000000", ttl=1000, bud=1000, rb=3, cs=none, pe="stamped-v2", rt="GET /api/orders"`)
+	app.ServeHTTP(httptest.NewRecorder(), r)
+	if started != "stamped-v2" {
+		t.Fatalf("the sidecar's stamped epoch wins over a lagging copy: %q", started)
 	}
 }
