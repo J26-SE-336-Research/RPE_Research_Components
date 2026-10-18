@@ -11,7 +11,8 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 
 @Configuration
 @EnableScheduling
-@EnableConfigurationProperties({AdaptiveConfig.Settings.class, AdaptiveConfig.Connections.class})
+@EnableConfigurationProperties({AdaptiveConfig.Settings.class, AdaptiveConfig.Connections.class, AdaptiveConfig.DeadlineSettings.class,
+        AdaptiveConfig.LoadSettings.class, AdaptiveConfig.LeverSettings.class})
 public class AdaptiveConfig {
     @ConfigurationProperties("rrpe.adaptive")
     public record Settings(@DefaultValue("5m") Duration window, @DefaultValue("1m") Duration cycle,

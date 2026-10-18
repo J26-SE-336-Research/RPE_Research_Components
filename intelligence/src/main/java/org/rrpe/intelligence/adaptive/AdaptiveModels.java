@@ -75,6 +75,14 @@ public final class AdaptiveModels {
             return new ServiceLoadSnapshot(service, null, null, null, null, null, null, null, null, List.of());
         }
     }
+    /** Per-request evidence of a chain window for v2: samples, per-service load signals, deadline-guard health, hops without a sidecar. */
+    public record ChainEvidence(ChainSamples samples, Map<String, ServiceLoadSnapshot> loads, Map<String, Health> guards, java.util.Set<String> unmonitored) {
+        public ChainEvidence {
+            loads = loads == null ? Map.of() : Map.copyOf(loads);
+            guards = guards == null ? Map.of() : Map.copyOf(guards);
+            unmonitored = unmonitored == null ? java.util.Set.of() : java.util.Set.copyOf(unmonitored);
+        }
+    }
     public enum ServiceLoad { HEALTHY, STRESSED, OVERLOADED, UNKNOWN }
     public enum RequestLabel { H, STRESSED, O, UNKNOWN }
     public record LabelledSample(DeadlineSample sample, RequestLabel label, String stratum) {}

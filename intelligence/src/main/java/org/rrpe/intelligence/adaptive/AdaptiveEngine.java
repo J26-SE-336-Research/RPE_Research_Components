@@ -31,6 +31,9 @@ public class AdaptiveEngine {
     public void resetBaselines() {
         services.keySet().removeIf(k -> !k.startsWith(Source.MOCK + ":"));
         chains.keySet().removeIf(k -> !k.startsWith(Source.MOCK + ":"));
+        // Deadline v2: healthy time, disjoint-window streaks and chain state start again (state LEARNING).
+        java.util.function.Predicate<String> live = k -> !k.startsWith(Source.MOCK + ":");
+        healthy.resetIf(live); tracker.forgetIf(live); v2.keySet().removeIf(live);
     }
     private Duration freshness() { return settings.cycle().multipliedBy(2).plus(evaluationDelay); }
     private String key(String target, Source source) { return source + ":" + target; }
@@ -166,11 +169,19 @@ public class AdaptiveEngine {
         }
     }
 
+    /** Aggregate-only chain window (no per-request samples): checked and reported, but v2 cannot decide on it. */
     public Outcome chain(ChainWindow window) {
-        return chain(window, Map.of(), List.of());
+        return chain(window, null, Map.of(), List.of());
+    }
+    public Outcome chain(ChainWindow window, Map<String, Double> supportingMeasurements, List<String> supportingEvidence) {
+        return chain(window, null, supportingMeasurements, supportingEvidence);
     }
 
-    public Outcome chain(ChainWindow window, Map<String, Double> supportingMeasurements, List<String> supportingEvidence) {
+    /**
+     * Deadline recommendation v2 for one chain window (guide §6). The window must be complete and fresh, as before; the
+     * decision itself uses the per-request {@code evidence}. Every proposal goes through the existing approval workflow.
+     */
+    public Outcome chain(ChainWindow window, ChainEvidence evidence, Map<String, Double> supportingMeasurements, List<String> supportingEvidence) {
         if (window == null || window.chain() == null || window.chain().isBlank() || window.source() == null) throw new IllegalArgumentException("Chain and source are required");
         State state = chains.computeIfAbsent(key(window.chain(), window.source()), ignored -> new State());
         synchronized (state) {
@@ -180,71 +191,250 @@ public class AdaptiveEngine {
             }
             if (!acceptCycle(state, window.end())) return previousOrWaiting(state, window.chain(), window.source(), window.end());
             if (!validWindow(window.start(), window.end()) || !window.complete() || window.services().isEmpty()
-                    || !number(window.requests()) || window.requests() < settings.minimumChainRequests()
+                    || !number(window.requests()) || window.requests() <= 0
                     || !number(window.deadlineFailures()) || window.deadlineFailures() > window.requests()
-                    || !number(window.p99Ms()) || window.p99Ms() <= 0 || window.health() == null
-                    || !List.of(Health.HEALTHY, Health.STRESSED, Health.OVERLOADED).contains(window.health())) {
+                    || !number(window.p99Ms()) || window.p99Ms() <= 0) {
                 reset(state); workflow.withdraw(window.chain(), Action.CHAIN_DEADLINE, window.source(), "Incomplete chain evidence");
                 return save(state, window.chain(), window.source(), window.end(), Health.INSUFFICIENT_DATA, Map.of(),
-                        List.of("Complete chain p99, request/failure counts, ordered path and known health are required"), List.of());
+                        List.of("Complete chain p99, request/failure counts and an ordered path are required"), List.of());
             }
-            Map<String, Double> signals = Map.of("p99", window.p99Ms(), "deadlineFailureRate", window.deadlineFailures() / window.requests());
-            if (state.baseline.isEmpty()) {
-                Health phase = learn(state, signals, window.end(), window.health() == Health.HEALTHY && window.deadlineFailures() == 0, List.of("p99"));
-                String why = window.health() != Health.HEALTHY ? "; restarted: path health is " + window.health()
-                        : window.deadlineFailures() > 0 ? "; restarted: " + Math.round(window.deadlineFailures()) + " deadline failures in the window"
-                        : state.samples.size() == 1 ? "; restarted or first sample (p99 must stay within " + Math.round(settings.stabilityTolerance() * 100) + "% of the median)" : "";
-                return save(state, window.chain(), window.source(), window.end(), phase, signals,
-                        List.of("Learning stable Healthy chain p99; samples=" + state.samples.size() + "/" + settings.baselineSamples() + why), List.of());
+            var signals = new HashMap<String, Double>(Map.of("p99", window.p99Ms(), "deadlineFailureRate", window.deadlineFailures() / window.requests()));
+            Health health = window.health() == null ? Health.INSUFFICIENT_DATA : window.health();
+            if (evidence == null || evidence.samples().samples().isEmpty()) {
+                return save(state, window.chain(), window.source(), window.end(), health, signals,
+                        List.of("Deadline v2 needs per-request samples (gateway traces); an aggregate-only window is reported but not analysed"), List.of());
             }
-            if (!window.start().isAfter(state.baselineEnd)) return save(state, window.chain(), window.source(), window.end(), Health.BASELINE_READY,
-                    signals, List.of("Waiting for a recent window separate from chain baseline"), List.of());
-            var evidence = new ArrayList<String>(supportingEvidence); var changes = new ArrayList<PolicyChange>();
-            double baseline = state.baseline.get("p99").median();
-            double failureRate = signals.get("deadlineFailureRate");
-            boolean abnormalFailures = failureRate > state.baseline.get("deadlineFailureRate").median() + settings.ratioFloor();
-            state.degraded = abnormalFailures ? state.degraded + 1 : 0;
-            state.healthy = window.health() == Health.HEALTHY && !abnormalFailures ? state.healthy + 1 : 0;
-            Policy policy = workflow.current(window.chain(), window.source());
-            if (policy == null || !number(policy.deadlineMs()) || policy.deadlineMs() <= 0) evidence.add("Waiting for approved Component 3 chain deadline");
-            else if (window.health() == Health.OVERLOADED) {
-                evidence.add("Deadline increase blocked during overload"); workflow.withdraw(window.chain(), Action.CHAIN_DEADLINE, window.source(), "Chain is overloaded");
-            } else if (cooldown(window.chain(), Action.CHAIN_DEADLINE, window.source())) {
-                double candidate = policy.deadlineMs(); double margin = 0; String rule = null;
-                if (state.degraded >= settings.persistence()) {
-                    var calculated = DeadlineMath.increaseCensored(window.p99Ms(), baseline, policy.deadlineMs());
-                    margin = calculated.safetyMargin(); candidate = calculated.milliseconds();
-                    if (candidate > policy.deadlineMs()) {
-                        rule = "Persistent deadline failures; latency change=" + Math.round(calculated.latencyChangeRatio() * 100) + "%; margin=" + margin;
-                        if (window.p99Ms() >= policy.deadlineMs() * .95) evidence.add("Observed p99 is cut at the current deadline (censored); the uncensored baseline p99 "
-                                + Math.round(baseline) + " ms is used as a lower bound");
-                        double bounded = DeadlineMath.clamp(candidate, policy.deadlineMs(), settings.maximumDeadlineChange());
-                        if (bounded < candidate) {
-                            evidence.add("Limited to the maximum step of " + Math.round(settings.maximumDeadlineChange() * 100) + "% (wanted " + Math.round(candidate) + " ms)");
-                            candidate = bounded;
-                        }
-                    }
-                } else if (state.healthy >= settings.recoveryWindows()) {
-                    candidate = DeadlineMath.restore(baseline, policy.deadlineMs());
-                    if (candidate < policy.deadlineMs()) rule = "Healthy deadline restoration: max(baseline p99*1.10,current deadline*0.90)";
-                }
-                if (rule != null) {
-                    if (candidate < settings.minimumDeadlineMs() || candidate > settings.maximumDeadlineMs()
-                            || Math.abs(candidate / policy.deadlineMs() - 1) > settings.maximumDeadlineChange()) evidence.add("Deadline candidate exceeds configured limits");
-                    else {
-                        var measurements = new HashMap<String, Double>(supportingMeasurements);
-                        measurements.putAll(Map.of("baselineP99Ms", baseline, "recentP99Ms", window.p99Ms(), "failureRate", failureRate, "safetyMargin", margin,
-                                    "requestCount", window.requests(), "deadlineFailureCount", window.deadlineFailures(),
-                                    "failureCycles", (double) state.degraded, "healthyCycles", (double) state.healthy));
-                        changes.add(offer(window.chain(), Action.CHAIN_DEADLINE, window.source(), policy, policy.deadlineMs(), candidate, "milliseconds", window.end(),
-                                Map.copyOf(measurements), rule, evidence));
-                    }
-                } else workflow.withdraw(window.chain(), Action.CHAIN_DEADLINE, window.source(), "No persistent deadline change supported");
-            }
-            evidence.add("Deadline changes and restoration require human approval; chain p99 is never a sum of service percentiles");
-            if (state.healthy >= settings.recoveryWindows()) refreshBaseline(state, signals);
-            return save(state, window.chain(), window.source(), window.end(), window.health(), signals, evidence, changes);
+            return deadlineV2(state, window, health, evidence, signals, supportingMeasurements, supportingEvidence);
         }
+    }
+
+    // ---------------------------------------------------------------- deadline v2 ----------------------------------------------------------------
+
+    private AdaptiveConfig.DeadlineSettings deadline = AdaptiveConfig.DeadlineSettings.defaults();
+    private AdaptiveConfig.LoadSettings load = AdaptiveConfig.LoadSettings.defaults();
+    private AdaptiveConfig.LeverSettings lever = AdaptiveConfig.LeverSettings.defaults();
+    private final HealthyLatencyModel healthy = new HealthyLatencyModel();
+    private final DisjointWindowTracker tracker = new DisjointWindowTracker();
+    private final Map<String, ChainV2> v2 = new ConcurrentHashMap<>();
+
+    @Autowired(required = false)
+    public void configureDeadline(AdaptiveConfig.DeadlineSettings deadline, AdaptiveConfig.LoadSettings load, AdaptiveConfig.LeverSettings lever) {
+        if (deadline != null) this.deadline = deadline;
+        if (load != null) this.load = load;
+        if (lever != null) this.lever = lever;
+    }
+    public AdaptiveConfig.DeadlineSettings deadlineSettings() { return deadline; }
+
+    /** One counted window kept for low-traffic widening. */
+    private record CountedWindow(Instant end, long budget, List<LabelledSample> samples) {}
+    /** Per-chain v2 state. */
+    private static class ChainV2 {
+        ChainDeadlineState state = ChainDeadlineState.LEARNING;
+        final Deque<CountedWindow> recent = new ArrayDeque<>();
+        final List<Instant> proposalTimes = new ArrayList<>();
+        DeadlineEvidence evidence; List<String> lines = List.of();
+        UUID lastProposalId; Long lastProposedMs; Map<String, Double> lastMeasurements = Map.of(); List<String> lastProposalEvidence = List.of(); String lastRule;
+    }
+
+    /** Latest v2 evidence per live chain (MOCK chains excluded), for the API. */
+    public Map<String, DeadlineEvidence> deadlineEvidence() {
+        var result = new TreeMap<String, DeadlineEvidence>();
+        v2.forEach((k, v) -> { if (!k.startsWith(Source.MOCK + ":") && v.evidence != null) result.put(k.substring(k.indexOf(':') + 1), v.evidence); });
+        return result;
+    }
+    public DeadlineEvidence deadlineEvidence(String chain, Source source) { var v = v2.get(key(chain, source)); return v == null ? null : v.evidence; }
+
+    private Outcome deadlineV2(State state, ChainWindow window, Health health, ChainEvidence input, Map<String, Double> signals,
+            Map<String, Double> supportingMeasurements, List<String> supportingEvidence) {
+        String chain = window.chain(); Source source = window.source(); Instant end = window.end();
+        String key = key(chain, source);
+        ChainV2 v = v2.computeIfAbsent(key, ignored -> new ChainV2());
+        var samples = input.samples().samples();
+
+        // Service load and per-request labels (by each request's own path).
+        var services = new TreeSet<String>(); samples.forEach(s -> services.addAll(s.path())); services.removeAll(input.unmonitored());
+        var loadResults = ServiceLoadClassifier.classify(services, input.loads(), input.guards(), load);
+        var loads = new HashMap<String, ServiceLoad>(); var reasons = new TreeMap<String, String>();
+        loadResults.forEach((s, r) -> { loads.put(s, r.load()); reasons.put(s, r.load() + ": " + r.reason()); });
+        var labelled = RequestLabeler.label(samples, loads, input.unmonitored());
+        int n = labelled.size();
+        double oShare = share(labelled, l -> l.label() == RequestLabel.O), stressedShare = share(labelled, l -> l.label() == RequestLabel.STRESSED);
+        double unknownShare = share(labelled, l -> l.label() == RequestLabel.UNKNOWN), cutShare = share(labelled, l -> l.sample().cut());
+        String cutHint = labelled.stream().filter(l -> l.sample().cut()).collect(java.util.stream.Collectors.groupingBy(l -> l.sample().cutHint(), java.util.stream.Collectors.counting()))
+                .entrySet().stream().max(Map.Entry.comparingByValue()).map(Map.Entry::getKey).orElse(null);
+        var budgets = new TreeSet<Long>(); samples.forEach(s -> budgets.add(s.budgetMs()));
+        boolean mixed = budgets.size() > 1; long windowBudget = budgets.first();
+
+        Policy policy = workflow.current(chain, source);
+        Long current = policy == null || !number(policy.deadlineMs()) || policy.deadlineMs() <= 0 ? null : Math.round(policy.deadlineMs());
+
+        // Disjoint windows: only these count for learning, persistence and decisions.
+        boolean counted = tracker.isDisjoint(key, end, settings.window());
+        if (counted) tracker.markCounted(key, end);
+        boolean eligible = window.complete() && !mixed && cutShare <= deadline.cutMaxShare();
+        HealthyModel model = counted
+                ? healthy.update(key, end, labelled, windowBudget, eligible, deadline, settings.baselineSamples(), settings.minimumDeadlineMs(), settings.maximumDeadlineMs())
+                : healthy.model(key, deadline, settings.minimumDeadlineMs(), settings.maximumDeadlineMs());
+        if (counted && !mixed) {
+            v.recent.addLast(new CountedWindow(end, windowBudget, labelled));
+            long keep = Math.max(1, deadline.maxWiden().toSeconds() / Math.max(1, settings.window().toSeconds())) + 1;
+            while (v.recent.size() > keep) v.recent.removeFirst();
+        }
+        Proportion hExceed = proportion(v, labelled, RequestLabel.H, windowBudget, end);
+        Proportion oExceed = proportion(v, labelled, RequestLabel.O, windowBudget, end);
+        boolean hSufficient = hExceed.n() >= settings.minimumChainRequests(), oSufficient = oExceed.n() >= settings.minimumChainRequests();
+        Long target = model.targetMs();
+        int aStreak, oStreak, dStreak;
+        if (counted) {
+            aStreak = tracker.streak(key, "A", hSufficient && hExceed.lower() > deadline.eTarget(), end, settings.window());
+            oStreak = tracker.streak(key, "O", oShare >= deadline.shareThreshold(), end, settings.window());
+            dStreak = tracker.streak(key, "D", target != null && current != null && current > (1 + deadline.deadbandHealthy()) * target, end, settings.window());
+        } else { aStreak = tracker.current(key, "A"); oStreak = tracker.current(key, "O"); dStreak = tracker.current(key, "D"); }
+
+        var overloadedOnOPaths = new TreeSet<String>();
+        for (var l : labelled) if (l.label() == RequestLabel.O) for (String s : l.sample().path()) if (loads.get(s) == ServiceLoad.OVERLOADED) overloadedOnOPaths.add(s);
+        var leverResult = LeverDiagnosis.chain(overloadedOnOPaths, input.loads(), lever, load);
+        var oSamples = labelled.stream().filter(l -> l.label() == RequestLabel.O && !l.sample().cut()).toList();
+        Double predictedOAtTarget = target == null || oSamples.isEmpty() ? null
+                : oSamples.stream().filter(l -> l.sample().durationMs() > target).count() / (double) oSamples.size();
+
+        var pending = workflow.pending(chain, Action.CHAIN_DEADLINE, source);
+        boolean pendingRate = services.stream().anyMatch(s -> workflow.pending(s, Action.LEAKY_BUCKET, source).isPresent());
+        Instant now = clock.instant();
+        v.proposalTimes.removeIf(t -> Duration.between(t, now).compareTo(Duration.ofHours(1)) >= 0);
+
+        var changes = new ArrayList<PolicyChange>();
+        DeadlinePolicy.DeadlineDecision decision;
+        if (current == null) decision = DeadlinePolicy.hold("WAITING_FOR_POLICY", "waiting for the current route deadline");
+        else if (!counted) {
+            decision = DeadlinePolicy.hold("NOT_COUNTED", "overlaps the last counted window");
+            // Keep a pending proposal fresh between counted windows while its basis still holds.
+            if (pending.isPresent() && pending.get().proposal().id().equals(v.lastProposalId) && v.lastProposedMs != null
+                    && pending.get().decision() == Decision.PENDING_APPROVAL && eligible && windowBudget == current) {
+                changes.add(offer(chain, Action.CHAIN_DEADLINE, source, policy, current, v.lastProposedMs, "milliseconds", end,
+                        v.lastMeasurements, v.lastRule, v.lastProposalEvidence));
+            }
+        } else {
+            var ctx = new DeadlinePolicy.ChainContext(false, null, true, window.complete(), mixed, unknownShare, cutShare, cutHint, pendingRate,
+                    !cooldown(chain, Action.CHAIN_DEADLINE, source), v.proposalTimes.size(), model, current, oShare, stressedShare,
+                    hExceed, oExceed, hSufficient, oSufficient, aStreak, oStreak, dStreak, leverResult.lever(), predictedOAtTarget,
+                    candidate -> healthy.predictedExceed(key, candidate),
+                    pending.filter(p -> Math.round(p.proposal().currentValue()) == current).map(p -> Math.round(p.proposal().proposedValue())).orElse(null));
+            decision = DeadlinePolicy.decide(ctx, deadline, settings.maximumDeadlineMs());
+        }
+
+        String advisory = decision.holdReason() != null && decision.holdReason().startsWith("LEVER_")
+                ? "Consider the " + (leverResult.lever() == Lever.RATE ? "inbound rate" : "capacity") + " at " + String.join(", ", overloadedOnOPaths) + " (" + leverResult.reason() + ")" : null;
+        String headline = headline(decision, current, model, hExceed, oExceed, windowBudget);
+        var lines = new ArrayList<String>();
+        lines.add(headline);
+        lines.add(modelLine(model));
+        lines.add(String.format(Locale.ROOT, "Requests %d: overloaded %.1f%%, stressed %.1f%%, unknown %.1f%%, cut %.1f%%%s; healthy exceed %s, overloaded exceed %s",
+                n, 100 * oShare, 100 * stressedShare, 100 * unknownShare, 100 * cutShare, cutHint == null ? "" : " (" + cutHint + ")", proportionText(hExceed), proportionText(oExceed)));
+        if (leverResult.lever() != Lever.NONE) lines.add("Lever: " + leverResult.lever() + (leverResult.inferred() ? " (inferred)" : "") + "; " + leverResult.reason());
+        if (advisory != null) lines.add("Advisory: " + advisory);
+        if (counted) lines.add("Counted disjoint window; streaks: over-signalled " + aStreak + ", overloaded " + oStreak + ", too long " + dStreak
+                + " (need " + deadline.persistenceWindows() + ")");
+        lines.add("Every deadline change requires human approval; the chain p99 is pooled from complete request durations");
+
+        if (counted && current != null) {
+            if (decision.proposes()) {
+                var measurements = new HashMap<String, Double>(supportingMeasurements);
+                measurements.put("requestCount", window.requests()); measurements.put("deadlineFailureCount", window.deadlineFailures());
+                measurements.put("recentP99Ms", window.p99Ms());
+                put(measurements, "baselineP99Ms", model.thMs()); put(measurements, "healthyTimeMs", model.thMs());
+                put(measurements, "safetyMargin", model.margin()); put(measurements, "targetMs", target == null ? null : target.doubleValue());
+                measurements.put("healthyExceedRate", hExceed.p()); measurements.put("healthyExceedLower", hExceed.lower()); measurements.put("healthyExceedUpper", hExceed.upper());
+                measurements.put("healthySamples", (double) hExceed.n());
+                measurements.put("overloadExceedRate", oExceed.p()); measurements.put("overloadExceedLower", oExceed.lower()); measurements.put("overloadExceedUpper", oExceed.upper());
+                measurements.put("overloadSamples", (double) oExceed.n());
+                measurements.put("overloadShare", oShare); measurements.put("stressedShare", stressedShare); measurements.put("unknownShare", unknownShare); measurements.put("cutShare", cutShare);
+                put(measurements, "predictedHealthyExceed", decision.predictedH()); put(measurements, "predictedOverloadExceed", decision.predictedO());
+                var proposalEvidence = new ArrayList<String>();
+                proposalEvidence.add(headline);
+                proposalEvidence.add(String.format(Locale.ROOT, "Impact preview at %d ms: about %s of healthy requests would exceed it%s", decision.proposedMs(),
+                        decision.predictedH() == null ? "n/a" : pctText(decision.predictedH()),
+                        decision.predictedO() == null ? "" : ", and at least " + pctText(decision.predictedO()) + " of overloaded requests would be signalled"));
+                proposalEvidence.addAll(lines.subList(1, lines.size()));
+                proposalEvidence.addAll(supportingEvidence);
+                var change = offer(chain, Action.CHAIN_DEADLINE, source, policy, current, decision.proposedMs(), "milliseconds", end,
+                        Map.copyOf(measurements), decision.rule(), proposalEvidence);
+                changes.add(change);
+                if (!change.proposal().id().equals(v.lastProposalId) || pending.isEmpty()) v.proposalTimes.add(now);
+                v.lastProposalId = change.proposal().id(); v.lastProposedMs = decision.proposedMs();
+                v.lastMeasurements = Map.copyOf(measurements); v.lastProposalEvidence = List.copyOf(proposalEvidence); v.lastRule = decision.rule();
+            } else if (decision.decisionCase() == DeadlineCase.C_KEEP_FIRING) {
+                if (pending.isPresent() && pending.get().proposal().proposedValue() > current) {
+                    workflow.withdraw(chain, Action.CHAIN_DEADLINE, source, "Case C: the overload signal fires; the pending increase is withdrawn");
+                }
+            } else if (pending.isPresent() && WITHDRAW_ON.contains(decision.holdReason())) {
+                workflow.withdraw(chain, Action.CHAIN_DEADLINE, source, "Conditions no longer support the change (" + decision.holdReason() + ")");
+            }
+        }
+        // A counted window that no longer proposes the same value stops the refresh: an outdated proposal then goes stale.
+        if (counted && !decision.proposes()) v.lastProposedMs = null;
+        boolean stillPending = workflow.pending(chain, Action.CHAIN_DEADLINE, source).isPresent();
+        v.state = stillPending ? ChainDeadlineState.PROPOSED : model.ready() ? ChainDeadlineState.READY : ChainDeadlineState.LEARNING;
+        if (counted || v.evidence == null) {
+            v.evidence = new DeadlineEvidence(decision.decisionCase(), decision.holdReason(), current == null ? windowBudget : current,
+                    decision.proposedMs(), model, hExceed, oExceed, oShare, stressedShare, unknownShare, cutShare, cutHint,
+                    decision.predictedH(), decision.predictedO(), leverResult.lever(), leverResult.inferred(), reasons, v.state, null,
+                    samples.stream().map(DeadlineSample::traceId).limit(5).toList(), advisory);
+            v.lines = List.copyOf(lines);
+        }
+        signals.put("healthyExceedRate", hExceed.p()); signals.put("overloadShare", oShare); signals.put("stressedShare", stressedShare);
+        var evidenceLines = new ArrayList<>(v.lines); evidenceLines.addAll(supportingEvidence);
+        Map<String, Statistic> baseline = model.thMs() == null ? Map.of() : Map.of("p99", new Statistic(model.thMs(), model.sigmaMs() == null ? 0 : model.sigmaMs()));
+        state.outcome = new Outcome(new Assessment(chain, health, source, end, model.windows(), baseline, Map.copyOf(signals), List.copyOf(evidenceLines)), List.copyOf(changes));
+        return state.outcome;
+    }
+
+    /** Holds that mean "the conditions for the pending proposal are gone": the pending proposal is withdrawn. */
+    private static final Set<String> WITHDRAW_ON = Set.of("IN_BAND", "STRESS_GATE", "LEVER_RATE", "LEVER_CAPACITY", "DEADLINE_NOT_THE_LEVER",
+            "PREVIEW_FAILED", "INCONSISTENT", "CENSORED_OTHER", "UNKNOWN_SHARE", "AT_LIMIT");
+
+    /** Exceed rate of a label at the current budget; widened with earlier counted windows (same budget) when traffic is low. */
+    private Proportion proportion(ChainV2 v, List<LabelledSample> window, RequestLabel label, long budget, Instant end) {
+        var pool = new ArrayList<LabelledSample>();
+        for (var l : window) if (l.label() == label && !l.sample().cut()) pool.add(l);
+        if (pool.size() < settings.minimumChainRequests()) {
+            var earlier = new ArrayList<>(v.recent); java.util.Collections.reverse(earlier);
+            for (var w : earlier) {
+                if (w.end().equals(end) || w.budget() != budget || Duration.between(w.end(), end).compareTo(deadline.maxWiden()) > 0) continue;
+                for (var l : w.samples()) if (l.label() == label && !l.sample().cut()) pool.add(l);
+                if (pool.size() >= settings.minimumChainRequests()) break;
+            }
+        }
+        int events = (int) pool.stream().filter(l -> l.sample().expired()).count();
+        return RobustStatistics.wilsonOneSided(events, pool.size(), deadline.z(), deadline.designEffect());
+    }
+    private static double share(List<LabelledSample> all, java.util.function.Predicate<LabelledSample> p) {
+        return all.isEmpty() ? 0 : all.stream().filter(p).count() / (double) all.size();
+    }
+    private static void put(Map<String, Double> map, String key, Double value) { if (value != null && Double.isFinite(value)) map.put(key, value); }
+    private static String pctText(double v) { return String.format(Locale.ROOT, "%.1f%%", 100 * v); }
+    private static String proportionText(Proportion p) {
+        return p.n() == 0 ? "n/a (0 requests)" : String.format(Locale.ROOT, "%s of %d [%s, %s]", pctText(p.p()), p.n(), pctText(p.lower()), pctText(p.upper()));
+    }
+    private static String modelLine(HealthyModel m) {
+        String th = m.thMs() == null ? "unknown" : Math.round(m.thMs()) + " ms";
+        return "Healthy time T_h " + th + " (" + m.status() + (m.ready() ? ", ready" : ", learning") + "; " + m.windows() + " windows, " + m.requests()
+                + " healthy requests" + (m.coverageGap() ? ", coverage gap: T_h frozen" : "") + ")"
+                + (m.targetMs() == null ? "" : String.format(Locale.ROOT, "; target D* %d ms (margin %.0f%%)", m.targetMs(), 100 * m.margin()));
+    }
+    private static String headline(DeadlinePolicy.DeadlineDecision d, Long current, HealthyModel m, Proportion h, Proportion o, long budget) {
+        long now = current == null ? budget : current;
+        return switch (d.decisionCase()) {
+            case A_RAISE -> "CENSORED".equals(m.status())
+                    ? String.format(Locale.ROOT, "Raise the deadline %d → %d ms: %s of healthy requests exceed %d ms, so the healthy time is censored at the deadline (its p99 is at least the deadline)",
+                            now, d.proposedMs(), pctText(h.p()), now)
+                    : String.format(Locale.ROOT, "Raise the deadline %d → %d ms: healthy requests are over-signalled (%s exceed it)", now, d.proposedMs(), pctText(h.p()));
+            case B_LOWER_OVERLOAD -> String.format(Locale.ROOT, "Lower the deadline %d → %d ms: services are overloaded but only %s of their requests are signalled",
+                    now, d.proposedMs(), pctText(o.p()));
+            case D_TIGHTEN -> String.format(Locale.ROOT, "Tighten the deadline %d → %d ms: the chain is healthy and the deadline is longer than 1.25 × D*", now, d.proposedMs());
+            case C_KEEP_FIRING -> String.format(Locale.ROOT, "Keep the deadline %d ms: the overload signal fires (%s of overloaded requests are signalled)", now, pctText(o.p()));
+            case HOLD -> "Hold the deadline at " + now + " ms (" + d.holdReason() + "): " + d.rule().substring(d.rule().indexOf(':') + 2);
+        };
     }
 
     public List<Assessment> assessments() {

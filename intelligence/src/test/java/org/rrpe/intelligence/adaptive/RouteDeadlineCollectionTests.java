@@ -59,14 +59,16 @@ class RouteDeadlineCollectionTests {
         assertFalse(TempoWindows.sufficientCoverage(100, Double.NaN));
         assertFalse(TempoWindows.sufficientCoverage(100, Double.POSITIVE_INFINITY));
     }
+    // v2: intended behaviour change (see DEADLINE_V2_MIGRATION.md) - the engine decides from the per-request samples (Case A), not the 10/20/30% bands
     @Test void poolsDifferentPathsOnceAndProducesOneEnforceableRouteDeadline() {
         var http = new FixtureHttp(); var tempo = http.tempo();
         var workflow = new PolicyWorkflow(connections, settings, clock);
         var engine = new AdaptiveEngine(settings, workflow, clock);
+        engine.configureDeadline(AdaptiveConfig.DeadlineSettings.demo(), null, null);
         for (int i = 0; i < settings.baselineSamples(); i++) {
             var data = tempo.collect(clock.instant(), healthy).get(0);
             workflow.observeConfiguredDeadline(data.window().chain(), data.currentDeadlineMs(), clock.instant());
-            engine.chain(data.window()); clock.next(60);
+            engine.chain(data.window(), new ChainEvidence(data.samples(), Map.of(), healthy, Set.of()), Map.of(), List.of()); clock.next(60);
         }
         clock.next(300); http.degraded = true; http.failures = 20;
         for (int i = 0; i < 2; i++) {
@@ -79,13 +81,15 @@ class RouteDeadlineCollectionTests {
             assertEquals(900, data.paths().get(0).p99Ms()); assertEquals(1200, data.paths().get(1).p99Ms());
             assertEquals(1200, data.window().p99Ms(), "Pool raw request durations; do not average path p99s (1050) or sum them (2100)");
             assertEquals(100, data.window().requests()); assertEquals(20, data.window().deadlineFailures());
+            assertEquals(100, data.samples().samples().size(), "one v2 sample per complete trace");
             workflow.observeConfiguredDeadline(data.window().chain(), data.currentDeadlineMs(), clock.instant());
-            engine.chain(data.window()); clock.next(60);
+            engine.chain(data.window(), new ChainEvidence(data.samples(), Map.of(), healthy, Set.of()), Map.of(), List.of()); clock.next(60);
         }
         assertEquals(1, workflow.list().size());
         var proposal = workflow.list().get(0);
         assertEquals("POST /api/orders", proposal.proposal().target());
-        assertEquals(1440, proposal.proposal().proposedValue());
+        // every learning request took 1000 ms = the 1000 ms budget, so the healthy time is censored: raise ×1.5
+        assertEquals(1500, proposal.proposal().proposedValue());
         assertEquals(Decision.PENDING_APPROVAL, proposal.decision());
         assertTrue(workflow.deliverable().isEmpty());
     }

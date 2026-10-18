@@ -18,11 +18,13 @@ class AdaptiveEndpointTests {
         if (body == null) request.GET(); else request.method(method, HttpRequest.BodyPublishers.ofString(body));
         return HttpClient.newHttpClient().send(request.build(), HttpResponse.BodyHandlers.ofString());
     }
+    // v2: intended behaviour change (see DEADLINE_V2_MIGRATION.md) - deadline-increase is Case A on healthy over-signalling (1000 → 1500)
     @Test void isolatedDeadlineScenarioMatchesCorrectedExampleAndNeverEntersLiveDelivery() throws Exception {
         var response = request("/api/v2/intelligence/demo/deadline-increase", "{}", "POST");
         assertEquals(200, response.statusCode(), response.body());
         var demo = json.readTree(response.body()); var proposal = demo.get("changes").get(0);
-        assertEquals(1440, proposal.get("proposal").get("proposedValue").asDouble());
+        assertEquals(1500, proposal.get("proposal").get("proposedValue").asDouble());
+        assertEquals("A_RAISE", demo.get("deadlineEvidence").get(0).get("evidence").get("decisionCase").asString());
         assertEquals("PENDING_APPROVAL", proposal.get("decision").asString());
         var status = json.readTree(request("/api/v2/intelligence", null, "GET").body());
         assertEquals(0, status.get("changes").size()); assertEquals(0, status.get("assessments").size());
@@ -31,13 +33,16 @@ class AdaptiveEndpointTests {
         assertEquals("apigateway", services.get(0).asString());
         assertEquals(0, json.readTree(request("/api/v2/intelligence/outbox", null, "GET").body()).size());
     }
+    // v2: intended behaviour change (see DEADLINE_V2_MIGRATION.md) - deadline-recovery is Case D: max(D* = 1150, ceil10(0.80 × 1440)) = 1160
     @Test void deadlineRestorationExampleIs1296AndRequiresApproval() throws Exception {
         var response = request("/api/v2/intelligence/demo/deadline-recovery", "{}", "POST");
         assertEquals(200, response.statusCode(), response.body());
-        var proposal = json.readTree(response.body()).get("changes").get(0);
-        assertEquals(1296, proposal.get("proposal").get("proposedValue").asDouble());
+        var demo = json.readTree(response.body()); var proposal = demo.get("changes").get(0);
+        assertEquals(1160, proposal.get("proposal").get("proposedValue").asDouble());
         assertEquals("PENDING_APPROVAL", proposal.get("decision").asString());
+        assertEquals("D_TIGHTEN", demo.get("deadlineEvidence").get(0).get("evidence").get("decisionCase").asString());
     }
+    // v2: intended behaviour change (see DEADLINE_V2_MIGRATION.md) - one chain is raised (A), one lowered under overload (B), one tightened (D)
     @Test void multipleChainsHaveIndependentEvidenceAndRecommendationsWithoutLiveDelivery() throws Exception {
         var response = request("/api/v2/intelligence/demo/multiple-chains", "{}", "POST");
         assertEquals(200, response.statusCode(), response.body());
@@ -48,12 +53,11 @@ class AdaptiveEndpointTests {
         for (var change : demo.get("changes")) {
             var proposal = change.get("proposal");
             String target = proposal.get("target").asString();
-            double expected = target.startsWith("POST /api/orders") ? 1440 : target.startsWith("GET /api/inventory") ? 715 : 1080;
+            double expected = target.startsWith("POST /api/orders") ? 1500 : target.startsWith("GET /api/inventory") ? 490 : 960;
             assertEquals(expected, proposal.get("proposedValue").asDouble(), target);
             assertEquals("MOCK", proposal.get("source").asString());
             assertEquals("PENDING_APPROVAL", change.get("decision").asString());
-            assertEquals(target.startsWith("POST /api/orders") ? 20 : target.startsWith("GET /api/inventory") ? 35 : 0,
-                    proposal.get("measurements").get("deadlineFailureCount").asDouble());
+            assertEquals(target.startsWith("POST /api/orders") ? 76 : 0, proposal.get("measurements").get("deadlineFailureCount").asDouble(), target);
         }
         var status = json.readTree(request("/api/v2/intelligence", null, "GET").body());
         assertEquals(0, status.get("changes").size());

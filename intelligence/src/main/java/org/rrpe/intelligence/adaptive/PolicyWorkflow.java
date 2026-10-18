@@ -151,6 +151,14 @@ public class PolicyWorkflow {
                         && (item.lastAttempt() == null || clock.instant().isAfter(item.lastAttempt().plusSeconds(30))))
                 .limit(100).toList();
     }
+    /** The newest active (not yet applied, expired, superseded or rejected) recommendation for a target and action. */
+    public synchronized java.util.Optional<PolicyChange> pending(String target, Action action, Source source) {
+        expire();
+        return history.values().stream().filter(this::active)
+                .filter(item -> item.proposal().target().equals(target) && item.proposal().action() == action
+                        && key(target, item.proposal().source()).equals(key(target, source)))
+                .max(java.util.Comparator.comparing((PolicyChange c) -> c.proposal().generatedAt()));
+    }
     public synchronized PolicyChange find(UUID id) {
         var item = history.get(id); if (item == null) throw new IllegalArgumentException("Unknown proposal"); return item;
     }
