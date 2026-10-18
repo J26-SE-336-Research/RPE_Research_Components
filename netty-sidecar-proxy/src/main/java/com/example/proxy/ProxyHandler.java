@@ -305,8 +305,11 @@ public final class ProxyHandler extends SimpleChannelInboundHandler<FullHttpRequ
         if (gatewaySidecar && outboundRedirect && identity != null && storedContext != null) {
             // Component 3 per-request consistency: the epoch pinned when the request entered the gateway proxy is
             // the chain's epoch; the application's own (polled, possibly lagging) value must not replace it.
+            // With no policy active the proxy stamped no epoch, and the application's configured one stands.
             RpeWire.Identity root = RpeWire.restore(storedContext.get(RpeWire.STORED_CONTEXT));
-            if (root != null) identity = RpeWire.withEpoch(identity, root.context().policyEpoch());
+            if (root != null && !root.context().policyEpoch().isEmpty()) {
+                identity = RpeWire.withEpoch(identity, root.context().policyEpoch());
+            }
         }
         final RpeWire.Identity activeIdentity = identity;
         HttpHeaders contextHeaders = new DefaultHttpHeaders();

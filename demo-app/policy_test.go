@@ -73,4 +73,10 @@ func TestGatewayUsesTheEpochItsSidecarStamped(t *testing.T) {
 	if started != "stamped-v2" {
 		t.Fatalf("the sidecar's stamped epoch wins over a lagging copy: %q", started)
 	}
+	r = httptest.NewRequest("GET", "/api/orders", nil)
+	r.Header.Set("X-RPE-Context", `v=1, rid="4bf92f3577b34da6a3ce929d0e0e4736", iid="00f067aa0ba902b7", pid="0000000000000000", ttl=1000, bud=1000, rb=3, cs=none, rt="GET /api/orders"`)
+	app.ServeHTTP(httptest.NewRecorder(), r)
+	if started != "polled-v1" {
+		t.Fatalf("a context without an epoch (no policy active) keeps the configured epoch: %q", started)
+	}
 }
