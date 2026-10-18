@@ -394,6 +394,11 @@ func (h *hub) jointParts(ctx context.Context, id string, changes []policyInput) 
 			if spec == nil {
 				spec = map[string]any{}
 			}
+			if service == "gateway" {
+				// a rate limit is never aimed at the gateway (controlService); an older single policy may still
+				// hold one, and it must not ride along in the gateway's part (the sidecar keeps its current rate)
+				delete(spec, "leakyBucket")
+			}
 			specs[service], routes[service] = spec, route
 			order = append(order, service)
 		}
