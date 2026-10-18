@@ -408,6 +408,23 @@ final class BackpressureController {
         return true;
     }
 
+    /**
+     * Applies the release rate of an activated Component 3 policy ({@code policy.leakyBucket.ratePerSec}). It sets
+     * the same rate as the authenticated runtime update ({@link #updateRate}) and nothing else: the waiting-queue
+     * capacity is never changed by a policy, and how the bucket releases requests is unchanged. The policy path is
+     * authenticated by the control API it arrived on instead of the backpressure token.
+     *
+     * @return false when the rate is out of range and nothing was changed
+     */
+    boolean applyPolicyRate(double rate) {
+        if (!Double.isFinite(rate) || rate <= 0 || rate > 1_000_000) {
+            return false;
+        }
+        inboundRate = rate;
+        updateInboundPressureState(inboundQueue.size());
+        return true;
+    }
+
     boolean controlUpdatesEnabled() { return !controlToken.isBlank(); }
 
     boolean authenticateControlToken(String token) {

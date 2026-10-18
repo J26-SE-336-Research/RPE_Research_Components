@@ -205,6 +205,25 @@ final class PolicyStore {
     }
 
     /**
+     * {@code policy.leakyBucket.ratePerSec} of a delivered document: the inbound release rate in requests per
+     * second. Only the rate is read; any other leakyBucket member (queueCapacity, burst) is ignored. Null when the
+     * document sets no valid rate (a missing or out-of-range value never changes the current rate).
+     */
+    static Double leakyBucketRate(String document) {
+        try {
+            JsonNode node = JSON.readTree(document == null ? "" : document);
+            JsonNode rate = node == null ? null : node.path("policy").path("leakyBucket").path("ratePerSec");
+            if (rate == null || !rate.isNumber() || !Double.isFinite(rate.asDouble()) || rate.asDouble() <= 0
+                    || rate.asDouble() > 1_000_000) {
+                return null;
+            }
+            return rate.asDouble();
+        } catch (java.io.IOException invalidDocument) {
+            return null;
+        }
+    }
+
+    /**
      * Content hash of a delivered document: the first 16 hex digits of SHA-256 over the canonical JSON of its
      * {@code policy} member (keys sorted, no whitespace, integral numbers without a fraction). The Operator computes
      * the same hash of the spec it sends (k8s/operator specHash), so a matching hash proves what this sidecar holds.
