@@ -51,7 +51,9 @@ type policyRequest struct {
 	RecommendationID string          `json:"recommendationId"`
 	Scope            Scope           `json:"scope"`
 	Spec             json.RawMessage `json:"spec"`
-	Approval         struct {
+	// Parts makes a joint policy: one decision with settings for several services, delivered as one version.
+	Parts    []Part `json:"parts"`
+	Approval struct {
 		ApprovedBy string `json:"approvedBy"`
 		Decision   string `json:"decision"`
 	} `json:"approval"`
@@ -69,6 +71,9 @@ func (a *api) createPolicy(w http.ResponseWriter, r *http.Request) {
 	if in.RecommendationID == "" {
 		in.RecommendationID = r.Header.Get("Idempotency-Key")
 	}
+	if len(in.Parts) > 0 && in.Scope.Service == "" {
+		in.Scope = in.Parts[0].Scope
+	}
 	switch {
 	case !idPattern.MatchString(in.PolicyID):
 		writeErr(w, 400, "policyId must be lowercase letters, digits and dashes")
@@ -76,6 +81,8 @@ func (a *api) createPolicy(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "scope.service is required")
 	case in.Approval.Decision != "approved" || strings.TrimSpace(in.Approval.ApprovedBy) == "":
 		writeErr(w, 422, "a human approval record (approval.decision=approved, approval.approvedBy) is required")
+	case validateParts(in.Parts) != nil:
+		writeErr(w, 400, validateParts(in.Parts).Error())
 	default:
 		if in.Source != "c4-recommendation" {
 			in.Source = "admin"
@@ -84,6 +91,18 @@ func (a *api) createPolicy(w http.ResponseWriter, r *http.Request) {
 			in.Spec = json.RawMessage(`{}`)
 		}
 		in.Scope.Namespace = "rpe-demo"
+		switch {
+		case len(in.Parts) > 0:
+			in.Spec = jointSpec(in.Parts)
+		default:
+			// A change to one service of a joint policy keeps the policy's other parts, so the new version is still
+			// one decision delivered under one epoch.
+			if latest, err := a.store.get(r.Context(), in.PolicyID, 0); err == nil && latest.joint() {
+				in.Spec = jointSpec(withPart(latest.parts(), Part{Scope: Scope{Service: in.Scope.Service, Route: in.Scope.Route}, Spec: in.Spec}))
+				in.Scope = latest.Scope
+				in.Scope.Namespace = "rpe-demo"
+			}
+		}
 		wait := a.waiters.expect()
 		p, err := a.store.create(r.Context(), Policy{PolicyID: in.PolicyID, Scope: in.Scope, Spec: in.Spec, Source: in.Source,
 			RecommendationID: in.RecommendationID, ApprovedBy: strings.TrimSpace(in.Approval.ApprovedBy)})
@@ -112,6 +131,7 @@ type rolloutRequest struct {
 	Mode        string `json:"mode"`
 	RequestedBy string `json:"requestedBy"`
 	SkewMs      int    `json:"skewMs"`
+	Order       string `json:"order"`
 }
 
 func (a *api) createRollout(w http.ResponseWriter, r *http.Request) {
@@ -131,6 +151,14 @@ func (a *api) createRollout(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "skewMs must be from 0 to 10000")
 		return
 	}
+	switch {
+	case in.Order != "" && in.Order != "services-first" && in.Order != "gateway-first":
+		writeErr(w, 400, "order must be services-first or gateway-first")
+		return
+	case in.Order != "" && in.Mode != "naive":
+		writeErr(w, 400, "an arrival order applies to a naive rollout only (two-phase decides the order itself)")
+		return
+	}
 	p, err := a.store.get(r.Context(), in.PolicyID, in.Version)
 	if err != nil {
 		writeErr(w, 404, "policy version not found")
@@ -139,12 +167,9 @@ func (a *api) createRollout(w http.ResponseWriter, r *http.Request) {
 	ro := &RPERollout{
 		TypeMeta:   metav1.TypeMeta{APIVersion: GroupVersion.String(), Kind: "RPERollout"},
 		ObjectMeta: metav1.ObjectMeta{Name: rolloutName(p), Namespace: a.ns, Labels: map[string]string{"resilience.rpe.dev/policy": crName(p.PolicyID)}},
-		Spec: RolloutSpec{PolicyID: p.PolicyID, Version: p.Version, Epoch: p.Epoch, Service: p.Scope.Service, Mode: in.Mode,
-			PreviousEpoch: a.store.activeEpoch(r.Context(), p.PolicyID), RequestedBy: in.RequestedBy, SkewMs: in.SkewMs},
+		Spec:       rolloutSpec(p, in.Mode, a.store.activeEpoch(r.Context(), p.PolicyID), in.RequestedBy),
 	}
-	if ro.Spec.PreviousEpoch == p.Epoch {
-		ro.Spec.PreviousEpoch = ""
-	}
+	ro.Spec.SkewMs, ro.Spec.Order = in.SkewMs, in.Order
 	if err := a.k.Create(r.Context(), ro); err != nil {
 		writeErr(w, 502, err.Error())
 		return
@@ -334,6 +359,20 @@ func (w *waiters) await(ch chan string, epoch string, timeout time.Duration) map
 			return nil
 		}
 	}
+}
+
+// rolloutSpec is the rollout of policy version p replacing epoch previous (the active version of the policy).
+func rolloutSpec(p Policy, mode, previous, requestedBy string) RolloutSpec {
+	spec := RolloutSpec{PolicyID: p.PolicyID, Version: p.Version, Epoch: p.Epoch, Service: p.Scope.Service, Mode: mode,
+		PreviousEpoch: previous, RequestedBy: requestedBy}
+	if spec.PreviousEpoch == p.Epoch {
+		spec.PreviousEpoch = ""
+	}
+	if p.joint() {
+		spec.Services = p.services()
+		spec.Service = spec.Services[0]
+	}
+	return spec
 }
 
 func crName(policyID string) string { return policyID }

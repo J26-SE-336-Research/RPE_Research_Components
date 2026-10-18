@@ -90,6 +90,9 @@ func main() {
 			budgets = follower.RouteBudget(budgets)
 			epoch = func() string { return follower.Epoch(env("POLICY_EPOCH", "")) }
 		}
+		if env("ROLE", "service") == "gateway" {
+			budgets = stampedBudget(budgets)
+		}
 		app = rpe.SignalMiddleware(rpe.SignalConfig{
 			Gateway:     env("ROLE", "service") == "gateway",
 			RouteBudget: budgets,

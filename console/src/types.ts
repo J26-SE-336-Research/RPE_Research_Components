@@ -67,10 +67,11 @@ export type FleetPod = {
 };
 export type FleetData = { namespaces: { name: string; injection: boolean }[]; pods: FleetPod[]; coverage: { eligible: number; injected: number } };
 
-export type RolloutPod = { name: string; service: string; role: string; state: string; error?: string; hash?: string; verified?: boolean; confirmedAt?: string };
+export type RolloutPod = { name: string; service: string; role: string; state: string; error?: string; hash?: string; verified?: boolean; confirmedAt?: string; part?: string; activeAt?: string };
+export type PartPlan = { service: string; kind: "loosen" | "tighten"; step: number; changes?: string[] };
 export type Rollout = {
   metadata: { name: string; creationTimestamp: string };
-  spec: { policyId: string; version: number; epoch: string; service: string; mode: string; previousEpoch?: string; requestedBy?: string; skewMs?: number };
+  spec: { policyId: string; version: number; epoch: string; service: string; mode: string; previousEpoch?: string; requestedBy?: string; skewMs?: number; services?: string[]; order?: string };
   status: {
     phase?: string;
     message?: string;
@@ -84,6 +85,10 @@ export type Rollout = {
     convergenceMs?: number;
     drainMs?: number;
     inflightPrevious?: number;
+    mixedPolicyRequests?: number;
+    plan?: PartPlan[];
+    step?: number;
+    gateMs?: number;
     settled?: boolean;
     pods?: RolloutPod[];
   };
@@ -137,3 +142,46 @@ export function eventSubject(e: PolicyEvent) {
 
 export const total = (m?: Record<string, number>) => Object.values(m ?? {}).reduce((a, b) => a + b, 0);
 export const failed = (m?: Record<string, number>) => total(m) - (m?.ok ?? 0);
+
+export type ConsistencyConfig = {
+  baseDeadlineMs: number;
+  newDeadlineMs: number;
+  baseRate: number;
+  newRate: number;
+  burst: number;
+  burstEveryMs: number;
+  warmupMs: number;
+  tailMs: number;
+};
+export type ConsistencySample = { atMs: number; ms: number; status: number; cs: string; bud: number; pe: string };
+export type ConsistencyRun = {
+  id: string;
+  mode: string;
+  order?: string;
+  skewMs: number;
+  config: ConsistencyConfig;
+  state: "running" | "done" | "failed";
+  stage: string;
+  error?: string;
+  startedAt: string;
+  finishedAt?: string;
+  requestedBy: string;
+  rollout?: string;
+  epoch?: string;
+  previousEpoch?: string;
+  requests: number;
+  during: number;
+  expired: number;
+  expiredOldDeadline: number;
+  expiredBefore: number;
+  failed: number;
+  mixedPolicyRequests: number;
+  convergenceMs: number;
+  gateMs: number;
+  drainMs: number;
+  completedAtMs: number;
+  arrivals: { service: string; pod: string; part: string; atMs: number }[];
+  plan?: PartPlan[];
+  samples: ConsistencySample[];
+};
+export type ConsistencyState = { busy: boolean; defaults: ConsistencyConfig; runs: ConsistencyRun[] };

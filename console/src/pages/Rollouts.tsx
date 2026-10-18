@@ -2,6 +2,7 @@ import { useState } from "react";
 import { api, useAction, useData } from "../api";
 import { Ago, Alert, Button, Drawer, Empty, Field, Kpi, KV, PageHeader, Panel, Status, Tag, fmtMs, type Tone } from "../components/ui";
 import type { Rollout } from "../types";
+import { ConsistencyDemo } from "./Consistency";
 
 const PHASE: Record<string, [Tone, string]> = {
   Pending: ["neutral", "Pending"],
@@ -29,6 +30,7 @@ function duration(r: Rollout) {
 
 /** The proxies a policy is delivered to, by its scope: the gateway for the chain deadline, else the service. */
 function targetsLabel(r: Rollout) {
+  if (r.spec.services?.length) return `the ${r.spec.services.join(" and ")} sidecars (one joint version, a part each)`;
   return r.spec.service === "gateway" ? "the gateway sidecars" : `the ${r.spec.service} sidecars`;
 }
 
@@ -227,6 +229,7 @@ export function RolloutsPage() {
       <PageHeader title="Rollouts" description="Delivery of approved policy versions to the sidecars they concern." />
       <Alert>{error}</Alert>
       <div className="stack">
+        <ConsistencyDemo />
         <PolicyDelivery onStarted={() => reload()} />
         <div className="kpis">
           <Kpi label="In progress" value={data ? running : "—"} />
@@ -257,7 +260,7 @@ export function RolloutsPage() {
                         <strong>{r.spec.policyId}</strong>
                       </td>
                       <td className="mono">{r.spec.epoch}</td>
-                      <td>{r.spec.service}</td>
+                      <td>{r.spec.services?.join(", ") ?? r.spec.service}</td>
                       <td>{r.spec.mode === "two-phase" ? "Verify, then activate" : <Tag tone="amber">Immediate</Tag>}</td>
                       <td>{phaseStatus(r.status.phase)}</td>
                       <td className="num">
@@ -288,6 +291,11 @@ export function RolloutsPage() {
               ["Delivered to", targetsLabel(sel)],
               ["Strategy", sel.spec.mode === "two-phase" ? "Verify, then activate (stage, check the content hash, activate, drain the previous version)" : "Immediate (all target sidecars at once)"],
               ["Replaces", sel.spec.previousEpoch || "—"],
+              ...(sel.status.plan?.length
+                ? ([["Order", sel.status.plan.map((p) => `${p.step}. ${p.kind} ${p.service}${p.changes?.length ? ` (${p.changes.join(", ")})` : ""}`).join("; ")], ["Waited before tightening", fmtMs(sel.status.gateMs)]] as [string, string][])
+                : []),
+              ...(sel.spec.order ? ([["Arrival order", sel.spec.order]] as [string, string][]) : []),
+              ["Mixed-policy requests", String(sel.status.mixedPolicyRequests ?? 0)],
               ["Converged in", fmtMs(sel.status.convergenceMs)],
               ["Drain", sel.spec.mode === "two-phase" ? fmtMs(sel.status.drainMs) : "—"],
               ["Started", sel.status.startedAt ? new Date(sel.status.startedAt).toLocaleString() : "—"],

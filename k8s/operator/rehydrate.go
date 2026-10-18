@@ -57,8 +57,12 @@ func restoreMissing(ctx context.Context, st *store, b *bus) {
 	if err != nil { // Redis unavailable: nothing to restore into yet
 		return
 	}
+	var parts []Policy // a joint policy is the effective policy of each of its services, with that service's part
+	for _, p := range active {
+		parts = append(parts, p.projections()...)
+	}
 	restored := 0
-	for _, p := range missingEffective(active, have) {
+	for _, p := range missingEffective(parts, have) {
 		if err := b.restoreEffective(ctx, p); err != nil {
 			log.Printf("rehydrate: cannot restore the effective policy of %s: %v", p.Scope.Service, err)
 			continue

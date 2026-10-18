@@ -36,3 +36,19 @@ func TestPolicyFollowerAppliesActiveRouteDeadline(t *testing.T) {
 		t.Fatalf("without an active policy the static configuration applies: %v %s", d, f.Epoch("e0"))
 	}
 }
+
+func TestGatewayUsesTheDeadlineItsSidecarStamped(t *testing.T) {
+	budget := stampedBudget(routeBudgets("GET /api/orders=1000", 1000))
+	r := httptest.NewRequest("GET", "/api/orders", nil)
+	if _, d := budget(r); d != time.Second {
+		t.Fatalf("without a received context the configured budget applies: %v", d)
+	}
+	r.Header.Set("X-RPE-Context", `v=1, rid="4bf92f3577b34da6a3ce929d0e0e4736", iid="00f067aa0ba902b7", pid="0000000000000000", ttl=4000, bud=4000, rb=3, cs=none, pe="chain-orders-v2", rt="GET /api/orders"`)
+	if route, d := budget(r); d != 4*time.Second || route != "GET /api/orders" {
+		t.Fatalf("the sidecar's stamped deadline wins over a lagging copy: %s %v", route, d)
+	}
+	r.Header.Set("X-RPE-Context", "garbage")
+	if _, d := budget(r); d != time.Second {
+		t.Fatalf("an unreadable context falls back: %v", d)
+	}
+}

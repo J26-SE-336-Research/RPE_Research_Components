@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -112,8 +113,7 @@ func catchUp(ctx context.Context, k client.Client, st *store, b *bus, ns string,
 			b.emit(ctx, "policy-approved", map[string]string{"policyId": p.PolicyID, "version": strconv.Itoa(p.Version), "epoch": p.Epoch, "approvedBy": p.ApprovedBy})
 			if autoRollout {
 				ro := &RPERollout{ObjectMeta: metav1.ObjectMeta{Name: rolloutName(p), Namespace: ns},
-					Spec: RolloutSpec{PolicyID: p.PolicyID, Version: p.Version, Epoch: p.Epoch, Service: p.Scope.Service, Mode: "two-phase",
-						PreviousEpoch: st.activeEpoch(ctx, p.PolicyID), RequestedBy: "auto"}}
+					Spec: rolloutSpec(p, "two-phase", st.activeEpoch(ctx, p.PolicyID), "auto")}
 				_ = k.Create(ctx, ro)
 			}
 		}
@@ -125,7 +125,7 @@ func catchUp(ctx context.Context, k client.Client, st *store, b *bus, ns string,
 }
 
 func upsertPolicyCR(ctx context.Context, k client.Client, ns string, p Policy) {
-	spec := PolicySpec{PolicyID: p.PolicyID, Version: p.Version, Epoch: p.Epoch, Service: p.Scope.Service, Route: p.Scope.Route,
+	spec := PolicySpec{PolicyID: p.PolicyID, Version: p.Version, Epoch: p.Epoch, Service: strings.Join(p.services(), ","), Route: p.Scope.Route,
 		Settings: p.Spec, ApprovedBy: p.ApprovedBy, ApprovedAt: p.ApprovedAt.UTC().Format(time.RFC3339)}
 	if !json.Valid(spec.Settings) || string(spec.Settings) == "null" {
 		spec.Settings = json.RawMessage(`{}`)

@@ -254,3 +254,75 @@ func TestSingleControlPoliciesAreScopedAndMerged(t *testing.T) {
 		t.Fatal("an invalid control must not reach the policy API")
 	}
 }
+
+func TestJointChangeIsOnePolicyWithAPartPerService(t *testing.T) {
+	var posted []map[string]any
+	c3 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/api/k8s/effective":
+			_, _ = w.Write([]byte(`{"payment-svc":{"policyId":"pay-policy","route":"","spec":"{\"retry\":{\"budgetRatio\":0.1}}"},` +
+				`"gateway":{"policyId":"gw-policy","route":"GET /api/orders","spec":"{\"routes\":{\"GET /api/orders\":{\"deadlineMs\":1000},\"POST /api/pay\":{\"deadlineMs\":2000}}}"}}`))
+		case r.Method == "POST" && r.URL.Path == "/api/k8s/policies":
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			posted = append(posted, body)
+			_, _ = w.Write([]byte(`{"policy":{"policyId":"chain-orders","version":2,"epoch":"chain-orders-v2"},"notification":null}`))
+		case r.Method == "POST" && r.URL.Path == "/api/k8s/rollouts":
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			posted = append(posted, body)
+			_, _ = w.Write([]byte(`{"metadata":{"name":"chain-orders-v2-abc"}}`))
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer c3.Close()
+	h, _ := newHub(config{policyAPIURL: c3.URL, users: "alice:pw:sre", sessionSecret: "s"})
+	req := httptest.NewRequest("POST", "/api/hub/policies", strings.NewReader(`{"policyId":"chain-orders","rollout":"naive","order":"services-first","skewMs":4000,
+		"changes":[{"control":"chain-deadline","route":"GET /api/orders","deadlineMs":4000},{"control":"rate-limit","service":"payment-svc","ratePerSec":6}]}`))
+	req.AddCookie(&http.Cookie{Name: sessionCookie, Value: h.auth.issue(h.auth.users["alice"], time.Hour)})
+	rec := httptest.NewRecorder()
+	h.routes().ServeHTTP(rec, req)
+	if rec.Code != 201 || len(posted) != 2 {
+		t.Fatalf("code %d, posted %v", rec.Code, posted)
+	}
+	parts, _ := posted[0]["parts"].([]any)
+	if posted[0]["policyId"] != "chain-orders" || len(parts) != 2 || posted[0]["spec"] != nil {
+		t.Fatalf("one policy with two parts: %v", posted[0])
+	}
+	gw, pay := parts[0].(map[string]any), parts[1].(map[string]any)
+	gwRoutes := gw["spec"].(map[string]any)["routes"].(map[string]any)
+	if gw["scope"].(map[string]any)["service"] != "gateway" || gwRoutes["GET /api/orders"].(map[string]any)["deadlineMs"] != float64(4000) ||
+		gwRoutes["POST /api/pay"].(map[string]any)["deadlineMs"] != float64(2000) {
+		t.Fatalf("the gateway part changes only its route deadline: %v", gw)
+	}
+	paySpec := pay["spec"].(map[string]any)
+	if pay["scope"].(map[string]any)["service"] != "payment-svc" || paySpec["leakyBucket"].(map[string]any)["ratePerSec"] != float64(6) ||
+		paySpec["retry"].(map[string]any)["budgetRatio"] != 0.1 || paySpec["routes"] != nil {
+		t.Fatalf("the payment part changes only the rate and holds no gateway setting: %v", pay)
+	}
+	if posted[1]["order"] != "services-first" || posted[1]["mode"] != "naive" || posted[1]["skewMs"] != float64(4000) {
+		t.Fatalf("the rollout request carries the arrival order: %v", posted[1])
+	}
+}
+
+func TestConsistencyInputIsValidated(t *testing.T) {
+	for in, want := range map[consistencyInput]string{
+		{Mode: "two-phase"}:                          "",
+		{Mode: "naive", Order: "services-first"}:     "",
+		{Mode: "two-phase", Order: "services-first"}: "an arrival order applies to naive delivery only",
+		{Mode: "fast"}:                               "mode must be two-phase or naive",
+		{Mode: "naive", SkewMs: 20000}:               "skewMs must be from 0 to 10000",
+		{Mode: "naive", Order: "sideways"}:           "order must be services-first or gateway-first",
+	} {
+		if got := in.normalize(); got != want {
+			t.Errorf("%+v: %q, want %q", in, got, want)
+		}
+	}
+	in := consistencyInput{}
+	in.normalize()
+	if in.Mode != "two-phase" || in.NewRate != 6 || in.NewDeadlineMs != 4000 || in.BaseDeadlineMs != 1000 {
+		t.Fatalf("defaults: %+v", in)
+	}
+}

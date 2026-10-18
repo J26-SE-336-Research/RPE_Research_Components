@@ -120,3 +120,18 @@ proxy_holds() {
   hub GET /api/hub/sidecars
   echo "${BODY}" | jq --arg s "$1" --arg e "$2" --arg st "$3" '[.[] | select(.service==$s) | select([.policy.epochs[]? | select(.epoch==$e and .state==$st)] | length > 0)] | length'
 }
+# consistency_run JSON [SECONDS] -> runs one consistency demo run in the hub (a joint change delivered naive or
+# two-phase under demo traffic) and sets RUN to the finished run (JSON)
+consistency_run() {
+  RUN=""
+  hub POST /api/hub/demos/consistency "$1"
+  [[ "${CODE}" == 202 ]] || { echo "consistency run not started: ${CODE} ${BODY}" >&2; return 1; }
+  local id; id=$(echo "${BODY}" | jq -r .id)
+  for _ in $(seq 1 "${2:-240}"); do
+    hub GET "/api/hub/demos/consistency?id=${id}"
+    RUN=${BODY}
+    [[ "$(echo "${RUN}" | jq -r '.state // empty')" == running ]] || return 0
+    sleep 1
+  done
+  return 1
+}

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -393,9 +394,13 @@ type policyInput struct {
 	RatePerSec  int     `json:"ratePerSec"`
 	Rollout     string  `json:"rollout"` // "", two-phase, naive
 	SkewMs      int     `json:"skewMs"`  // simulated propagation spread per proxy (same for every mode)
+	Order       string  `json:"order"`   // naive only: services-first or gateway-first instead of the random spread
 	// Control selects one independent control: chain-deadline (gateway), rate-limit or retry-ratio (a service).
 	// Empty keeps the combined form below.
 	Control string `json:"control"`
+	// Changes makes one joint decision of several controls (for example a chain deadline and a rate limit): one
+	// policy version with a part per service, delivered under one epoch.
+	Changes []policyInput `json:"changes"`
 }
 
 // Independent controls, each its own policy version and delivered to its own sidecars (A3.4): the chain deadline
@@ -408,8 +413,8 @@ const (
 
 // effectivePolicy returns the policy a service currently enforces according to Component 3 (id, route, spec), so a
 // change to one control keeps the service's other settings, exactly as Component 4's bridge does.
-func (h *hub) effectivePolicy(r *http.Request, service string) (id, route string, spec map[string]any) {
-	_, _, b, _, err := h.call(r.Context(), http.MethodGet, h.cfg.policyAPIURL+"/api/k8s/effective", nil)
+func (h *hub) effectivePolicy(ctx context.Context, service string) (id, route string, spec map[string]any) {
+	_, _, b, _, err := h.call(ctx, http.MethodGet, h.cfg.policyAPIURL+"/api/k8s/effective", nil)
 	if err != nil {
 		return
 	}
@@ -426,35 +431,53 @@ func (h *hub) effectivePolicy(r *http.Request, service string) (id, route string
 	return
 }
 
-// controlSpec builds the policy of a single control: the spec (the service's current one with only that control
-// changed), the scope and the policy id. It returns an error message for an invalid request.
-func (h *hub) controlSpec(r *http.Request, in policyInput) (id, service, route string, spec map[string]any, problem string) {
+// controlService validates one control change and returns the service whose sidecars apply it.
+func controlService(in policyInput) (service, problem string) {
 	switch in.Control {
 	case controlChainDeadline:
 		if in.Service != "" && in.Service != "gateway" {
-			return "", "", "", nil, "a chain deadline is applied by the gateway: its service must be gateway"
+			return "", "a chain deadline is applied by the gateway: its service must be gateway"
 		}
 		if in.Route == "" || in.DeadlineMs <= 0 {
-			return "", "", "", nil, "a chain deadline needs a route (METHOD /path) and deadlineMs > 0"
+			return "", "a chain deadline needs a route (METHOD /path) and deadlineMs > 0"
 		}
-		service = "gateway"
+		return "gateway", ""
 	case controlRateLimit:
 		if in.Service == "" || in.Service == "gateway" || in.RatePerSec <= 0 || in.RatePerSec > 1_000_000 {
-			return "", "", "", nil, "a rate limit needs a target service (not the gateway) and ratePerSec from 1 to 1000000"
+			return "", "a rate limit needs a target service (not the gateway) and ratePerSec from 1 to 1000000"
 		}
-		service = in.Service
+		return in.Service, ""
 	case controlRetryRatio:
 		if in.Service == "" || in.Service == "gateway" || in.RetryRatio < 0 || in.RetryRatio > 1 {
-			return "", "", "", nil, "a retry ratio needs a target service (not the gateway) and a ratio from 0 to 1"
+			return "", "a retry ratio needs a target service (not the gateway) and a ratio from 0 to 1"
 		}
-		service = in.Service
-	default:
-		return "", "", "", nil, "control must be chain-deadline, rate-limit or retry-ratio"
+		return in.Service, ""
 	}
-	id, route, spec = h.effectivePolicy(r, service)
+	return "", "control must be chain-deadline, rate-limit or retry-ratio"
+}
+
+// controlSpec builds the policy of a single control: the spec (the service's current one with only that control
+// changed), the scope and the policy id. It returns an error message for an invalid request.
+func (h *hub) controlSpec(r *http.Request, in policyInput) (id, service, route string, spec map[string]any, problem string) {
+	if service, problem = controlService(in); problem != "" {
+		return "", "", "", nil, problem
+	}
+	id, route, spec = h.effectivePolicy(r.Context(), service)
 	if spec == nil {
 		spec = map[string]any{}
 	}
+	route = applyControl(spec, route, in)
+	if in.PolicyID != "" {
+		id = in.PolicyID
+	}
+	if id == "" {
+		id = service + "-resilience"
+	}
+	return id, service, route, spec, ""
+}
+
+// applyControl writes one control change into a service's spec and returns the policy's route scope.
+func applyControl(spec map[string]any, route string, in policyInput) string {
 	object := func(parent map[string]any, key string) map[string]any {
 		if m, ok := parent[key].(map[string]any); ok {
 			return m
@@ -476,13 +499,7 @@ func (h *hub) controlSpec(r *http.Request, in policyInput) (id, service, route s
 	case controlRetryRatio:
 		object(spec, "retry")["budgetRatio"] = in.RetryRatio
 	}
-	if in.PolicyID != "" {
-		id = in.PolicyID
-	}
-	if id == "" {
-		id = service + "-resilience"
-	}
-	return id, service, route, spec, ""
+	return route
 }
 
 // createPolicy publishes a new approved version (the signed-in user is the approver) and optionally
@@ -494,29 +511,32 @@ func (h *hub) createPolicy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u := userOf(r.Context())
-	var spec map[string]any
-	if in.Control != "" {
-		id, service, route, s, problem := h.controlSpec(r, in)
+	body := map[string]any{"approval": map[string]string{"approvedBy": u.Name, "decision": "approved"}}
+	switch {
+	case len(in.Changes) > 0:
+		id, parts, problem := h.jointParts(r.Context(), in.PolicyID, in.Changes)
 		if problem != "" {
 			writeErr(w, 400, problem)
 			return
 		}
-		in.PolicyID, in.Service, in.Route, spec = id, service, route, s
-	} else {
-		spec = map[string]any{"deadlineMs": in.DeadlineMs, "retry": map[string]any{"budget": in.RetryBudget, "budgetRatio": in.RetryRatio},
+		body["policyId"], body["parts"] = id, parts
+	case in.Control != "":
+		id, service, route, spec, problem := h.controlSpec(r, in)
+		if problem != "" {
+			writeErr(w, 400, problem)
+			return
+		}
+		body["policyId"], body["scope"], body["spec"] = id, map[string]string{"service": service, "route": route}, spec
+	default:
+		spec := map[string]any{"deadlineMs": in.DeadlineMs, "retry": map[string]any{"budget": in.RetryBudget, "budgetRatio": in.RetryRatio},
 			"leakyBucket": map[string]any{"ratePerSec": in.RatePerSec}}
 		if in.Service == "gateway" && in.Route != "" && in.DeadlineMs > 0 {
 			// the gateway creates root contexts: a route deadline is the budget it stamps for that route (A3.4)
 			spec["routes"] = map[string]any{in.Route: map[string]any{"deadlineMs": in.DeadlineMs}}
 		}
+		body["policyId"], body["scope"], body["spec"] = in.PolicyID, map[string]string{"service": in.Service, "route": in.Route}, spec
 	}
-	body := map[string]any{
-		"policyId": in.PolicyID,
-		"scope":    map[string]string{"service": in.Service, "route": in.Route},
-		"spec":     spec,
-		"approval": map[string]string{"approvedBy": u.Name, "decision": "approved"},
-	}
-	code, _, b, _, err := h.call(r.Context(), http.MethodPost, h.cfg.policyAPIURL+"/api/k8s/policies", body)
+	out, code, b, err := h.publish(r.Context(), u.Name, body, in.Rollout, in.SkewMs, in.Order)
 	if err != nil {
 		writeErr(w, 502, "policy API unavailable: "+err.Error())
 		return
@@ -526,6 +546,16 @@ func (h *hub) createPolicy(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(code)
 		_, _ = w.Write(b)
 		return
+	}
+	writeJSON(w, 201, out)
+}
+
+// publish sends one approved policy version to the policy API and, for rollout two-phase or naive, starts its
+// rollout. For an error answer of the policy API it returns that status and body.
+func (h *hub) publish(ctx context.Context, approver string, body map[string]any, rollout string, skewMs int, order string) (map[string]any, int, []byte, error) {
+	code, _, b, _, err := h.call(ctx, http.MethodPost, h.cfg.policyAPIURL+"/api/k8s/policies", body)
+	if err != nil || code >= 300 {
+		return nil, code, b, err
 	}
 	var created struct {
 		Policy struct {
@@ -539,14 +569,17 @@ func (h *hub) createPolicy(w http.ResponseWriter, r *http.Request) {
 	_ = json.Unmarshal(b, &created)
 	out := map[string]any{"policyId": created.Policy.PolicyID, "version": created.Policy.Version, "epoch": created.Policy.Epoch,
 		"approvedBy": created.Policy.ApprovedBy, "notification": created.Notification}
-	if in.Rollout == "two-phase" || in.Rollout == "naive" {
-		_, _, rb, _, err := h.call(r.Context(), http.MethodPost, h.cfg.policyAPIURL+"/api/k8s/rollouts",
-			map[string]any{"policyId": created.Policy.PolicyID, "version": created.Policy.Version, "mode": in.Rollout, "requestedBy": u.Name, "skewMs": in.SkewMs})
+	if rollout == "two-phase" || rollout == "naive" {
+		req := map[string]any{"policyId": created.Policy.PolicyID, "version": created.Policy.Version, "mode": rollout, "requestedBy": approver, "skewMs": skewMs}
+		if order != "" {
+			req["order"] = order
+		}
+		_, _, rb, _, err := h.call(ctx, http.MethodPost, h.cfg.policyAPIURL+"/api/k8s/rollouts", req)
 		if err == nil {
 			out["rollout"] = json.RawMessage(rb)
 		}
 	}
-	writeJSON(w, 201, out)
+	return out, 201, nil, nil
 }
 
 func (h *hub) rollouts(w http.ResponseWriter, r *http.Request) {
@@ -563,13 +596,14 @@ func (h *hub) createRollout(w http.ResponseWriter, r *http.Request) {
 		Version  int    `json:"version"`
 		Mode     string `json:"mode"`
 		SkewMs   int    `json:"skewMs"`
+		Order    string `json:"order"`
 	}
 	if err := decode(r, &in); err != nil {
 		writeErr(w, 400, err.Error())
 		return
 	}
 	h.relay(w, r, http.MethodPost, "/api/k8s/rollouts", map[string]any{"policyId": in.PolicyID, "version": in.Version, "mode": in.Mode,
-		"requestedBy": userOf(r.Context()).Name, "skewMs": in.SkewMs})
+		"requestedBy": userOf(r.Context()).Name, "skewMs": in.SkewMs, "order": in.Order})
 }
 
 func (h *hub) policyStatus(w http.ResponseWriter, r *http.Request) {

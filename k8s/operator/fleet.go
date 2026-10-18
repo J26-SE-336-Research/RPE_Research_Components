@@ -119,8 +119,11 @@ func (f *fleet) audit(ctx context.Context) (fleetReport, error) {
 		if busy[p.PolicyID] { // a rollout of this policy is moving proxies right now
 			continue
 		}
-		byService[p.Scope.Service] = append(byService[p.Scope.Service], p)
-		all = append(all, p)
+		// a joint policy is expected on each of its services with the part for that service
+		for _, part := range p.projections() {
+			byService[part.Scope.Service] = append(byService[part.Scope.Service], part)
+			all = append(all, part)
+		}
 	}
 	// A proxy must hold the active policies scoped to its own service, and only those: the gateway holds the
 	// gateway-scoped (chain deadline) policies, a service holds its rate limit and retry ratio.

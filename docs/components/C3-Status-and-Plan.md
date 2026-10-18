@@ -6,8 +6,8 @@
 
 | Removed | Why |
 |---|---|
-| The "mixed-policy requests" / version-skew display in the Admin Panel | Not shown since the delivery panel was rebuilt; to be restored with the consistency demo (step 0b) |
-| Experiment E4 script `e4-consistent-rollout.sh` and its result files | Deleted from the repository (they were committed in `d50b4b7`); to be rebuilt and re-run for the joint-policy demo (step 0b) |
+| The "mixed-policy requests" / version-skew display in the Admin Panel | Restored on 18 Oct 2026 as the consistency demo (Rollouts, "Consistent rollout of a joint change") |
+| Experiment E4 script `e4-consistent-rollout.sh` and its result files | Rebuilt for the joint policy and re-run on 18 Oct 2026 (`experiments/c3/results/e4-20261018-150733*.csv`) |
 | Delivering a service policy to the gateway | It reset the gateway's chain deadlines to the static configuration (a bug); the policy's scope now decides the targets |
 | Applying a `queueCapacity` from a policy in the sidecar | The sidecar owner allows the rate only |
 | The Operator's catch-up position in Redis | Moved to PostgreSQL |
@@ -18,7 +18,7 @@ The **per-request-consistent rollout** (two-phase epoch stamping) is C3's novelt
 
 Honest limits (also written into the guide, section 5.1a):
 - The coupled settings of the policy contract (`fanout`, `replaySafe`, `commitStage`, retry limits, backpressure mode, cancellation tiers, mechanism toggles) are not read by any sidecar code yet, so today the demo shows policy versions overlapping, not yet a harmful outcome.
-- Since targeted delivery, a service policy no longer reaches the gateway, so the earlier measurement (naive 8 to 10 mixed requests per run at a 2000 ms spread, against 0 for two-phase, commit `d50b4b7`) must be re-run with a joint policy that spans the gateway and a service. That is step 0b below.
+- Since targeted delivery, a service policy no longer reaches the gateway, so the earlier measurement (commit `d50b4b7`) was replaced: on 18 Oct 2026 E4 was re-run with a joint policy that spans the gateway and payment-svc (step 0b, done).
 - The per-request epoch tracking, the mismatch counter and the two-phase drain exist in the sidecar and the Operator and are tested.
 
 
@@ -53,7 +53,7 @@ Honest limits (also written into the guide, section 5.1a):
 | PostgreSQL policy store with event notification (FR4) | Done (+ Redis fast path) |
 | Version consistency and delivery status (FR8, FR9) | Done: hash-verified, acknowledged by the sidecar |
 | Governance: never approves or modifies a policy itself (FR10) | Done in the schema; automatic halt and admin revert not built |
-| Novelty: per-request-consistent rollout (ownership table A4) | Mechanism built and measured on 17 Oct (naive 8 to 10 mixed requests per run, two-phase 0); to be re-established with a joint policy that spans the gateway and a service (step 0b) |
+| Novelty: per-request-consistent rollout (ownership table A4) | Built and measured with a joint policy on 18 Oct 2026: two-phase 0 expired and 0 mixed-policy requests in 5 of 5 runs; naive with the rate first 2 to 3 expired and 14 mixed per run (5 of 5); details in `C3-Integration-Requirements.md` section 12 |
 | Verify delivery, repair drift, coverage | Done |
 | Metrics: injection coverage 100%, delivery success 100% | Measured (1 replica for delivery) |
 | Metric: propagation time, target p95 5 s at 50 pods | Not measured at scale (1 replica only) |
@@ -67,7 +67,7 @@ Honest limits (also written into the guide, section 5.1a):
 | # | Item | State | Depends on |
 |---|---|---|---|
 | 1 | Housekeeping: commit and push all uncommitted work, full e2e run on a fresh cluster including 70 and 95 | Open | none |
-| 1a | Joint policy delivery and the consistency demo (design with C2 and C4, then build) | Not started | C2, C4 |
+| 1a | Joint policy delivery and the consistency demo | Done (Level A, C3 alone, 18 Oct 2026); open: `pv` written by the sidecar (C2-2) and the joint proposal in C4 (C4-1 to C4-4) | C2, C4 |
 | 2 | Helm chart (`charts/rpe`) | Not started | none |
 | 3 | Webhook admission-latency metric; experiments E1 and E2 | Not started | none |
 | 4 | Stub sidecar for scale; E3 at 10 to 200 pods | Not started | none |
@@ -86,7 +86,7 @@ Rules for every step: unit tests, an e2e assertion, run on the kind cluster, the
 
 **Step 0: Housekeeping (0.5 d).** Commit and push; a fresh-cluster run of all suites including 70 and 95; tell C2's owner what changed in the sidecar (policy store, acks, hash, rate application, `pe` kept per chain at the gateway); show the team the contract notes in section 7 and agree which of them become part of the shared appendix. Done when: everything is pushed and the full suite list is green on a fresh cluster.
 
-**Step 0b: Joint policy delivery and the consistency demo (about 5 d, design first).**
+**Step 0b: Joint policy delivery and the consistency demo. DONE 18 Oct 2026** (`k8s/operator/joint.go`, `hub/consistency.go`, `console/src/pages/Consistency.tsx`, e2e `96-consistent-rollout.sh`, `experiments/c3/e4-consistent-rollout.sh`; results in `C3-Integration-Requirements.md` section 12). The design question below was settled with ordered activation: loosening parts first, a drain gate, then tightening parts. The demo uses payment rate 100 to 6 requests/s (not 200 to 2) so that the cluster background traffic does not overload payment at the new rate.
 - Agree with C4 that a joint recommendation is delivered as one policy version, and with C2 which coupled settings the sidecar reads per epoch (candidates: `mechanisms.*`, `backpressure.mode`, `cancellation.tiers`, `retry.maxAttempts` once retries exist).
 - C3: a policy with several scopes (a gateway part and service parts) under one epoch. Each target gets its own part and hash, the gateway stamps the epoch, and the existing path applies: stage everywhere, activate the gateway, drain, retire. Open design question to settle: a leaky-bucket rate cannot be chosen per request, so the rate part needs ordered activation (loosening first) or an agreed behaviour with C2.
 - Restore the consistency check in the Admin Panel (mixed-policy counter, naive against two-phase) and the experiment E4 (script and CSV), then re-run it.

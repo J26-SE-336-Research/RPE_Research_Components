@@ -267,11 +267,11 @@ The claim applies to **settings that two services must agree on**. The policy co
 
 What is true today:
 - The mechanism is built and tested: staged delivery, the gateway stamps `pe`, each sidecar serves a request under the epoch it carries, the previous epoch is drained by in-flight count, and mixed-policy hops are counted (`rpe_policy_mismatch_total`).
-- The sidecar reads only two things from a policy today: the gateway route deadlines and the leaky-bucket rate. No sidecar code reads the coupled settings yet (retries are a later C2 phase). So the demo shows versions overlapping and being separated, not yet a harmful outcome. The panel will ask "what goes wrong in a mixed state?", and the answer has to be shown with settings that are enforced (the example below).
-- Measurement of 17 Oct 2026 (commit `d50b4b7`): at a 2000 ms propagation spread, naive delivery produced 8 to 10 mixed-policy requests per run and two-phase produced 0 (3 runs each). It predates targeted delivery (a service policy no longer reaches the gateway), so it must be **re-run with a joint policy that spans the gateway and a service** before it is quoted.
-- Example of harm with settings enforced today: one joint change, chain deadline 1000 to 4000 ms (gateway) and payment rate 200 to 2 requests/s. If the rate drops first, requests wait up to 3.5 s in payment's queue against the old 1000 ms deadline and expire (`cs=expired`, deadline-exceeded counts); with the deadline first they do not.
-- Open design question: a leaky-bucket rate cannot be chosen per request, so the rate part of a joint policy needs either ordered activation (loosening first) or a behaviour agreed with C2.
-- Development step 0b in `C3-Status-and-Plan.md` covers the joint policy delivery and the re-run.
+- The sidecar reads only two things from a policy today: the gateway route deadlines and the leaky-bucket rate. No sidecar code reads the coupled settings yet (retries are a later C2 phase; C2 declined a per-epoch backpressure mode). So the harm is shown with the two enforced settings, changed together as one joint policy (the example below), and what prevents it is the ordered activation with the drain gate, which the stamp makes possible.
+- Measurement of 18 Oct 2026 (E4, joint policy spanning the gateway and payment-svc, 5 runs each): two-phase 0 expired and 0 mixed-policy requests in every run; naive with the rate first 2 to 3 expired requests (all with the old deadline) and 14 mixed-policy requests per run; naive with the gateway first 0 expired but 16 to 17 mixed; naive with a random spread expired requests in 1 of 5 runs. Details: `C3-Integration-Requirements.md` section 12. (The earlier measurement of 17 Oct, commit `d50b4b7`, predates targeted delivery and is no longer quoted.)
+- Example of harm with settings enforced today: one joint change, chain deadline 1000 to 4000 ms (gateway) and payment rate 100 to 6 requests/s. If the rate drops first, a burst waits up to about 1.4 s in payment's queue against the old 1000 ms deadline and expires (`cs=expired`, still served); with the deadline first it does not.
+- A leaky-bucket rate cannot be chosen per request, so the rate part of a joint policy is activated in order: loosening parts first, then, once no request stamped with the old version is in flight, the tightening parts (built 18 Oct 2026).
+- Development step 0b in `C3-Status-and-Plan.md` (joint policy delivery, consistency demo in the Admin Panel, e2e suite 96, E4) is done. Found while building: the demo gateway application followed the policy with a 2 s poll and could start chains with the old deadline under the new epoch; it now uses the deadline its sidecar stamped (`demo-app/policy.go`).
 
 ### 5.2 Supporting contributions
 
@@ -519,7 +519,7 @@ Repeat ≥ 5 times per configuration; report mean, min, max, sd and p95.
 ## 13. Viva and demo script
 
 1. **Pitch** (§5.5, 45 s), with **one diagram**: old/new epochs and stamping at the gateway (stage → flip → drain).
-2. **Demo 1 (main):** naive vs two-phase mixed-policy counter with a joint policy (2 min); available after step 0b (§5.1a).
+2. **Demo 1 (main):** Rollouts, "Consistent rollout of a joint change": run it naive (payment first) and consistent; compare expired and mixed-policy requests and the latency chart (2 min, §5.1a).
 3. **Demo 2:** targeted, verified delivery: the chain deadline to the gateway only, a rate limit or retry ratio to the service only, each acknowledged by the sidecar (3 min).
 4. **Demo 3:** inject a new namespace live, then kill the Operator → recovery (2 min).
 5. **Results slides:** E3 propagation time and delivery success per replica count, E4 mixed-policy table, E1/E2 coverage, E7 footprint.
@@ -533,7 +533,7 @@ Repeat ≥ 5 times per configuration; report mean, min, max, sd and p95.
    - Say plainly: enforcing the rate limit and the retry ratio is the sidecar's job (C2); C3 delivers, verifies and records the acknowledgement.
 3. **Recovery.** Start a delivery with **Delivery delay** 4000 ms and run `kubectl --context kind-rpe -n rpe-system delete pod -l app=rpe-operator` while it runs: the rollout resumes and completes. Tamper with a sidecar (Proxies, stage a different policy under the active epoch): **Policy enforcement** shows the hash mismatch, then **In sync** within `DRIFT_INTERVAL_MS`.
 4. **Evidence.** The output of `experiments/c3/e3-convergence.sh` (CSV and summary: success rate, mean, min, max, sd and p95 of the propagation time per replica count).
-5. **Consistent rollout (after step 0b).** Roll out a joint change (chain deadline 1000 to 4000 ms and payment rate 200 to 2 requests/s) as naive and as two-phase under steady traffic: the mixed-policy counter and the expired requests rise with naive and stay at 0 with two-phase.
+5. **Consistent rollout.** Roll out a joint change (chain deadline 1000 to 4000 ms and payment rate 100 to 6 requests/s) as naive and as two-phase under steady traffic: the mixed-policy counter and the expired requests rise with naive and stay at 0 with two-phase.
 
 **Likely questions:**
 - "Istio does this?" (§5.4)
