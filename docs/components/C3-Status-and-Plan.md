@@ -1,19 +1,26 @@
 # C3 Kubernetes Enforcement Layer: status and development plan
 
-**Owner:** Kalhara D.M.R (IT23139626). **Date:** 18 Oct 2026. **Branch:** Kubernetes_Enforcement_Layer_V2. The A-to-Z guide is [C3-K8s-Enforcement-Kalhara.md](C3-K8s-Enforcement-Kalhara.md); this file is the short, current view: what was removed, what changed, what remains, and the order to build it.
+**Owner:** Kalhara D.M.R (IT23139626). **Date:** 18 Oct 2026. **Branch:** Kubernetes_Enforcement_Layer_V2. The A-to-Z guide is [C3-K8s-Enforcement-Kalhara.md](C3-K8s-Enforcement-Kalhara.md); this file is the short, current view: what was removed, what changed, what remains, and the order to build it. **Update (18 Oct 2026, evening):** the per-request-consistent rollout is reinstated as C3's novelty (supervisor-approved), see section 1a.
 
 ## 1. What has been removed
 
 | Removed | Why |
 |---|---|
-| The claim "per-request-consistent rollout" as C3's contribution (guide §3, §5, phases, E4, console tab, viva, glossary, pitch) | The three controls from C4 (chain deadline, rate limit, retry ratio) are independent versions for different sidecars. The deadline and the retry allowance travel in the request, and the rate limit is local to one sidecar, so there was nothing for the claim to protect |
-| The "mixed-policy requests" / version-skew display in the Admin Panel | It counted version overlap, not a wrongly handled request |
-| Experiment E4 (naive vs two-phase) and `e4-consistent-rollout.sh` with its results | Replaced by E3 (propagation time and delivery success) |
+| The "mixed-policy requests" / version-skew display in the Admin Panel | Not shown since the delivery panel was rebuilt; to be restored with the consistency demo (step 0b) |
+| Experiment E4 script `e4-consistent-rollout.sh` and its result files | Deleted from the repository (they were committed in `d50b4b7`); to be rebuilt and re-run for the joint-policy demo (step 0b) |
 | Delivering a service policy to the gateway | It reset the gateway's chain deadlines to the static configuration (a bug); the policy's scope now decides the targets |
 | Applying a `queueCapacity` from a policy in the sidecar | The sidecar owner allows the rate only |
 | The Operator's catch-up position in Redis | Moved to PostgreSQL |
 
-Kept but inert (tested, not shown): per-request epoch tracking and the mismatch counter in the sidecar and Operator. They can be deleted after PP1 if wanted.
+## 1a. Reinstated (18 Oct 2026)
+
+The **per-request-consistent rollout** (two-phase epoch stamping) is C3's novelty again. The supervisor approved it, and the four guides were designed around it: the ownership table (A4) gives C3 "per-request-consistent rollout", C1 defines the `pe` field and rule R-T01 (`pe` is immutable along the chain), C2 plans to apply the policy of the stamped epoch, the shared contract defines `rpe_mixed_policy_requests_total` and the in-flight-per-epoch gauge, and C4 produces a **joint** recommendation. An earlier removal this week judged it only by the three independent controls delivered today, which was too narrow.
+
+Honest limits (also written into the guide, section 5.1a):
+- The coupled settings of the policy contract (`fanout`, `replaySafe`, `commitStage`, retry limits, backpressure mode, cancellation tiers, mechanism toggles) are not read by any sidecar code yet, so today the demo shows policy versions overlapping, not yet a harmful outcome.
+- Since targeted delivery, a service policy no longer reaches the gateway, so the earlier measurement (naive 8 to 10 mixed requests per run at a 2000 ms spread, against 0 for two-phase, commit `d50b4b7`) must be re-run with a joint policy that spans the gateway and a service. That is step 0b below.
+- The per-request epoch tracking, the mismatch counter and the two-phase drain exist in the sidecar and the Operator and are tested.
+
 
 ## 2. What has changed
 
@@ -46,6 +53,7 @@ Kept but inert (tested, not shown): per-request epoch tracking and the mismatch 
 | PostgreSQL policy store with event notification (FR4) | Done (+ Redis fast path) |
 | Version consistency and delivery status (FR8, FR9) | Done: hash-verified, acknowledged by the sidecar |
 | Governance: never approves or modifies a policy itself (FR10) | Done in the schema; automatic halt and admin revert not built |
+| Novelty: per-request-consistent rollout (ownership table A4) | Mechanism built and measured on 17 Oct (naive 8 to 10 mixed requests per run, two-phase 0); to be re-established with a joint policy that spans the gateway and a service (step 0b) |
 | Verify delivery, repair drift, coverage | Done |
 | Metrics: injection coverage 100%, delivery success 100% | Measured (1 replica for delivery) |
 | Metric: propagation time, target p95 5 s at 50 pods | Not measured at scale (1 replica only) |
@@ -59,6 +67,7 @@ Kept but inert (tested, not shown): per-request epoch tracking and the mismatch 
 | # | Item | State | Depends on |
 |---|---|---|---|
 | 1 | Housekeeping: commit and push all uncommitted work, full e2e run on a fresh cluster including 70 and 95 | Open | none |
+| 1a | Joint policy delivery and the consistency demo (design with C2 and C4, then build) | Not started | C2, C4 |
 | 2 | Helm chart (`charts/rpe`) | Not started | none |
 | 3 | Webhook admission-latency metric; experiments E1 and E2 | Not started | none |
 | 4 | Stub sidecar for scale; E3 at 10 to 200 pods | Not started | none |
@@ -75,7 +84,14 @@ Kept but inert (tested, not shown): per-request epoch tracking and the mismatch 
 
 Rules for every step: unit tests, an e2e assertion, run on the kind cluster, then update the guide's §2 status. Effort is in working days. Order is by value and risk.
 
-**Step 0: Housekeeping (0.5 d).** Commit in logical commits and push; a fresh-cluster run of all suites including 70 and 95; tell C2's owner what changed in the sidecar (policy store, acks, hash, rate application, `pe` kept per chain at the gateway); agree with the team how to reword the shared appendix (the old novelty row, the A1 role summary, the `pe` description). Done when: everything is pushed and the full suite list is green on a fresh cluster.
+**Step 0: Housekeeping (0.5 d).** Commit and push; a fresh-cluster run of all suites including 70 and 95; tell C2's owner what changed in the sidecar (policy store, acks, hash, rate application, `pe` kept per chain at the gateway); show the team the contract notes in section 7 and agree which of them become part of the shared appendix. Done when: everything is pushed and the full suite list is green on a fresh cluster.
+
+**Step 0b: Joint policy delivery and the consistency demo (about 5 d, design first).**
+- Agree with C4 that a joint recommendation is delivered as one policy version, and with C2 which coupled settings the sidecar reads per epoch (candidates: `mechanisms.*`, `backpressure.mode`, `cancellation.tiers`, `retry.maxAttempts` once retries exist).
+- C3: a policy with several scopes (a gateway part and service parts) under one epoch. Each target gets its own part and hash, the gateway stamps the epoch, and the existing path applies: stage everywhere, activate the gateway, drain, retire. Open design question to settle: a leaky-bucket rate cannot be chosen per request, so the rate part needs ordered activation (loosening first) or an agreed behaviour with C2.
+- Restore the consistency check in the Admin Panel (mixed-policy counter, naive against two-phase) and the experiment E4 (script and CSV), then re-run it.
+- Harm example for the panel: one joint change, chain deadline 1000 to 4000 ms at the gateway and payment rate 200 to 2 per second. If the rate drops first, requests wait in the queue longer than the old deadline and expire; with the deadline first they do not.
+- Done when: naive shows mixed requests and visible expiry, two-phase shows none, with CSV evidence.
 
 **Step 1: Helm chart (3 d).** Build `charts/rpe` from `deploy/k8s/platform/*` and `deploy/k8s/demo/*`.
 - Templates: namespaces, CRDs (`crds/` directory), webhook (Deployment, Service, MutatingWebhookConfiguration), operator and RBAC, PostgreSQL with the migrations ConfigMap applied by a post-install Job, Redis, hub, intelligence, observability, demo (`demo.enabled`), e2e client (`tests.enabled`).
@@ -124,6 +140,7 @@ Rules for every step: unit tests, an e2e assertion, run on the kind cluster, the
 | Step | Effort | Needed for |
 |---|---|---|
 | 0 Housekeeping | 0.5 d | PP1 |
+| 0b Joint policy and consistency demo | 5 d | PP1 (demo) / final |
 | 1 Helm chart | 3 d | PP1 if possible, else final |
 | 2 E1 and E2 | 2 d | PP1 (E2) / final |
 | 3 Stub sidecar, E3 at scale | 3 d | final |
@@ -134,7 +151,7 @@ Rules for every step: unit tests, an e2e assertion, run on the kind cluster, the
 | 8 Optional | 2 d | optional |
 | 9 Close-out | 2 d | final |
 
-About 20 working days in total.
+About 25 working days in total.
 
 ## 6. Risks
 
@@ -146,3 +163,51 @@ About 20 working days in total.
 | Istio on a laptop | Separate namespace or cluster, default profile, measure only the listed factors |
 | Automatic halt may be read as autonomous modification | Halting changes no policy; revert needs an admin; confirm with the supervisor |
 | Shared appendix wording | Agree with the team first; change all four guides together |
+
+## 7. Contract notes proposed to the team (not agreed)
+
+These notes describe what C3 built in the sidecar and the Operator after the shared contract v0.2. They are **not** in the shared appendix, which must stay identical in all four guides. If the team accepts them, they are copied into the appendix of all four guides together and the contract version is bumped. Until then the shared appendix keeps the agreed text.
+
+### A3.3 metrics table: replace the row for `rpe_mixed_policy_requests_total` with these rows
+
+```
+| `rpe_policy_inflight_requests` | gauge | `epoch` | In-flight inbound requests pinned to each epoch (C3 drains the previous epoch until 0) |
+| `rpe_policy_requests_total` | counter | `epoch` | Inbound requests by the epoch they were served under |
+| `rpe_policy_mismatch_total` | counter | | Inbound requests served under another version of the policy than the epoch they carry |
+| `rpe_mixed_policy_requests_total` | counter | `mode` | Requests served under another version of a policy than the epoch they carry, during rollouts (exported by the C3 Operator from the sidecars' `rpe_policy_mismatch_total`). Counts requests that met more than one version of a policy along their chain during a rollout; whether that causes harm depends on the coupled settings of the policy (see the C3 guide, section 5.1a) |
+```
+
+### A3.4 "Implemented today": add these bullets
+
+- **Delivery targets (v0.3.1, 18 Oct 2026):** a policy is delivered only to the sidecars its scope names. A policy scoped to `gateway` (the chain deadline, `spec.routes[route].deadlineMs`) goes to the gateway sidecars only; a policy scoped to any other service (rate limit `spec.leakyBucket.ratePerSec`, retry ratio `spec.retry.budgetRatio`) goes to that service's sidecars only, never to the gateway. The three controls are independent versions. Delivery succeeds when the target sidecar holds the version with the approved content hash and has acknowledged it; enforcing the rate limit and the retry ratio is the sidecar's job (C2). The hub's `POST /api/hub/policies` takes `control` (`chain-deadline`, `rate-limit` or `retry-ratio`) and merges only that control into the service's current policy.
+- **v0.3 (17 Oct 2026):** `POST /api/k8s/rollouts` also takes `skewMs` (0–10000: a random delay per proxy delivery that models propagation spread, the same for every mode). `RPERollout.status` adds `stagedAt`, `activatedAt`, `convergenceMs`, `drainMs`, `mixedPolicyRequests`, `settled` and, per pod, `hash`, `verified`, `confirmedAt`. Two-phase drains until no target has a request pinned to the previous epoch in flight. Naive drops the previous epoch on each proxy as it switches. Rollouts run one at a time.
+- New: `GET /api/k8s/policies/{id}/status` (A3.4 shape), `GET /api/k8s/fleet` (coverage audit over namespaces labelled `rpe-injection=enabled`, per-proxy epochs and hashes, drift), `POST /api/k8s/fleet/reinject { namespace, pod }` (recreates a coverage-gap pod). Operator metrics on `rpe-policy-api.rpe-system:8081/metrics`: `rpe_injection_coverage_ratio`, `rpe_injection_gap_pods`, `rpe_drift_repairs_total`, `rpe_mixed_policy_requests_total{mode}`, `rpe_rollout_convergence_seconds{mode}`.
+
+### A3.5 table: replace the row for `GET /rpe/v1/policy`
+
+```
+| `GET /rpe/v1/policy` | `{ epochs: [{ epoch, version, hash, state, inflight }], activeEpoch, inflight: { epoch: n }, served: { epoch: n }, mismatched }` (C3 drift checks, drain and mixed-policy count; `hash` is computed by the sidecar) |
+```
+
+### A3.5: add this block after the Ack paragraph
+
+**Implemented today (v0.3, 17 Oct 2026; added by C3 in the sidecar's policy code, for C2 to review):**
+- **Per-request pinning:** every inbound hop is served under the epoch the request carries (`pe`) when the sidecar holds it (staged or active), otherwise under the active epoch. The gateway serves the epoch it stamps.
+- **`pe` is fixed per chain at the gateway proxy:** on the gateway sidecar's outbound call, `pe` is the epoch the proxy pinned when the request entered, replacing the value the co-located application stamped (an application learns the active epoch by polling, so it can lag; this made old-epoch requests appear after a drain). A3.1 already defines `pe` as immutable along the chain.
+- **Content hash:** `hash` is computed by the sidecar: the first 16 hex digits of SHA-256 over the canonical JSON of the received `policy` member (keys sorted, no whitespace, integral numbers without a fraction). C3 computes the same value from the approved spec, so a match proves what the sidecar holds. A hash sent in the PUT body is ignored.
+- **Acks** are sent asynchronously after a successful PUT, activate and DELETE (`state=retired`) to `RPE_POLICY_API_URL` (set by the webhook).
+- **Mixed-policy hop:** a request served under another version of the same policy than the epoch it carries (epochs are named `<policyId>-v<n>`). It is counted as `mismatched` and `rpe_policy_mismatch_total`.
+- **Rate limit is enforced (v0.3.2, 18 Oct 2026, with C2's agreement):** activating a policy whose `policy.leakyBucket.ratePerSec` is valid (above 0, at most 1000000) sets the release rate of the inbound leaky bucket. Only the rate is applied (the value the runtime update `POST :15090/backpressure/config` also sets); the queue capacity is never changed by a policy, and the bucket's mechanism is unchanged. A staged policy is not enforced, a policy without a valid rate leaves the current rate alone, and `queueCapacity` and `burst` in a policy are ignored. The sidecar acknowledges after it applied the rate; the effective rate is `rpe_backpressure_inbound_rate_per_second`.
+- Apart from that rate, only the sidecar's policy store, control API and metrics changed; deadline and cancellation handling are untouched.
+
+
+### A3.8 "Implemented today": replace the hub endpoints line
+
+- `/api/hub/me|overview|chain|services|load`, `/api/hub/protocol/*`, `/api/hub/demos/*`, `/api/hub/sidecars`, `/api/hub/fleet`, `/api/hub/fleet/audit`, `POST /api/hub/fleet/reinject`, `/api/hub/policies`, `/api/hub/policies/{id}/status`, `/api/hub/rollouts`, `/api/hub/effective`.
+
+### A3.9 Redis table: replace the checkpoint row, and add this paragraph after the table
+
+| `rpe:operator:last-event-id` | string | Legacy only (read once to carry the position over): the Operator's catch-up checkpoint now lives in PostgreSQL, `policy.operator_state` |
+
+**Redis is disposable (v0.3.3, 18 Oct 2026).** Redis runs without persistence and may be empty after a restart or a flush. Nothing correct depends on it: the catch-up position is in PostgreSQL, and the Operator rebuilds any `rpe:effective:<service>` entry that is missing from the newest approved active policy in PostgreSQL (without publishing a change message; it never replaces an entry that exists). Components that read `GET /api/k8s/effective` (the hub, C4's bridge) can therefore rely on it to build the next version of a service's policy.
+

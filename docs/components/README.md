@@ -17,7 +17,7 @@ There is one self-contained A-to-Z guide per student. Each guide contains:
 |---|---|---|
 | C1 Protocol & Specification Layer | Ruwanmali K.H (IT23151642) | [C1-Protocol-Ruwanmali.md](C1-Protocol-Ruwanmali.md) |
 | C2 Service Interceptor Layer | R.R.D Pinto (IT23319806) | [C2-Interceptor-Pinto.md](C2-Interceptor-Pinto.md) |
-| C3 Kubernetes Enforcement Layer | Kalhara D.M.R (IT23139626) | [C3-K8s-Enforcement-Kalhara.md](C3-K8s-Enforcement-Kalhara.md); current status and plan: [C3-Status-and-Plan.md](C3-Status-and-Plan.md) |
+| C3 Kubernetes Enforcement Layer | Kalhara D.M.R (IT23139626) | [C3-K8s-Enforcement-Kalhara.md](C3-K8s-Enforcement-Kalhara.md) |
 | C4 Resilience Intelligence Layer | R.M.S.B. Rathnayake (IT23289420) | [C4-Intelligence-Rathnayake.md](C4-Intelligence-Rathnayake.md) |
 
 ## Working with Claude Code
