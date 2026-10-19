@@ -150,6 +150,35 @@ func TestJointRolloutWithoutGatewayLooseningNeedsNoGate(t *testing.T) {
 	}
 }
 
+func TestASingleRateChangeInAJointPolicyIsNotHeldBack(t *testing.T) {
+	// Only payment's rate changes (100 -> 12); the gateway's part is unchanged. The lower rate must be applied
+	// without waiting for requests of the previous version: the deadline they carry did not change.
+	j3 := Policy{PolicyID: "chain", Version: 3, Epoch: "chain-v3", Scope: Scope{Service: "gateway"}, Spec: jointSpec([]Part{gwPart(1000), payPart(12)})}
+	plan := planJoint(j3, &j1)
+	if plan[0].Kind != changeUnchanged || plan[0].Step != 1 || len(plan[0].Changes) != 0 || plan[1].Kind != changeTighten {
+		t.Fatalf("the gateway's part is unchanged, payment tightens: %+v", plan)
+	}
+	h := jointHarness(t)
+	h.store.policies[j3.Epoch] = j3
+	h.gateway.inflight["chain-v1"] = 2 // requests of the previous version are still running
+	h.create("rate", "two-phase", j3, "chain-v1", time.Now())
+	h.setJoint("rate")
+	ro := h.until("rate", PhaseDraining)
+	if ro.Status.GateStartedAt != "" {
+		t.Fatal("no wait before the tightening: the gateway's part did not change")
+	}
+	if h.payment.did("activate", "chain-v3") == 0 {
+		t.Fatal("payment's new rate is enforced while requests of the previous version are still in flight")
+	}
+	if h.gateway.did("retire", "chain-v1") != 0 {
+		t.Fatal("the previous version is only retired after the drain")
+	}
+	h.gateway.mu.Lock()
+	h.gateway.inflight["chain-v1"] = 0
+	h.gateway.mu.Unlock()
+	h.until("rate", PhaseComplete)
+}
+
 func TestNaiveArrivalOrderServicesFirst(t *testing.T) {
 	h := jointHarness(t)
 	h.create("n", "naive", j2, "chain-v1", time.Now())

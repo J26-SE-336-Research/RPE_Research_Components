@@ -57,7 +57,11 @@ assert_eq "$(echo "${RUN}" | jq -r '"\(.state) \(.expired) \(.mixedPolicyRequest
 # --- 4. a one-control change to the joint policy keeps the other part ---------------------------------------------------
 hub POST /api/hub/policies '{"control":"rate-limit","service":"payment-svc","ratePerSec":50,"rollout":"two-phase"}'
 assert_eq "$(echo "${BODY}" | jq -r .policyId)" "${pol}" "a rate change for payment-svc is a new version of the joint policy"
-assert_eq "$(wait_settled "$(echo "${BODY}" | jq -r '.rollout.metadata.name // empty')" 120)" Complete "it is delivered"
+single=$(echo "${BODY}" | jq -r '.rollout.metadata.name // empty')
+assert_eq "$(wait_settled "${single}" 120)" Complete "it is delivered"
+hub GET "/api/hub/rollouts/${single}"
+assert_eq "$(echo "${BODY}" | jq -r '[.status.plan[] | select(.service=="gateway")][0].kind')" unchanged "the gateway's part of that version is unchanged"
+assert_eq "$(echo "${BODY}" | jq -r '.status.gateStartedAt // "none"')" none "the lower rate was not held back: no wait for the previous version before it"
 hub GET /api/hub/policies
 latest=$(echo "${BODY}" | jq -c --arg p "${pol}" '[.policies[] | select(.policyId==$p)] | max_by(.version)')
 assert_eq "$(echo "${latest}" | jq -r '.spec.parts | length')" 2 "the new version still has both parts"
