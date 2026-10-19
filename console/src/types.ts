@@ -41,6 +41,7 @@ export type PolicyRow = {
     retry?: { budget?: number; budgetRatio?: number };
     leakyBucket?: { ratePerSec?: number };
     routes?: Record<string, { deadlineMs?: number }>;
+    parts?: { scope: { namespace?: string; service?: string; route?: string }; spec: PolicyRow["spec"] }[];
   };
   source: string;
   recommendationId?: string;
@@ -68,7 +69,7 @@ export type FleetPod = {
 export type FleetData = { namespaces: { name: string; injection: boolean }[]; pods: FleetPod[]; coverage: { eligible: number; injected: number } };
 
 export type RolloutPod = { name: string; service: string; role: string; state: string; error?: string; hash?: string; verified?: boolean; confirmedAt?: string; part?: string; activeAt?: string };
-export type PartPlan = { service: string; kind: "loosen" | "tighten"; step: number; changes?: string[] };
+export type PartPlan = { service: string; kind: "loosen" | "tighten" | "unchanged"; step: number; changes?: string[] };
 export type Rollout = {
   metadata: { name: string; creationTimestamp: string };
   spec: { policyId: string; version: number; epoch: string; service: string; mode: string; previousEpoch?: string; requestedBy?: string; skewMs?: number; services?: string[]; order?: string };
