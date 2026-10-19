@@ -131,10 +131,12 @@ func versionOf(epoch string) int {
 }
 
 // Kinds of a part's change. A tightening makes a limit stricter (a shorter deadline, a lower rate, a lower retry
-// ratio); every other change loosens or leaves the limits alone.
+// ratio); every other change loosens or leaves the limits alone. A part whose content is the same as in the previous
+// version is unchanged (for example the gateway's part when only a service's rate of the joint policy changes).
 const (
-	changeLoosen  = "loosen"
-	changeTighten = "tighten"
+	changeLoosen    = "loosen"
+	changeTighten   = "tighten"
+	changeUnchanged = "unchanged"
 )
 
 // PartPlan is how one part of a joint policy is activated: its kind, the step it belongs to (1 loosening, 2
@@ -237,6 +239,9 @@ func planJoint(p Policy, prev *Policy) []PartPlan {
 			}
 		}
 		kind, changes := classify(before, part.Spec)
+		if before != nil && specHash(before) == specHash(part.Spec) {
+			kind, changes = changeUnchanged, nil
+		}
 		step := 1
 		if kind == changeTighten {
 			step = 2
@@ -254,6 +259,16 @@ func stepOf(plan []PartPlan, service string) int {
 		}
 	}
 	return 1
+}
+
+// kindOf is the kind of a service's change in a plan ("" when the service has no part in it).
+func kindOf(plan []PartPlan, service string) string {
+	for _, pp := range plan {
+		if pp.Service == service {
+			return pp.Kind
+		}
+	}
+	return ""
 }
 
 // describePlan is the plan in one line, for the rollout message.

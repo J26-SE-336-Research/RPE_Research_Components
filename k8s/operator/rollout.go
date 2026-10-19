@@ -453,7 +453,7 @@ func (r *RolloutReconciler) activate(ctx context.Context, ro *RPERollout, p Poli
 			ro.Status.NextStepAt = time.Now().Add(r.skew(ro)).UTC().Format(time.RFC3339Nano)
 			ro.Status.Message = fmt.Sprintf("%s: the first proxies switched; the others follow in %d ms", ro.Spec.Order, ro.Spec.SkewMs)
 			return r.skew(ro), nil
-		case prev != "" && prev != p.Epoch && stepHasGateway(ro, 1):
+		case prev != "" && prev != p.Epoch && stepChangesGateway(ro, 1):
 			// The gateway stamps the new version since step 1. Tighten only once no request stamped with the
 			// previous version is in flight: such a request still carries the previous version's settings.
 			ro.Status.Phase, ro.Status.GateStartedAt = PhaseDraining, nowNano()
@@ -713,10 +713,12 @@ func allActive(ro *RPERollout, which func(PodStatus) bool) bool {
 	return true
 }
 
-// stepHasGateway reports whether a gateway proxy is activated in the given step of a joint rollout.
-func stepHasGateway(ro *RPERollout, step int) bool {
+// stepChangesGateway reports whether a gateway proxy whose part really changes is activated in the given step of a
+// joint rollout. Only then can a request of the previous version carry a setting the next step depends on (the old
+// deadline); a gateway part that is unchanged needs no wait before the tightening.
+func stepChangesGateway(ro *RPERollout, step int) bool {
 	for _, p := range ro.Status.Pods {
-		if p.Role == "gateway" && stepOf(ro.Status.Plan, p.Part) == step {
+		if p.Role == "gateway" && stepOf(ro.Status.Plan, p.Part) == step && kindOf(ro.Status.Plan, p.Part) != changeUnchanged {
 			return true
 		}
 	}
