@@ -6,38 +6,78 @@ import type { ConsistencyRun, ConsistencyState } from "../types";
 type Delivery = "two-phase" | "naive-services-first" | "naive-gateway-first" | "naive-random";
 const DELIVERY: Record<Delivery, { label: string; mode: string; order?: string; skewMs: number; hint: string }> = {
   "two-phase": {
-    label: "Consistent (two-phase)",
+    label: "With C3 (two-phase, as in production)",
     mode: "two-phase",
     skewMs: 0,
-    hint: "Stage on every sidecar, loosen first (the gateway stamps the new version), wait until no request of the old version is in flight, then tighten.",
+    hint: "Exactly what RPE does for every approved change: stage on every sidecar, loosen first (the gateway stamps the new version), wait until no request of the old version is in flight, then tighten.",
   },
   "naive-services-first": {
-    label: "Naive: the service switches first",
+    label: "Simulated without C3: the service switches first",
     mode: "naive",
     order: "services-first",
     skewMs: 4000,
-    hint: "Each sidecar switches when the change reaches it. Here payment's sidecar gets it first and the gateway's later.",
+    hint: "Simulates a system without C3: each sidecar switches when the change happens to reach it. Here payment's sidecar is reached first and the gateway's later.",
   },
   "naive-gateway-first": {
-    label: "Naive: the gateway switches first",
+    label: "Simulated without C3: the gateway switches first",
     mode: "naive",
     order: "gateway-first",
     skewMs: 4000,
-    hint: "Each sidecar switches when the change reaches it. Here the gateway's sidecar gets it first and payment's later.",
+    hint: "Simulates a system without C3: each sidecar switches when the change happens to reach it. Here the gateway's sidecar is reached first and payment's later.",
   },
   "naive-random": {
-    label: "Naive: random arrival",
+    label: "Simulated without C3: random arrival",
     mode: "naive",
     skewMs: 3000,
-    hint: "Each sidecar switches after a random delay up to the spread: the order is left to chance, as in a real fleet.",
+    hint: "Simulates a system without C3: each sidecar is reached after a random network delay, so the order is left to chance, as in a real fleet.",
   },
 };
 
 function label(r: ConsistencyRun) {
-  if (r.mode === "two-phase") return "Consistent (two-phase)";
-  if (r.order === "services-first") return "Naive: service first";
-  if (r.order === "gateway-first") return "Naive: gateway first";
-  return `Naive: random (${r.skewMs} ms)`;
+  if (r.mode === "two-phase") return "With C3 (two-phase)";
+  if (r.order === "services-first") return "Without C3: service first (simulated)";
+  if (r.order === "gateway-first") return "Without C3: gateway first (simulated)";
+  return `Without C3: random arrival (simulated, ${r.skewMs} ms)`;
+}
+
+/** Slowest demo request after the approval: the same with and without C3, which only changes the version a request runs under. */
+function maxLatencyAfter(r: ConsistencyRun) {
+  return r.samples.filter((s) => s.atMs >= 0).reduce((m, s) => Math.max(m, s.ms), 0);
+}
+
+/** E4, 18 Oct 2026, 5 runs of each delivery (experiments/c3/results/e4-20261018-150733-summary.csv). */
+const E4 = [
+  { delivery: "With C3 (two-phase)", runs: "0 of 5", signals: "0", mixed: "0" },
+  { delivery: "Without C3: service first (simulated 4 s delay)", runs: "5 of 5", signals: "2 to 3", mixed: "14" },
+  { delivery: "Without C3: gateway first (simulated 4 s delay)", runs: "0 of 5", signals: "0", mixed: "16 to 17" },
+  { delivery: "Without C3: random arrival (simulated up to 3 s)", runs: "1 of 5", signals: "0 to 2", mixed: "1 to 15" },
+];
+
+function E4Summary() {
+  return (
+    <div className="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Delivery (E4, 5 runs each)</th>
+            <th className="num">Runs with stale-deadline signals</th>
+            <th className="num">Stale-deadline signals per run</th>
+            <th className="num">Mixed-policy requests per run</th>
+          </tr>
+        </thead>
+        <tbody>
+          {E4.map((e) => (
+            <tr key={e.delivery}>
+              <td>{e.delivery}</td>
+              <td className="num">{e.runs}</td>
+              <td className="num">{e.signals}</td>
+              <td className="num">{e.mixed}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
 }
 
 /** Latency of every demo request over time, with the deadlines and the moments each sidecar switched. */
@@ -93,19 +133,27 @@ function Timeline({ r }: { r: ConsistencyRun }) {
 }
 
 function RunDetail({ r }: { r: ConsistencyRun }) {
-  const harmed = r.expired > 0;
+  const stale = r.expiredOldDeadline > 0;
   return (
     <div className="stack" style={{ gap: 14 }}>
       <div className="kpis">
-        <Kpi label="Expired during the change" value={<span style={{ color: harmed ? "var(--red)" : "var(--green)" }}>{r.expired}</span>} foot={`of ${r.during} requests after the approval`} />
-        <Kpi label="With the old deadline" value={r.expiredOldDeadline} foot={`stamped ${r.config.baseDeadlineMs} ms, queued at ${r.config.newRate}/s`} />
+        <Kpi
+          label="Stale-deadline signals"
+          value={<span style={{ color: stale ? "var(--red)" : "var(--green)" }}>{r.expiredOldDeadline}</span>}
+          foot={`cancel signals judged against the replaced ${r.config.baseDeadlineMs} ms deadline (of ${r.during} requests)`}
+        />
         <Kpi label="Mixed-policy requests" value={r.mixedPolicyRequests} foot="served under another version than they carry" />
-        <Kpi label={r.mode === "two-phase" ? "Waited before tightening" : "Converged in"} value={fmtMs(r.mode === "two-phase" ? r.gateMs : r.convergenceMs)} foot={r.mode === "two-phase" ? "until the old version drained" : "until every sidecar switched"} />
+        <Kpi label="Slowest request after the approval" value={fmtMs(maxLatencyAfter(r))} foot="latency is the same with and without C3" />
+        <Kpi
+          label={r.mode === "two-phase" ? "Waited before tightening" : "Simulated network delay"}
+          value={r.mode === "two-phase" ? fmtMs(r.gateMs) : fmtMs(r.skewMs)}
+          foot={r.mode === "two-phase" ? "until the old version drained" : "added by the simulation, not by RPE"}
+        />
       </div>
       <Timeline r={r} />
       <div className="row muted" style={{ fontSize: 13.5 }}>
         <Tag tone="green">on time</Tag>
-        <Tag tone="red">expired (cs=expired, still served)</Tag>
+        <Tag tone="red">cancel signal (cs=expired), request still served</Tag>
         <span>Dashed lines: the old ({r.config.baseDeadlineMs} ms) and the new ({r.config.newDeadlineMs} ms) chain deadline. Blue: when each sidecar started enforcing the new version.</span>
       </div>
       {r.plan && r.plan.length > 0 && (
@@ -126,15 +174,17 @@ function RunDetail({ r }: { r: ConsistencyRun }) {
 }
 
 /**
- * The C3 novelty: one joint decision (a longer chain deadline at the gateway and a lower rate at payment-svc) is
- * delivered under the same traffic, either naive or consistently. A request that meets the new rate with the old
- * deadline expires; the consistent rollout never lets that happen.
+ * Experiment E4, not the delivery path. RPE always delivers an approved change automatically and two-phase (see
+ * "Latest deliveries" on the Rollouts page). This experiment simulates what a system without C3 would do with one
+ * joint decision (a longer chain deadline at the gateway and a lower rate at payment-svc) and compares it with C3
+ * under the same traffic. The naive deliveries and their network delay exist only in the simulation.
  */
 export function ConsistencyDemo() {
+  const [open, setOpen] = useState(false);
   const [delivery, setDelivery] = useState<Delivery>("two-phase");
   const [skew, setSkew] = useState(DELIVERY["two-phase"].skewMs);
   const [selected, setSelected] = useState<string | null>(null);
-  const { data, error, reload } = useData<ConsistencyState>("/demos/consistency", 1000);
+  const { data, error, reload } = useData<ConsistencyState>("/demos/consistency", open ? 1000 : 5000);
   const d = DELIVERY[delivery];
   const c = data?.defaults;
   const start = useAction(async () => {
@@ -147,24 +197,41 @@ export function ConsistencyDemo() {
 
   return (
     <Panel
-      title="Consistent rollout of a joint change"
-      subtitle="One approved decision changes two settings that depend on each other. Deliver it naive or consistently under the same traffic."
+      title="Experiment E4: why coordinated delivery matters (simulation)"
+      subtitle="Not the delivery path. RPE delivers every approved change automatically, as shown above. This experiment simulates a system without C3 and compares it with C3 under the same traffic."
       actions={
-        <Button variant="primary" write onClick={() => start.run()} busy={start.busy || !!data?.busy}>
-          Run
-        </Button>
+        <>
+          <Button onClick={() => setOpen(!open)}>{open ? "Hide experiment" : "Open experiment"}</Button>
+          {open && (
+            <Button variant="primary" write onClick={() => start.run()} busy={start.busy || !!data?.busy}>
+              Run experiment
+            </Button>
+          )}
+        </>
       }
     >
       <Alert>{start.error ?? error}</Alert>
+      {!open && (
+        <>
+          <p style={{ marginTop: 0 }}>
+            One joint decision, chain deadline 1000 → 4000 ms at the gateway and payment-svc 100 → 6 requests/s, delivered under the same traffic. Without C3 each
+            sidecar switches when the change happens to reach it; with C3 it switches as one unit. Measured results:
+          </p>
+          <E4Summary />
+          {data?.busy && <div className="muted" style={{ marginTop: 10 }}>An experiment run is in progress.</div>}
+        </>
+      )}
+      {open && (
+        <>
       {c && (
         <p style={{ marginTop: 0 }}>
-          The change: chain deadline of <span className="mono">GET /api/orders</span> at the gateway {c.baseDeadlineMs} → {c.newDeadlineMs} ms, and the rate of
-          payment-svc {c.baseRate} → {c.newRate} requests/s. Traffic: a burst of {c.burst} chain requests every {c.burstEveryMs / 1000} s. At {c.newRate}/s a burst waits
-          more than a second in payment's queue: fine with the new {c.newDeadlineMs} ms deadline, too long with the old {c.baseDeadlineMs} ms one.
+          The decision: chain deadline of <span className="mono">GET /api/orders</span> at the gateway {c.baseDeadlineMs} → {c.newDeadlineMs} ms, and the rate of
+          payment-svc {c.baseRate} → {c.newRate} requests/s, computed together. Traffic: a burst of {c.burst} chain requests every {c.burstEveryMs / 1000} s. At {c.newRate}/s a
+          burst waits more than a second in payment's queue, which fits the new {c.newDeadlineMs} ms deadline but not the old {c.baseDeadlineMs} ms one.
         </p>
       )}
       <div className="form-grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))" }}>
-        <Field label="Delivery">
+        <Field label="Compare">
           <select
             value={delivery}
             onChange={(e) => {
@@ -181,13 +248,16 @@ export function ConsistencyDemo() {
           </select>
         </Field>
         {d.mode === "naive" && (
-          <Field label={d.order ? "Delay between the two sidecars (ms)" : "Random spread per sidecar (ms)"} hint="How long the change takes to reach the later sidecar">
+          <Field
+            label={d.order ? "Simulated network delay to the later sidecar (ms)" : "Simulated network delay, random up to (ms)"}
+            hint="Models a slow network or delivery channel in a system without C3. RPE itself adds no delay."
+          >
             <input type="number" min={0} max={10000} step={500} value={skew} onChange={(e) => setSkew(Number(e.target.value))} />
           </Field>
         )}
       </div>
       <p className="muted" style={{ marginBottom: 0 }}>
-        {d.hint} You are recorded as the approver of each version. Every run starts from the baseline and restores it afterwards.
+        {d.hint} Each run starts from the baseline and restores it afterwards; you are recorded as the approver.
       </p>
 
       {data?.busy && runs[0]?.state === "running" && (
@@ -197,14 +267,14 @@ export function ConsistencyDemo() {
         </div>
       )}
 
-      <div className="section-title">Runs</div>
+      <div className="section-title">Experiment runs</div>
       {runs.length ? (
         <div className="table-wrap">
           <table>
             <thead>
               <tr>
                 <th>Delivery</th>
-                <th className="num">Expired during the change</th>
+                <th className="num">Stale-deadline signals</th>
                 <th className="num">Mixed-policy requests</th>
                 <th className="num">Without 2xx</th>
                 <th className="num">Wait before tightening</th>
@@ -218,7 +288,7 @@ export function ConsistencyDemo() {
                     {label(r)}
                     <div className="muted mono">{r.id}</div>
                   </td>
-                  <td className="num">{r.state === "done" ? `${r.expired} / ${r.during}` : "—"}</td>
+                  <td className="num">{r.state === "done" ? `${r.expiredOldDeadline} / ${r.during}` : "—"}</td>
                   <td className="num">{r.state === "done" ? r.mixedPolicyRequests : "—"}</td>
                   <td className="num">{r.state === "done" ? r.failed : "—"}</td>
                   <td className="num">{r.state === "done" && r.mode === "two-phase" ? fmtMs(r.gateMs) : "—"}</td>
@@ -227,10 +297,10 @@ export function ConsistencyDemo() {
                       <Status tone="blue">Running</Status>
                     ) : r.state === "failed" ? (
                       <Status tone="red">Failed</Status>
-                    ) : r.expired > 0 ? (
-                      <Status tone="red">Requests expired</Status>
+                    ) : r.expiredOldDeadline > 0 || r.mixedPolicyRequests > 0 ? (
+                      <Status tone="red">Mixed versions</Status>
                     ) : (
-                      <Status tone="green">No request harmed</Status>
+                      <Status tone="green">One version per request</Status>
                     )}
                   </td>
                 </tr>
@@ -239,7 +309,7 @@ export function ConsistencyDemo() {
           </table>
         </div>
       ) : (
-        <Empty>No runs yet. Run the consistent delivery and a naive one to compare them.</Empty>
+        <Empty>No experiment runs yet. Run "With C3" and one "Simulated without C3" to compare them.</Empty>
       )}
 
       {shown && shown.state === "failed" && <Alert>{shown.error}</Alert>}
@@ -247,6 +317,8 @@ export function ConsistencyDemo() {
         <>
           <div className="section-title">{label(shown)}</div>
           <RunDetail r={shown} />
+        </>
+      )}
         </>
       )}
     </Panel>
