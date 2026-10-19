@@ -125,7 +125,7 @@ Admin panel: Policies (roll out / restore) and **Rollouts** pages. Migration `00
 **Verified on the cluster (18 Oct 2026):** suites 60, 80, 90, 91, 92, 93 and 94 pass.
 
 **Next:**
-- joint policy delivery and the consistency demo (step 0b in `C3-Status-and-Plan.md`);
+- (done 18 Oct 2026) joint policy delivery and the consistency demo (`C3-Status-and-Plan.md` section 2);
 - run the full e2e set and `e3-convergence.sh`, record E3 results;
 - regression halt using C4 health and admin revert (P3.4);
 - ordered rollout (P3.2);
@@ -271,7 +271,7 @@ What is true today:
 - Measurement of 18 Oct 2026 (E4, joint policy spanning the gateway and payment-svc, 5 runs each): two-phase 0 expired and 0 mixed-policy requests in every run; naive with the rate first 2 to 3 expired requests (all with the old deadline) and 14 mixed-policy requests per run; naive with the gateway first 0 expired but 16 to 17 mixed; naive with a random spread expired requests in 1 of 5 runs. Details: `C3-Integration-Requirements.md` section 12. (The earlier measurement of 17 Oct, commit `d50b4b7`, predates targeted delivery and is no longer quoted.)
 - Example of harm with settings enforced today: one joint change, chain deadline 1000 to 4000 ms (gateway) and payment rate 100 to 6 requests/s. If the rate drops first, a burst waits up to about 1.4 s in payment's queue against the old 1000 ms deadline and expires (`cs=expired`, still served); with the deadline first it does not.
 - A leaky-bucket rate cannot be chosen per request, so the rate part of a joint policy is activated in order: loosening parts first, then, once no request stamped with the old version is in flight, the tightening parts (built 18 Oct 2026).
-- Development step 0b in `C3-Status-and-Plan.md` (joint policy delivery, consistency demo in the Admin Panel, e2e suite 96, E4) is done. Found while building: the demo gateway application followed the policy with a 2 s poll and could start chains with the old deadline under the new epoch; it now uses the deadline its sidecar stamped (`demo-app/policy.go`).
+- Done: the joint policy delivery, the consistency demo in the Admin Panel, e2e suite 96 and E4 (`C3-Status-and-Plan.md` section 2). Found while building: the demo gateway application followed the policy with a 2 s poll and could start chains with the old deadline under the new epoch; it now uses the deadline its sidecar stamped (`demo-app/policy.go`).
 
 ### 5.2 Supporting contributions
 
@@ -480,7 +480,7 @@ The mode is selected per rollout (`distribution`) and in the sidecar config (nee
 - P3.4 Regression halt plus admin revert.
 - P3.5 ConfigMap and poll distribution modes (with C2).
 - P3.6 Console C3 module (§12).
-- **Acceptance:** live demo, naive (mixed > 0) vs two-phase (mixed = 0) with a joint policy; and targeted, verified delivery of each control to its own sidecars (§5.1a, step 0b in `C3-Status-and-Plan.md`).
+- **Acceptance:** live demo, naive (mixed > 0) vs two-phase (mixed = 0) with a joint policy; and targeted, verified delivery of each control to its own sidecars (§5.1a, `C3-Status-and-Plan.md` section 2).
 
 **Phase 4: Evaluation (→ Final):** E1–E7; Istio installed in a separate namespace or cluster for the comparisons; thesis.
 
