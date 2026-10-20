@@ -1,0 +1,68 @@
+# rpe-protocol: the C1 protocol service (Appendix A3.7). The Go container serves the API: trail collector, topology
+# rebuilt from trails, deadline attribution, service registry, validation and live conformance. The rpe-java container
+# answers the same validation and conformance questions with the Java library, so both are shown side by side.
+# Port 8095 is not one of the sidecars' outbound ports (80, 8080): the demo services reach it directly, so registry
+# lookups and trail reports never pass through (or show up in the metrics of) the RPE sidecars.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rpe-protocol
+  namespace: rpe-system
+  labels: {app: rpe-protocol, app.kubernetes.io/part-of: rpe}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: rpe-protocol}
+  template:
+    metadata:
+      labels: {app: rpe-protocol}
+    spec:
+      containers:
+        - name: protocol
+          image: rpe/protocol-service:dev
+          imagePullPolicy: IfNotPresent
+          ports: [{containerPort: 8095, name: http}]
+          env:
+            - {name: PORT, value: "8095"}
+            - {name: JAVA_URL, value: "http://127.0.0.1:8096"}
+            - {name: REGISTRY_VERSION, value: "1"}
+            - {name: REGISTRY, value: "gateway,order-svc,inventory-svc,payment-svc,loyalty-svc,fraud-check-svc,legacy-svc,shipping-svc"}
+            # the declared call graph of the demo shop (deploy/k8s/demo), used to score the rebuilt topology
+            - {name: GROUND_TRUTH, value: "gateway>order-svc,order-svc>inventory-svc,order-svc>payment-svc,order-svc>loyalty-svc,order-svc>legacy-svc,legacy-svc>shipping-svc"}
+            - {name: TRAIL_CAPACITY, value: "5000"}
+          readinessProbe:
+            httpGet: {path: /healthz, port: 8095}
+            periodSeconds: 3
+          resources:
+            requests: {cpu: 20m, memory: 32Mi}
+            limits: {memory: 128Mi}
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+        - name: protocol-java
+          image: rpe/protocol-service:dev
+          imagePullPolicy: IfNotPresent
+          command: ["java", "-XX:+UseSerialGC", "-Xss512k", "-XX:MaxRAMPercentage=60", "-cp", "/app/java/rpe-protocol-java.jar:/app/java/lib/*", "dev.rpe.protocolservice.Main"]
+          ports: [{containerPort: 8096, name: java}]
+          env:
+            - {name: JAVA_PORT, value: "8096"}
+          readinessProbe:
+            httpGet: {path: /healthz, port: 8096}
+            periodSeconds: 5
+          resources:
+            requests: {cpu: 20m, memory: 96Mi}
+            limits: {memory: 256Mi}
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rpe-protocol
+  namespace: rpe-system
+spec:
+  selector: {app: rpe-protocol}
+  ports: [{port: 8095, targetPort: 8095, name: http}]

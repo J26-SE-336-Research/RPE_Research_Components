@@ -52,6 +52,7 @@ k -n rpe-system rollout status deploy/rpe-prometheus --timeout=180s
 k -n rpe-system rollout status deploy/rpe-tempo --timeout=180s
 k -n rpe-system rollout status deploy/rpe-intelligence --timeout=300s
 k -n rpe-system rollout status deploy/rpe-hub --timeout=180s
+k -n rpe-system rollout status deploy/rpe-protocol --timeout=180s
 k -n rpe-system rollout status deploy/rpe-operator --timeout=180s
 k -n rpe-e2e wait --for=condition=Ready pod/e2e-client --timeout=120s
 log "Deployed. Admin Panel: run 'make console' then open http://localhost:8800"
