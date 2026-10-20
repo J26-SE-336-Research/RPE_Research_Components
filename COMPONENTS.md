@@ -230,7 +230,7 @@ It recommends Leaky Bucket rates, retry budgets and chain deadlines, and detects
 - **Live analysis.**
   - It reads the sidecar metrics from Prometheus and the gateway traces (`rpe.*` span attributes) from Tempo.
   - Trace counts are cross-checked against the gateway's per-route chain counters, within ±10%.
-  - Hops without a sidecar (`legacy-svc`) are reported as unmonitored instead of blocking the analysis.
+  - Hops without a sidecar are reported as unmonitored instead of blocking the analysis.
   - The demo cluster uses a 1-minute window, a 15-second cycle and a 20-second ingestion delay. Live recommendations therefore appear within minutes.
 - **Every recommendation needs human approval:**
   - rate limit, retry budget and chain deadline alike;
@@ -298,7 +298,7 @@ Pages show only what is built. New capabilities are added as real pages or secti
 | Part | What it is | Status |
 |---|---|---|
 | **Demo app** (`demo-app/`) | One configurable Go service playing every role in the demo topology. Uses `rpe-go` and exports OpenTelemetry spans to Tempo. The gateway follows the policy its proxy enforces (active epoch and route deadlines). Fault knobs `POST /admin/faults {latencyMs, jitterMs, errorRate, cpuBurnMs, clockOffsetMs}`, side-effect counters `GET /admin/counters`, `POST /admin/reset`, fan-out policy `partial`/`all`, point of no return before committing side effects. Responses nest each child's response, so one call shows the context at every hop | Built |
-| **Demo topology** (`deploy/k8s/demo`) | `gateway → order-svc → (parallel) inventory-svc, payment-svc (~120 ms provider call), loyalty-svc (optional), legacy-svc (optional, no sidecar, no RPE) → shipping-svc`, plus `fraud-check-svc` for `fanout=all` scenarios. `rpe-traffic` (in `rpe-e2e`) sends about 3 requests/s so live telemetry always exists | Built |
+| **Demo topology** (`deploy/k8s/demo`) | `gateway → order-svc → (parallel) inventory-svc, payment-svc (~120 ms provider call), loyalty-svc (optional), legacy-svc (optional) → shipping-svc`, plus `fraud-check-svc` for `fanout=all` scenarios. `rpe-traffic` (in `rpe-e2e`) sends about 3 requests/s so live telemetry always exists | Built |
 | **Kubernetes e2e tests** (`tests/e2e/`) | Bash + kubectl + jq suites against the kind cluster | Built (12 suites, 175 checks, all passing) |
 | **Admin Panel** (`console/` + `hub/`) | One operations console for the whole ecosystem (Monitor, Configuration, Infrastructure, Testing). Every action calls the real running components (see [section 2.1](#21-the-admin-panel)) | Built (e2e suite 80) |
 | **Scenario Lab, k6 presets** (`scenarios/`) | k6 load profiles with ground-truth labels for C4 (the panel's Scenario Lab already drives faults and traffic) | Planned |
@@ -314,7 +314,7 @@ Pages show only what is built. New capabilities are added as real pages or secti
 2. The gateway app's **C1 middleware** creates a fresh root context: `bud=1000` for this route, `rb=3`, policy epoch `pe=e0`, and a new `rid` bound to the W3C trace id.
 3. The gateway calls `order-svc`. The **C1 transport** derives the child context: new `iid`, `pid` set to the gateway's `iid`, `ttl` reduced by the elapsed time. The call is redirected into the gateway sidecar's outbound port 15001, which forwards it over a pooled connection.
 4. `order-svc` fans out in parallel to inventory, payment, loyalty and legacy. The retry budget is **split, not copied** (3 → 1/1/1/0).
-5. `legacy-svc` has no sidecar and doesn't speak RPE, so `shipping-svc` behind it receives no context. This is the "unknown edge" case.
+5. `legacy-svc` has a sidecar like every other service, so `shipping-svc` behind it receives the context too.
 6. If payment is slow and the 1000 ms budget runs out:
    - payment notices that its own request context expired and **abandons before committing** (no card charged);
    - order's transport turns the timeout into a **terminal** 504 (`term=?1`);
@@ -467,7 +467,7 @@ c -X PUT http://$IP:15020/rpe/v1/policy -d '{"epoch":"e1","version":1,"hash":"h"
 c -X POST http://$IP:15020/rpe/v1/policy/activate -d '{"epoch":"e1"}'
 ```
 
-**Injection.** Two containers plus `rpe-init` per pod; `legacy-svc` has only one:
+**Injection.** Two containers plus `rpe-init` per pod, in every demo service:
 
 ```bash
 kc -n rpe-demo get pods

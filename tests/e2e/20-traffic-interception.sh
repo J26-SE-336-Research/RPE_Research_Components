@@ -16,7 +16,7 @@ assert_ge "$(delta gateway:outbound)" ${N} "gateway sidecar intercepted outbound
 assert_ge "$(delta order-svc:inbound)" ${N} "order-svc sidecar intercepted inbound requests"
 assert_ge "$(delta order-svc:outbound)" $((N*4)) "order-svc sidecar intercepted its 4 fan-out calls per request"
 assert_ge "$(delta payment-svc:inbound)" ${N} "payment-svc sidecar intercepted inbound requests"
-assert_ge "$(delta shipping-svc:inbound)" ${N} "shipping-svc (behind non-RPE legacy-svc) still intercepted inbound"
+assert_ge "$(delta shipping-svc:inbound)" ${N} "shipping-svc (behind legacy-svc) intercepted inbound"
 
 # Regression test for the legacy bug: egress exclusion by --uid-owner 0 let root containers bypass the proxy.
 cat <<'YAML' | k apply -f - >/dev/null

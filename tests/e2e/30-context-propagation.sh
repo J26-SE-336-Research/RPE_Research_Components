@@ -25,7 +25,7 @@ assert_eq "$(field "$inv" pid)" "$(field "$order" iid)" "inventory pid = order i
 assert_lt "$(field "$inv" ttl)" "$(( $(field "$order" ttl) + 1 ))" "R-T02 ttl never increases (order -> inventory)"
 rb_sum=$(( $(field "$inv" rb) + $(field "$pay" rb) ))
 assert_lt "${rb_sum}" 4 "R-T03 retry budget conserved across parallel fan-out (inventory+payment=${rb_sum} <= 3)"
-assert_eq "${legacy_ship}" "" "context is lost behind the non-RPE legacy hop (unknown edge)"
+assert_eq "$(field "$legacy_ship" rid)" "$(field "$gw" rid)" "context reaches shipping-svc through legacy-svc (same rid)"
 assert_contains "$(header X-RPE-Result)" "out=ok" "gateway response carries X-RPE-Result"
 
 client GET "${GW}/api/orders" "" -H 'X-RPE-Context: v=1, rid="4bf92f3577b34da6a3ce929d0e0e4736", iid="00f067aa0ba902b7", pid="0000000000000000", ttl=99999, bud=99999, rb=99, cs=none, rt="GET /api/orders"'

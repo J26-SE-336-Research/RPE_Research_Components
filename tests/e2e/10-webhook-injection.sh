@@ -17,8 +17,6 @@ for s in "${RPE_SERVICES[@]}"; do
 done
 assert_eq "${injected}" "${#RPE_SERVICES[@]}" "injection coverage 100% of eligible pods (${injected}/${#RPE_SERVICES[@]})"
 
-legacy=$(k -n rpe-demo get pod -l app=legacy-svc -o jsonpath='{.items[0].spec.containers[*].name}')
-assert_eq "${legacy}" app "opted-out legacy-svc has no sidecar"
 client_c=$(k -n rpe-e2e get pod e2e-client -o jsonpath='{.spec.containers[*].name}')
 assert_eq "${client_c}" curl "pods in non-enabled namespaces are not injected"
 role=$(k -n rpe-demo get pod -l app=gateway -o json | jq -r '.items[0].spec.containers[] | select(.name=="rpe-sidecar") | .env[] | select(.name=="RPE_ROLE") | .value')

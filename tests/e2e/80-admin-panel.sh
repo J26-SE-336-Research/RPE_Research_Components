@@ -19,7 +19,7 @@ hub POST /api/hub/login '{"username":"admin","password":"admin"}'
 assert_eq "$(echo "${BODY}" | jq -r .role)" admin "admin can log in"
 
 hub GET /api/hub/overview
-assert_eq "$(echo "${BODY}" | jq -r '.coverage.injected')/$(echo "${BODY}" | jq -r '.coverage.eligible')" "7/7" "overview: injection coverage 7/7"
+assert_eq "$(echo "${BODY}" | jq -r '.coverage.injected')/$(echo "${BODY}" | jq -r '.coverage.eligible')" "8/8" "overview: injection coverage 8/8"
 assert_eq "$(echo "${BODY}" | jq -r '.platform["rpe-admission-webhook"]')" true "overview: webhook running"
 
 hub POST /api/hub/services/reset-all
@@ -28,7 +28,7 @@ assert_eq "$(echo "${BODY}" | jq -r .status)" 200 "C1 inspector: chain request s
 assert_eq "$(echo "${BODY}" | jq '.hops | length')" 7 "C1 inspector: all 7 services in the chain are reported"
 assert_eq "$(echo "${BODY}" | jq '[.hops[].checks[] | select(.pass==false)] | length')" 0 "C1 inspector: all protocol rule checks pass on the live chain"
 assert_eq "$(echo "${BODY}" | jq -r '[.hops[].checks[] | select(.rule=="R-F05")][0].pass')" true "C1 inspector: fan-out budget conservation verified"
-assert_ge "$(echo "${BODY}" | jq '[.hops[].checks[] | select(.rule=="unknown-edge")] | length')" 1 "C1 inspector: unknown edge behind legacy-svc detected"
+assert_eq "$(echo "${BODY}" | jq '[.hops[].checks[] | select(.rule=="unknown-edge")] | length')" 0 "C1 inspector: no unknown edge, every hop carries the context"
 
 hub POST /api/hub/protocol/validate '{"header":"v=2, rid=\"4bf92f3577b34da6a3ce929d0e0e4736\", iid=\"00f067aa0ba902b7\", pid=\"0000000000000000\", ttl=5, bud=300, rb=1, cs=none, rt=\"GET /x\""}'
 assert_eq "$(echo "${BODY}" | jq -r .error.rule)" R-V02 "C1 validator reports the spec rule ID"
@@ -52,7 +52,7 @@ hub POST "/api/hub/sidecars/${pay}/activate" '{"epoch":"e2e-panel"}'
 assert_eq "$(echo "${BODY}" | jq -r .activeEpoch)" e2e-panel "C2: policy epoch staged and activated through the panel"
 
 hub GET /api/hub/fleet
-assert_eq "$(echo "${BODY}" | jq -r '"\(.coverage.injected)/\(.coverage.eligible)"')" "7/7" "C3 fleet: coverage 7/7 (legacy opted out)"
+assert_eq "$(echo "${BODY}" | jq -r '"\(.coverage.injected)/\(.coverage.eligible)"')" "8/8" "C3 fleet: coverage 8/8 (every demo service)"
 hub POST /api/hub/fleet/simulate '{"name":"panel-preview","port":8080,"annotations":{}}'
 assert_eq "$(echo "${BODY}" | jq -r .pod.sidecar)" true "C3 admission simulator: new pod would be injected (dry run)"
 hub POST /api/hub/fleet/simulate '{"name":"panel-bad","port":15001,"annotations":{}}'

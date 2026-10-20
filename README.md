@@ -11,7 +11,7 @@ A closed-loop resilience ecosystem for HTTP microservices, built by four SLIIT f
 | Shared | Demo app, **Admin Panel** (console + rpe-hub), Prometheus + Tempo, e2e tests | team | `demo-app/`, `console/`, `hub/`, `tests/e2e/`, `deploy/` |
 
 ```
-client → gateway → order-svc → (parallel) inventory-svc, payment-svc, loyalty-svc (optional), legacy-svc (no RPE) → shipping-svc
+client → gateway → order-svc → (parallel) inventory-svc, payment-svc, loyalty-svc (optional), legacy-svc (optional) → shipping-svc
           every hop: app + rpe-sidecar (injected by the C3 webhook), context X-RPE-Context (C1)
 ```
 

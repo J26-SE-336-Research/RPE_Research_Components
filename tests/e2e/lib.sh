@@ -4,7 +4,7 @@ set -uo pipefail
 KCTX="${KCTX:-kind-rpe}"
 PASS=0; FAILS=0
 GW="http://gateway.rpe-demo:8080"
-RPE_SERVICES=(gateway order-svc inventory-svc payment-svc loyalty-svc fraud-check-svc shipping-svc)
+RPE_SERVICES=(gateway order-svc inventory-svc payment-svc loyalty-svc fraud-check-svc legacy-svc shipping-svc)
 
 k() { kubectl --context "${KCTX}" "$@"; }
 ok()  { printf '  \033[32mPASS\033[0m %s\n' "$*"; PASS=$((PASS+1)); }

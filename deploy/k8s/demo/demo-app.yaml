@@ -1,5 +1,5 @@
 # Shared demo topology (Appendix A6). Generated layout: one Deployment + Service per demo service.
-#   gateway -> order-svc -> (parallel) inventory-svc, payment-svc, loyalty-svc (optional), legacy-svc (optional, NO sidecar) -> shipping-svc
+#   gateway -> order-svc -> (parallel) inventory-svc, payment-svc, loyalty-svc (optional), legacy-svc (optional) -> shipping-svc
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -266,7 +266,6 @@ spec:
   template:
     metadata:
       labels: {app: legacy-svc}
-      annotations: {"resilience.rpe.dev/inject": disabled}
     spec:
       containers:
         - name: app
@@ -275,7 +274,6 @@ spec:
           ports: [{containerPort: 8080, name: http}]
           env:
             - {name: SERVICE_NAME, value: legacy-svc}
-            - {name: RPE_ENABLED, value: "false"}
             - {name: CHILDREN, value: "shipping=http://shipping-svc:8080/ship"}
           readinessProbe:
             httpGet: {path: /healthz, port: 8080}

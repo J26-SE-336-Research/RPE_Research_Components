@@ -19,7 +19,7 @@ func withUser(ctx context.Context, u user) context.Context {
 }
 func userOf(ctx context.Context) user { u, _ := ctx.Value(ctxKey{}).(user); return u }
 
-// Demo topology (Appendix A6). RPE services get a sidecar; legacy-svc is intentionally non-RPE.
+// Demo topology (Appendix A6). Every demo service gets an RPE sidecar.
 var demoServices = []string{"gateway", "order-svc", "inventory-svc", "payment-svc", "loyalty-svc", "fraud-check-svc", "legacy-svc", "shipping-svc"}
 
 var demoEdges = [][2]string{
@@ -210,7 +210,7 @@ func (h *hub) overview(w http.ResponseWriter, r *http.Request) {
 	injected, eligible := 0, 0
 	for _, name := range demoServices {
 		p, ok := pods[name]
-		s := svc{Name: name, RPE: name != "legacy-svc"}
+		s := svc{Name: name, RPE: true}
 		if ok {
 			s.Pod, s.Ready, s.Sidecar = p.Metadata.Name, podReady(p), hasContainer(p, "rpe-sidecar")
 			for _, c := range p.Status.ContainerStatuses {

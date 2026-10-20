@@ -25,7 +25,7 @@ spec:
             - {name: PROMETHEUS_URL, value: "http://rpe-prometheus.rpe-system:9090"}
             - {name: TEMPO_URL, value: "http://rpe-tempo.rpe-system:3200"}
             - {name: RRPE_CONNECTIONS_NAMESPACE, value: rpe-demo}
-            - {name: RRPE_CONNECTIONS_SERVICES, value: "gateway,order-svc,inventory-svc,payment-svc,loyalty-svc,shipping-svc,fraud-check-svc"}
+            - {name: RRPE_CONNECTIONS_SERVICES, value: "gateway,order-svc,inventory-svc,payment-svc,loyalty-svc,legacy-svc,shipping-svc,fraud-check-svc"}
             - {name: RRPE_CONNECTIONS_GATEWAYSERVICE, value: gateway}
             - {name: RRPE_CONNECTIONS_SCRAPEINTERVAL, value: 5s}
             - {name: RRPE_CONNECTIONS_TRACELIMIT, value: "2000"}

@@ -7,7 +7,7 @@ for d in rpe-admission-webhook rpe-postgres rpe-intelligence; do
   avail=$(k -n rpe-system get deploy "$d" -o jsonpath='{.status.availableReplicas}')
   assert_eq "${avail:-0}" 1 "rpe-system/$d available"
 done
-for d in "${RPE_SERVICES[@]}" legacy-svc; do
+for d in "${RPE_SERVICES[@]}"; do
   avail=$(k -n rpe-demo get deploy "$d" -o jsonpath='{.status.availableReplicas}')
   assert_eq "${avail:-0}" 1 "rpe-demo/$d available"
 done
