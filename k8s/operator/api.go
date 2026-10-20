@@ -93,7 +93,14 @@ func (a *api) createPolicy(w http.ResponseWriter, r *http.Request) {
 		in.Scope.Namespace = "rpe-demo"
 		switch {
 		case len(in.Parts) > 0:
-			in.Spec = jointSpec(in.Parts)
+			// A joint decision keeps the parts of the previous version it does not name.
+			parts := in.Parts
+			if latest, err := a.store.get(r.Context(), in.PolicyID, 0); err == nil {
+				parts = mergeParts(latest.parts(), in.Parts)
+				in.Scope = parts[0].Scope
+				in.Scope.Namespace = "rpe-demo"
+			}
+			in.Spec = jointSpec(parts)
 		default:
 			// A change to one service of a joint policy keeps the policy's other parts, so the new version is still
 			// one decision delivered under one epoch.
