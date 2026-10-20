@@ -18,13 +18,16 @@ type demoResponse struct {
 }
 
 type demoChild struct {
-	Name       string        `json:"name"`
-	Status     int           `json:"status"`
-	Outcome    string        `json:"outcome"`
-	Terminal   bool          `json:"terminal"`
-	Millis     int64         `json:"ms"`
-	Error      string        `json:"error"`
-	Downstream *demoResponse `json:"downstream"`
+	Name     string `json:"name"`
+	Status   int    `json:"status"`
+	Outcome  string `json:"outcome"`
+	Terminal bool   `json:"terminal"`
+	Millis   int64  `json:"ms"`
+	Error    string `json:"error"`
+	// set by a caller that used its retry knob: attempts sent and why the RPE retry gate refused one more
+	Attempts     int           `json:"attempts"`
+	RetryRefused string        `json:"retryRefused"`
+	Downstream   *demoResponse `json:"downstream"`
 }
 
 // Hop is one service visit in a request chain, with its decoded context and the protocol checks.
@@ -41,6 +44,9 @@ type Hop struct {
 	Context  string            `json:"context"`
 	Fields   map[string]string `json:"fields,omitempty"`
 	Checks   []Check           `json:"checks"`
+	// Attempts and RetryRefused: the caller retried this call (retry safety demo, R-R02)
+	Attempts     int    `json:"attempts,omitempty"`
+	RetryRefused string `json:"retryRefused,omitempty"`
 }
 
 type Check struct {
@@ -121,7 +127,9 @@ func flattenChain(root *demoResponse) []Hop {
 					counted++
 				}
 			}
+			at := len(hops)
 			walk(c.Downstream, c.Name, c.Status, c.Outcome, c.Terminal, c.Millis, id, depth+1, ctx)
+			hops[at].Attempts, hops[at].RetryRefused = c.Attempts, c.RetryRefused
 		}
 		if ctx != nil && counted > 1 {
 			hops[id].Checks = append(hops[id].Checks, Check{"R-F05", sum <= ctx.RetryBudget,

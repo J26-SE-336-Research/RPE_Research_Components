@@ -186,3 +186,79 @@ export type ConsistencyRun = {
   samples: ConsistencySample[];
 };
 export type ConsistencyState = { busy: boolean; defaults: ConsistencyConfig; runs: ConsistencyRun[] };
+
+// ---------- C1 protocol service ----------
+export type AttributedHop = {
+  index: number;
+  parent: number;
+  depth: number;
+  service: string;
+  serviceId: number;
+  decision: string;
+  label: string;
+  startMs: number;
+  elapsedMs: number;
+  selfMs: number;
+  unknown: boolean;
+};
+export type Attribution = {
+  rid: string;
+  route: string;
+  budgetMs: number;
+  epoch?: string;
+  status: number;
+  at: string;
+  trail: string;
+  bytes: number;
+  incomplete: boolean;
+  totalMs: number;
+  late: boolean;
+  bottleneck: number;
+  hops: AttributedHop[];
+};
+export type TrailSummary = {
+  rid: string;
+  route: string;
+  at: string;
+  status: number;
+  hops: number;
+  bytes: number;
+  incomplete: boolean;
+  late: boolean;
+  totalMs: number;
+  budgetMs: number;
+  bottleneck: string;
+};
+export type TrailList = { trails: TrailSummary[]; received: number; rejected: number; held: number };
+export type TopologyNode = { service: string; serviceId: number; hops: number; p50Ms: number; p95Ms: number; selfP50Ms: number; unknown: boolean; decisions: Record<string, number> };
+export type TopologyEdge = { from: string; to: string; calls: number; p50Ms: number; p95Ms: number; unknown: boolean; decisions: Record<string, number> };
+export type Topology = {
+  windowSec: number;
+  trails: number;
+  incomplete: number;
+  avgBytes: number;
+  maxBytes: number;
+  registryVersion: number;
+  routes: string[];
+  nodes: TopologyNode[];
+  edges: TopologyEdge[];
+};
+export type Comparison = { truth: string[]; rebuilt: string[]; matched: string[]; missing: string[]; extra: string[]; precision: number; recall: number; note: string };
+export type TopologyData = { topology: Topology; comparison: Comparison };
+
+export type Verdict = { impl: string; valid: boolean; fields?: Record<string, string>; canonical?: string; error?: { code: string; rule?: string; detail?: string }; failure?: string };
+export type CompareResult = { kind: string; go: Verdict; java: Verdict; agree: boolean };
+export type MatrixCase = { name: string; go: boolean; java: boolean | null; goDetail?: string; javaDetail?: string };
+export type Matrix = { at: string; files: { file: string; description: string; cases: MatrixCase[] }[]; total: number; goPassed: number; javaPassed: number; javaError?: string };
+
+export const DECISIONS: Record<string, string> = {
+  F: "served",
+  E: "refused before the application",
+  X: "served late",
+  C: "skipped (cancelled)",
+  R: "retry served",
+  A: "active",
+  P: "partial",
+  O: "shed (overload)",
+  U: "no RPE (unknown hop)",
+};

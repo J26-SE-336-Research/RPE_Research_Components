@@ -127,8 +127,14 @@ func (h *hub) demoDeadline(w http.ResponseWriter, r *http.Request) {
 	res := h.runChain(r.Context(), "/api/orders")
 	time.Sleep(300 * time.Millisecond) // let the counters settle
 	pay, inv := delta(h.counters(r, "payment-svc"), payBefore), delta(h.counters(r, "inventory-svc"), invBefore)
+	// this request only (by request id): what each service did for it, unaffected by background traffic
+	request := map[string]map[string]int64{}
+	for _, svc := range []string{"payment-svc", "inventory-svc", "loyalty-svc"} {
+		request[svc] = h.requestCounters(r, svc, res.RID)
+	}
 	_, _, _, _, _ = h.call(r.Context(), http.MethodPost, svcURL("payment-svc", "/admin/faults"), map[string]any{})
-	writeJSON(w, 200, map[string]any{"latencyMs": in.LatencyMs, "chain": res, "payment": pay, "inventory": inv})
+	writeJSON(w, 200, map[string]any{"latencyMs": in.LatencyMs, "chain": res, "payment": pay, "inventory": inv,
+		"rid": res.RID, "request": request, "signal": signalSummary(res.Raw)})
 }
 
 // demoFanout: make one child fail and show partial (optional child) vs failed (required child).
