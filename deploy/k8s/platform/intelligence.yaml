@@ -43,6 +43,15 @@ spec:
             - {name: RRPE_ADAPTIVE_DEADLINE_MAXPROPOSALSPERHOUR, value: "6"}
             - {name: RRPE_ADAPTIVE_DEADLINE_DRIFTWINDOWS, value: "2"}
             - {name: RRPE_ADAPTIVE_DEADLINE_COVERAGEMINSAMPLES, value: "10"}
+            # Rate and retry v2, demo-cluster values; production defaults are in AdaptiveConfig.RateSettings / AutoSettings.
+            # Rate and retry changes in this list are approved automatically (reviewer c4-auto) by the safety guard;
+            # chain deadlines are never approved automatically. Retry increases stay advisory until C2 counts retries (PP2).
+            - {name: RRPE_ADAPTIVE_AUTOAPPROVEACTIONS, value: "BUCKET_RAISE,BUCKET_CUT,RETRY_DECREASE"}
+            - {name: RRPE_ADAPTIVE_RATE_MAXABSOLUTE, value: "500"}
+            - {name: RRPE_ADAPTIVE_RATE_BROKEATMEMORY, value: 10m}
+            - {name: RRPE_ADAPTIVE_RATE_STABILISATION, value: 1m}
+            - {name: RRPE_ADAPTIVE_BASELINE_ALLOWSHEDWINDOWS, value: "true"}
+            - {name: RRPE_ADAPTIVE_AUTO_PAUSE, value: 10m}
             - {name: RRPE_DELIVERY_POLL, value: 5s}
             - {name: COMPONENT3_POLICY_URL, value: "http://rpe-policy-api.rpe-system"}
             - name: RRPE_CONTROL_TOKEN

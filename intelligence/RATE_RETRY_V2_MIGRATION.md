@@ -139,3 +139,47 @@ Approved as proposed below, with these notes:
 - **While an automatic change waits to be applied or is being checked** (2 disjoint windows), the rate rule decides
   nothing else for that service. A check without any app-time measurement is inconclusive and keeps the change.
 - **Retry changes are not checked after they are applied** (the guide's check covers rate raises and cuts only).
+- **Floor after a healthy rate (Step 6 fix).** In the HEALTHY rule the good rate becomes the current rate; the floor
+  (0.5 × good rate) is now recomputed from it before the target is chosen. Before, the first healthy cycle after a rate
+  change used the floor of the previous good rate and could propose a raise toward an old, higher floor.
+
+## 7. Scenarios, e2e and Admin Panel (Step 6)
+
+- **Existing service scenarios (R1).** `MockScenarios` now passes queue utilisation and depth: a quiet queue (20%,
+  empty) while learning and in every scenario except `overloaded`, where the app is slow (p95 200 ms against a
+  100 ms baseline, was 150 ms) with a short queue (60%, 2 waiting). `retry-stressed` now has retries that rarely succeed
+  (10 of 100, was 40 of 100), so it shows the retry v2 step down when the health baseline is ready.
+  With production settings (30 baseline samples) these short scenarios never finish learning the health baseline,
+  which is why the old logic returned **no** rate or retry change for any of them (see `evaluation/v2-results.md`).
+  Rate v2 learns its own P0 during that time, so the scenarios now return (all `PENDING_APPROVAL`):
+
+  | Scenario | Old logic | v2 |
+  |---|---|---|
+  | `overloaded` | none | LEAKY_BUCKET 120 → 64 (APP_OVERLOADED) |
+  | `stressed` | none | LEAKY_BUCKET 120 → 131.3 (HEALTHY: headroom over demand 100 × 1.05 retries) |
+  | `retry-stressed` | none | LEAKY_BUCKET 120 → 132 (HEALTHY: headroom) |
+  | `recovery` | none | LEAKY_BUCKET 60 → 66 (HEALTHY: toward demand × 1.25) |
+  | `healthy` | none | LEAKY_BUCKET 120 → 132 (HEALTHY: demand 120 = rate, no headroom) |
+
+  The deadline side of the scenarios (Case B for `overloaded`, no increase for `stressed`) is unchanged.
+- **New demo scenarios** (`POST /demo/{id}`, simulated reviewer, never delivered): `rate-too-low`,
+  `rate-too-low-day-one`, `rate-real-overload`, `rate-recovery`, `rate-short-burst`, `rate-bursts`, `retry-storm-rate`.
+  The learning phase is stretched to at least `baseline-samples + 6` cycles so P0 is learned with any setting. The hub's
+  scenario allow-list (off-limits here) does not include them yet.
+- **API (additive).** `GET /` has `rateEvidence` per live service; `GET /queries` has `loadQueueDepth`.
+- **e2e `70`:** uses only the deadline simulations, the status object and the outbox: **no expectation changes**.
+  `DeadlineScenarioEndpointTests` (deadline side and status codes of the service scenarios) passes unchanged.
+- **e2e `80`:** only checks that `demo/stressed` returns at least one outcome through the hub (still 3): no expectation changes.
+- **e2e `95` (not run, doubt reported to the owner).** Covered: while C4's deadline proposal is pending, and for the
+  stabilisation period (1 min) after it is applied, the cross-lever lock blocks any automatic change on the gateway; a
+  human rejection is never overridden. **Not covered:** the ~7 minutes between the operator's rollout (gateway rate 100,
+  retry 0.1, deadline 100 ms) and C4's deadline proposal. No deadline proposal is pending yet, so an automatic gateway
+  change is possible if, in that time, (a) the gateway is persistently diagnosed APP_OVERLOADED (cut/retry 0), or (b) the
+  queue-depth series is missing and health is persistently OVERLOADED (retry 0), or (c) demand × 1.25 exceeds 100
+  (raise). With the low demo traffic (a) and (c) are unlikely; (b) depends on the live gateway health. Any automatic
+  change creates a new gateway policy epoch, so the deadline proposal would be superseded or the final check
+  `GW_EPOCH == epoch` would fail. Options: run 95 with `RRPE_ADAPTIVE_AUTOAPPROVEACTIONS` empty; or keep it and accept
+  the risk; or adapt 95 (outside `intelligence/`, needs the owner's decision).
+- **Note for the console owner:** the Recommendations page says "Nothing is applied until a reviewer approves it". With
+  `RRPE_ADAPTIVE_AUTOAPPROVEACTIONS` set this is true **only for request deadlines**; automatic rate/retry changes appear
+  in **Reviewed** with reviewer `c4-auto` (or `c4-auto-revert` for an automatic undo). The console is not changed here.

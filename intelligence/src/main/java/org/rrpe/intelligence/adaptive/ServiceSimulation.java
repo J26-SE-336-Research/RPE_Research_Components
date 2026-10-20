@@ -101,6 +101,10 @@ public final class ServiceSimulation {
                 new Phase("app capacity 60, demand 90", 60, 90, 60, 40),
                 new Phase("app recovered (capacity 200)", 40, 90, 200, 40)),
                 "cut once to the floor (50), not below; retry 0 while the app is overloaded"),
+            new Scenario("rate-recovery", "Recovery after an earlier cut (rate 60, the app is fine again, demand 90)", 60, .02, List.of(
+                new Phase("healthy (learn), demand 50", 16, 50, 200, 40),
+                new Phase("demand 90 > rate 60, app recovered", 40, 90, 200, 40)),
+                "raise back in steps of at most +50% to demand × 1.25; never cut"),
             new Scenario("rate-short-burst", "Example 3: one short burst (2x demand for one cycle)", 120, .05, List.of(
                 new Phase("healthy (learn), demand 80", 16, 80, 1000, 40),
                 new Phase("burst 160 for one cycle", 1, 160, 1000, 40),

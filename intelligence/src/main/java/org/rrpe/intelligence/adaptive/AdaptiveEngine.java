@@ -276,6 +276,29 @@ public class AdaptiveEngine {
     record RateDecision(RateDiagnosis.Result result, Double rate, Double proposed, String kind, String rule, Map<String, Double> inputs) {}
 
     /**
+     * Rate v2 evidence per live service (additive field {@code rateEvidence} of the status API): the latest diagnosis with
+     * its inputs (queue, queue wait, app time, P0, demand, floor, ceiling), the rule used, and the automatic-approval state.
+     */
+    public Map<String, Map<String, Object>> rateEvidence() {
+        var result = new TreeMap<String, Map<String, Object>>(); Instant now = clock.instant();
+        rates.forEach((k, rs) -> {
+            if (k.startsWith(Source.MOCK + ":") || rs.lastDecision == null) return;
+            result.put(k.substring(k.indexOf(':') + 1), rateEvidence(rs, now));
+        });
+        return result;
+    }
+    static Map<String, Object> rateEvidence(RateState rs, Instant now) {
+        var d = rs.lastDecision; var e = new LinkedHashMap<String, Object>();
+        e.put("diagnosis", d.result().diagnosis().name()); e.put("reason", d.result().reason());
+        e.put("rate", d.rate()); e.put("proposed", d.proposed()); e.put("kind", d.kind()); e.put("rule", d.rule());
+        e.put("persistentCycles", rs.diagnosisStreak); e.put("inputs", d.inputs());
+        e.put("autoPausedUntil", rs.autoPaused(now) ? rs.autoPausedUntil.toString() : null);
+        e.put("checking", rs.verification == null ? null : fmt(rs.verification.fromRate) + " → " + fmt(rs.verification.toRate));
+        e.put("lastCheck", rs.lastVerification);
+        return e;
+    }
+
+    /**
      * Leaky-bucket rate v2 (guide §4): separates waiting in our own queue from a slow app. RATE_TOO_LOW → raise toward demand
      * plus headroom; APP_OVERLOADED → cut once, never below the floor, and a second cut only if the previous one helped
      * (anti-ratchet); HEALTHY → move slowly toward demand plus headroom; WATCH and UNKNOWN → hold.
@@ -364,7 +387,8 @@ public class AdaptiveEngine {
             case HEALTHY -> {
                 rs.antiRatchetHold = false;
                 if (rs.healthyStreak < settings.recoveryWindows()) break;
-                rs.goodRate = current; // a persistently healthy rate is good
+                rs.goodRate = current; // a persistently healthy rate is good; the floor follows it
+                floor = RateDiagnosis.floor(rs.goodRate, rate); inputs.put("floor", floor); inputs.put("goodRate", rs.goodRate);
                 double target = RateDiagnosis.healthyTarget(maxDemand, floor, ceiling, rate);
                 if (current > 2 * target) { if (rs.relaxSince == null) rs.relaxSince = now; } else rs.relaxSince = null;
                 boolean relax = rs.relaxSince != null && Duration.between(rs.relaxSince, now).compareTo(rate.relaxAfter()) >= 0;
