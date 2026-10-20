@@ -2,10 +2,8 @@ package rpe
 
 import (
 	"context"
-	"errors"
 	"io"
 	"net/http"
-	"strings"
 	"time"
 )
 
@@ -56,61 +54,19 @@ type MiddlewareConfig struct {
 	Required bool
 	// Now is the clock (tests); defaults to time.Now.
 	Now func() time.Time
+	// Trail enables the in-band trail (X-RPE-Trail); nil disables it.
+	Trail *TrailConfig
 }
 
-// Middleware validates or creates the RPE context, rejects expired or cancelled requests
-// before application logic (R-D02, R-T04), strips hop-scoped headers and stores the context.
+// Middleware is the standalone variant of SignalMiddleware, for services that run without the RPE sidecar: the
+// library itself is the point that detects expiry. It validates or creates the context, strips hop-scoped headers,
+// binds traceparent to rid and stores the context. Signal mode (R-D02): an original request that arrives with no
+// time left is served with cs=expired set in its context, never rejected; only a retry (X-RPE-Hop att >= 2) of a
+// cancelled or expired chain is refused with a terminal 504 (R-R02). The application decides what an expired
+// request means (Cancelled, NonCritical, CallIfNotCancelled).
 func Middleware(cfg MiddlewareConfig, next http.Handler) http.Handler {
-	now := cfg.Now
-	if now == nil {
-		now = time.Now
-	}
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		received := now()
-		hop, _ := ParseHop(r.Header)
-		StripHop(r.Header)
-		var c Context
-		var err error
-		if cfg.Gateway {
-			route, budget := r.Method+" "+r.URL.Path, 5*time.Second
-			if cfg.RouteBudget != nil {
-				route, budget = cfg.RouteBudget(r)
-			}
-			epoch := ""
-			if cfg.Epoch != nil {
-				epoch = cfg.Epoch()
-			}
-			c, err = NewRoot(route, budget, cfg.RetryBudget, epoch, TraceIDFromTraceparent(r.Header.Get(HeaderTraceparent)))
-		} else {
-			c, err = ParseContext(r.Header)
-			if errors.Is(err, ErrNoContext) && !cfg.Required {
-				next.ServeHTTP(w, r)
-				return
-			}
-		}
-		if err != nil {
-			WriteResult(w, http.StatusBadRequest, Result{Outcome: OutcomeRejected, Reason: ReasonInvalidContext, Terminal: true}, err.Error())
-			return
-		}
-		if c.Cancel != CancelNone {
-			WriteResult(w, http.StatusGatewayTimeout, Result{Outcome: OutcomeStopped, Reason: ReasonCancelled, Terminal: true, PolicyEpoch: c.PolicyEpoch}, "request already cancelled")
-			return
-		}
-		if c.TTLMillis <= 0 {
-			WriteResult(w, http.StatusGatewayTimeout, Result{Outcome: OutcomeRejected, Reason: ReasonDeadline, Terminal: true, PolicyEpoch: c.PolicyEpoch}, "deadline expired on arrival")
-			return
-		}
-		r.Header.Set(HeaderContext, c.Encode())
-		if TraceIDFromTraceparent(r.Header.Get(HeaderTraceparent)) != c.RID {
-			r.Header.Set(HeaderTraceparent, newTraceparent(c.RID))
-		}
-		ctx := WithInbound(r.Context(), Inbound{Ctx: c, Hop: hop, Received: received})
-		// The request context expires at the local deadline, so cooperative application code can stop via
-		// ctx.Done() (cancellation tier T3) and outbound calls inherit the deadline.
-		ctx, cancel := context.WithDeadline(ctx, time.Now().Add(time.Duration(c.TTLMillis)*time.Millisecond))
-		defer cancel()
-		next.ServeHTTP(w, r.WithContext(ctx))
-	})
+	return inbound{gateway: cfg.Gateway, routeBudget: cfg.RouteBudget, retryBudget: cfg.RetryBudget, epoch: cfg.Epoch,
+		now: cfg.Now, trail: cfg.Trail, required: cfg.Required, detect: true, bindTrace: true}.handler(next)
 }
 
 // WriteResult writes an RPE response with X-RPE-Result and a short text body.
@@ -121,9 +77,10 @@ func WriteResult(w http.ResponseWriter, status int, res Result, msg string) {
 	_, _ = io.WriteString(w, msg+"\n")
 }
 
-// Transport propagates the inbound context to outbound calls: it derives the child context
-// (fresh iid, pid, ttl reduced by elapsed time and reserve) and refuses to send when the
-// deadline has already expired or the request is cancelled.
+// Transport is the standalone variant of SignalTransport: it propagates the inbound context to outbound calls (fresh
+// iid, pid, ttl reduced by elapsed time and reserve) and, without a sidecar to do it, marks a child that has no time
+// left cs=expired. It never refuses a first attempt and never cuts a slow call off; only a retry (WithAttempt >= 2)
+// of a cancelled or expired chain is answered locally with a terminal 504 instead of being sent (R-R02).
 type Transport struct {
 	Base    http.RoundTripper
 	Reserve time.Duration // parent post-processing allowance subtracted from the child ttl (R-D07)
@@ -131,52 +88,7 @@ type Transport struct {
 }
 
 func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
-	base := t.Base
-	if base == nil {
-		base = http.DefaultTransport
-	}
-	in, ok := FromContext(req.Context())
-	if !ok {
-		return base.RoundTrip(req)
-	}
-	now := time.Now
-	if t.Now != nil {
-		now = t.Now
-	}
-	elapsed := now().Sub(in.Received)
-	if in.Ctx.Cancel != CancelNone || in.Remaining(now()) <= 0 {
-		return localResult(req, Result{Outcome: OutcomeRejected, Reason: ReasonDeadline, Terminal: true, PolicyEpoch: in.Ctx.PolicyEpoch}), nil
-	}
-	grant := in.Ctx.RetryBudget
-	if g, ok := req.Context().Value(grantKey{}).(int64); ok {
-		grant = g
-	}
-	child, err := in.Ctx.Child(elapsed, t.Reserve, grant)
-	if err != nil {
-		return nil, err
-	}
-	out := req.Clone(req.Context())
-	out.Header.Set(HeaderContext, child.Encode())
-	out.Header.Del(HeaderHop)
-	// Trace binding: keep an existing traceparent (e.g. a tracing client span) when it already belongs to
-	// this request's trace; otherwise bind a fresh one to rid.
-	if TraceIDFromTraceparent(out.Header.Get(HeaderTraceparent)) != child.RID {
-		out.Header.Set(HeaderTraceparent, newTraceparent(child.RID))
-	}
-	resp, err := base.RoundTrip(out)
-	if err != nil && errors.Is(req.Context().Err(), context.DeadlineExceeded) {
-		// The call outlived the propagated deadline: report it as a terminal deadline result (R-D04).
-		return localResult(req, Result{Outcome: OutcomeRejected, Reason: ReasonDeadline, Terminal: true, PolicyEpoch: in.Ctx.PolicyEpoch}), nil
-	}
-	return resp, err
-}
-
-// localResult synthesizes a terminal 504 without touching the network.
-func localResult(req *http.Request, res Result) *http.Response {
-	h := http.Header{}
-	h.Set(HeaderResult, res.Encode())
-	return &http.Response{StatusCode: http.StatusGatewayTimeout, Status: "504 Gateway Timeout", Header: h,
-		Body: io.NopCloser(strings.NewReader("deadline expired before send\n")), Request: req, ProtoMajor: 1, ProtoMinor: 1}
+	return outbound{base: t.Base, reserve: t.Reserve, now: t.Now, detect: true}.roundTrip(req)
 }
 
 // SplitMode is the fan-out split mode (R-D07, R-F05).

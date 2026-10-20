@@ -12,9 +12,14 @@ import java.util.Map;
 import java.util.function.Supplier;
 
 /**
- * Inbound admission, independent of the server framework (servlet filter, Spring interceptor, JDK HttpServer, Netty):
- * validates or creates the context, rejects expired or cancelled requests before application logic
- * (R-D02, R-T04) and reports what to forward to the application.
+ * Inbound admission, independent of the server framework (servlet filter, Spring interceptor, JDK HttpServer, Netty),
+ * for services that run without the RPE sidecar: validates or creates the context and reports what to forward to the
+ * application. Signal mode (R-D02): an original request that arrives with no time left is admitted with
+ * {@code cs=expired} in the context it forwards, never rejected; the application decides what to stop. Only a retry
+ * ({@code X-RPE-Hop att >= 2}) of a cancelled or expired chain is refused with a terminal 504 (R-R02).
+ *
+ * <p>Warning for application developers: nothing stops an expired original request unless the application reads the
+ * signal ({@code inbound().context().cancel()}).
  */
 public final class Admission {
     /** Configuration of the admission step. */
@@ -44,14 +49,22 @@ public final class Admission {
     /**
      * The admission decision. When {@code admitted}, forward {@code contextHeader} and {@code traceparent} to the
      * application instead of the received values and drop {@code X-RPE-Hop}. Otherwise reply with {@code status},
-     * {@code X-RPE-Result: result.encode()} and {@code message}. {@code inbound} is null for pass-through.
+     * {@code X-RPE-Result: resultHeader()} and {@code message}. {@code inbound} is null for pass-through.
+     *
+     * @param cancel the chain's cancellation state reported with a refusal ({@code cs} member), NONE otherwise
      */
     public record Decision(boolean admitted, Inbound inbound, String contextHeader, String traceparent,
-            int status, RpeResult result, String message) {
-        static Decision pass() { return new Decision(true, null, null, null, 0, null, null); }
+            int status, RpeResult result, String message, CancelState cancel) {
+        static Decision pass() { return new Decision(true, null, null, null, 0, null, null, CancelState.NONE); }
 
-        static Decision reject(int status, RpeResult result, String message) {
-            return new Decision(false, null, null, null, status, result, message);
+        static Decision reject(int status, RpeResult result, String message, CancelState cancel) {
+            return new Decision(false, null, null, null, status, result, message, cancel);
+        }
+
+        /** The {@code X-RPE-Result} value of a refusal, with the {@code cs} member when the chain is cancelled. */
+        public String resultHeader() {
+            if (result == null) return null;
+            return cancel == null || cancel == CancelState.NONE ? result.encode() : result.encode() + ", cs=" + cancel.wire();
         }
     }
 
@@ -77,16 +90,19 @@ public final class Admission {
                 }
                 c = RpeContext.decode(raw);
             }
-            if (c.cancel() != CancelState.NONE) {
-                return Decision.reject(504, RpeResult.of(RpeResult.STOPPED, RpeResult.CANCELLED, true, c.policyEpoch()), "request already cancelled");
+            if (c.cancel() == CancelState.NONE && c.ttlMillis() <= 0) {
+                c = c.withCancel(CancelState.EXPIRED); // signal it (R-D02); the request is still admitted
             }
-            if (c.ttlMillis() <= 0) {
-                return Decision.reject(504, RpeResult.of(RpeResult.REJECTED, RpeResult.DEADLINE, true, c.policyEpoch()), "deadline expired on arrival");
+            if (hop.attempt() >= 2 && (c.cancel() != CancelState.NONE || c.ttlMillis() <= 0)) {
+                // R-R02: a retry of a cancelled or expired chain is refused; an original request never is
+                boolean cancelled = c.cancel() == CancelState.CANCEL;
+                return Decision.reject(504, RpeResult.of(RpeResult.REJECTED, cancelled ? RpeResult.CANCELLED : RpeResult.DEADLINE, true,
+                        c.policyEpoch()), "retry refused (R-R02): the request chain is " + c.cancel().wire(), c.cancel());
             }
             String tp = Ids.traceIdFromTraceparent(traceparent).equals(c.rid()) ? traceparent : Ids.newTraceparent(c.rid());
-            return new Decision(true, new Inbound(c, hop, received), c.encode(), tp, 0, null, null);
+            return new Decision(true, new Inbound(c, hop, received), c.encode(), tp, 0, null, null, CancelState.NONE);
         } catch (ProtocolException e) {
-            return Decision.reject(400, RpeResult.of(RpeResult.REJECTED, RpeResult.INVALID_CONTEXT, true, ""), e.getMessage());
+            return Decision.reject(400, RpeResult.of(RpeResult.REJECTED, RpeResult.INVALID_CONTEXT, true, ""), e.getMessage(), CancelState.NONE);
         }
     }
 }

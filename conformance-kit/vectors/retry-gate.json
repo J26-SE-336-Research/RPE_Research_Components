@@ -1,0 +1,341 @@
+{
+  "description": "Retry gate R-R02: whether one more attempt may be sent, and the reason when it may not. Checks run in a fixed order: cs, terminal, replay safety, deadline, time for backoff plus one attempt, retry budget, attempt limit.",
+  "cases": [
+    {
+      "name": "retry allowed: time, budget and attempts left",
+      "input": {
+        "attempt": 1,
+        "maxAttempts": 3,
+        "cs": "none",
+        "terminal": false,
+        "replaySafe": true,
+        "remainingMs": 600,
+        "backoffMs": 50,
+        "attemptCostMs": 300,
+        "rb": 2
+      },
+      "expect": {
+        "retry": true,
+        "reason": "",
+        "rule": "",
+        "nextAttempt": 2,
+        "budgetLeft": 1
+      }
+    },
+    {
+      "name": "exactly enough time for backoff plus one attempt",
+      "input": {
+        "attempt": 1,
+        "maxAttempts": 3,
+        "cs": "none",
+        "terminal": false,
+        "replaySafe": true,
+        "remainingMs": 350,
+        "backoffMs": 50,
+        "attemptCostMs": 300,
+        "rb": 2
+      },
+      "expect": {
+        "retry": true,
+        "reason": "",
+        "rule": "",
+        "nextAttempt": 2,
+        "budgetLeft": 1
+      }
+    },
+    {
+      "name": "one millisecond short (insufficient-time)",
+      "input": {
+        "attempt": 1,
+        "maxAttempts": 3,
+        "cs": "none",
+        "terminal": false,
+        "replaySafe": true,
+        "remainingMs": 349,
+        "backoffMs": 50,
+        "attemptCostMs": 300,
+        "rb": 2
+      },
+      "expect": {
+        "retry": false,
+        "reason": "insufficient-time",
+        "rule": "R-R02",
+        "nextAttempt": 0,
+        "budgetLeft": 2
+      }
+    },
+    {
+      "name": "expired chain (cs=expired)",
+      "input": {
+        "attempt": 1,
+        "maxAttempts": 3,
+        "cs": "expired",
+        "terminal": false,
+        "replaySafe": true,
+        "remainingMs": 600,
+        "backoffMs": 50,
+        "attemptCostMs": 300,
+        "rb": 2
+      },
+      "expect": {
+        "retry": false,
+        "reason": "deadline",
+        "rule": "R-R02",
+        "nextAttempt": 0,
+        "budgetLeft": 2
+      }
+    },
+    {
+      "name": "cancelled chain (cs=cancel)",
+      "input": {
+        "attempt": 1,
+        "maxAttempts": 3,
+        "cs": "cancel",
+        "terminal": false,
+        "replaySafe": true,
+        "remainingMs": 600,
+        "backoffMs": 50,
+        "attemptCostMs": 300,
+        "rb": 2
+      },
+      "expect": {
+        "retry": false,
+        "reason": "cancelled",
+        "rule": "R-R02",
+        "nextAttempt": 0,
+        "budgetLeft": 2
+      }
+    },
+    {
+      "name": "expired chain wins over every other reason",
+      "input": {
+        "attempt": 1,
+        "maxAttempts": 3,
+        "cs": "expired",
+        "terminal": true,
+        "replaySafe": false,
+        "remainingMs": -5,
+        "backoffMs": 50,
+        "attemptCostMs": 300,
+        "rb": 0
+      },
+      "expect": {
+        "retry": false,
+        "reason": "deadline",
+        "rule": "R-R02",
+        "nextAttempt": 0,
+        "budgetLeft": 0
+      }
+    },
+    {
+      "name": "terminal response (term=?1)",
+      "input": {
+        "attempt": 1,
+        "maxAttempts": 3,
+        "cs": "none",
+        "terminal": true,
+        "replaySafe": true,
+        "remainingMs": 600,
+        "backoffMs": 50,
+        "attemptCostMs": 300,
+        "rb": 2
+      },
+      "expect": {
+        "retry": false,
+        "reason": "terminal",
+        "rule": "R-R02",
+        "nextAttempt": 0,
+        "budgetLeft": 2
+      }
+    },
+    {
+      "name": "not replay-safe",
+      "input": {
+        "attempt": 1,
+        "maxAttempts": 3,
+        "cs": "none",
+        "terminal": false,
+        "replaySafe": false,
+        "remainingMs": 600,
+        "backoffMs": 50,
+        "attemptCostMs": 300,
+        "rb": 2
+      },
+      "expect": {
+        "retry": false,
+        "reason": "not-replay-safe",
+        "rule": "R-R02",
+        "nextAttempt": 0,
+        "budgetLeft": 2
+      }
+    },
+    {
+      "name": "no time left (ttl reached 0)",
+      "input": {
+        "attempt": 1,
+        "maxAttempts": 3,
+        "cs": "none",
+        "terminal": false,
+        "replaySafe": true,
+        "remainingMs": 0,
+        "backoffMs": 50,
+        "attemptCostMs": 300,
+        "rb": 2
+      },
+      "expect": {
+        "retry": false,
+        "reason": "deadline",
+        "rule": "R-R02",
+        "nextAttempt": 0,
+        "budgetLeft": 2
+      }
+    },
+    {
+      "name": "negative time left",
+      "input": {
+        "attempt": 1,
+        "maxAttempts": 3,
+        "cs": "none",
+        "terminal": false,
+        "replaySafe": true,
+        "remainingMs": -120,
+        "backoffMs": 50,
+        "attemptCostMs": 300,
+        "rb": 2
+      },
+      "expect": {
+        "retry": false,
+        "reason": "deadline",
+        "rule": "R-R02",
+        "nextAttempt": 0,
+        "budgetLeft": 2
+      }
+    },
+    {
+      "name": "retry budget used up",
+      "input": {
+        "attempt": 1,
+        "maxAttempts": 3,
+        "cs": "none",
+        "terminal": false,
+        "replaySafe": true,
+        "remainingMs": 600,
+        "backoffMs": 50,
+        "attemptCostMs": 300,
+        "rb": 0
+      },
+      "expect": {
+        "retry": false,
+        "reason": "budget",
+        "rule": "R-R02",
+        "nextAttempt": 0,
+        "budgetLeft": 0
+      }
+    },
+    {
+      "name": "attempt limit reached",
+      "input": {
+        "attempt": 3,
+        "maxAttempts": 3,
+        "cs": "none",
+        "terminal": false,
+        "replaySafe": true,
+        "remainingMs": 600,
+        "backoffMs": 50,
+        "attemptCostMs": 300,
+        "rb": 2
+      },
+      "expect": {
+        "retry": false,
+        "reason": "attempts",
+        "rule": "R-R02",
+        "nextAttempt": 0,
+        "budgetLeft": 2
+      }
+    },
+    {
+      "name": "no attempt limit",
+      "input": {
+        "attempt": 7,
+        "maxAttempts": 0,
+        "cs": "none",
+        "terminal": false,
+        "replaySafe": true,
+        "remainingMs": 600,
+        "backoffMs": 50,
+        "attemptCostMs": 300,
+        "rb": 2
+      },
+      "expect": {
+        "retry": true,
+        "reason": "",
+        "rule": "",
+        "nextAttempt": 8,
+        "budgetLeft": 1
+      }
+    },
+    {
+      "name": "last unit of budget",
+      "input": {
+        "attempt": 1,
+        "maxAttempts": 3,
+        "cs": "none",
+        "terminal": false,
+        "replaySafe": true,
+        "remainingMs": 600,
+        "backoffMs": 50,
+        "attemptCostMs": 300,
+        "rb": 1
+      },
+      "expect": {
+        "retry": true,
+        "reason": "",
+        "rule": "",
+        "nextAttempt": 2,
+        "budgetLeft": 0
+      }
+    },
+    {
+      "name": "zero backoff and cost",
+      "input": {
+        "attempt": 1,
+        "maxAttempts": 3,
+        "cs": "none",
+        "terminal": false,
+        "replaySafe": true,
+        "remainingMs": 1,
+        "backoffMs": 0,
+        "attemptCostMs": 0,
+        "rb": 2
+      },
+      "expect": {
+        "retry": true,
+        "reason": "",
+        "rule": "",
+        "nextAttempt": 2,
+        "budgetLeft": 1
+      }
+    },
+    {
+      "name": "attempt 0 counts as the first",
+      "input": {
+        "attempt": 0,
+        "maxAttempts": 3,
+        "cs": "none",
+        "terminal": false,
+        "replaySafe": true,
+        "remainingMs": 600,
+        "backoffMs": 50,
+        "attemptCostMs": 300,
+        "rb": 2
+      },
+      "expect": {
+        "retry": true,
+        "reason": "",
+        "rule": "",
+        "nextAttempt": 2,
+        "budgetLeft": 1
+      }
+    }
+  ]
+}
