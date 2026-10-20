@@ -130,8 +130,12 @@ public class Component3Bridge {
             Double rate = positive(spec.path("leakyBucket").path("ratePerSec"));
             Double ratio = spec.path("retry").path("budgetRatio").isNumber() ? spec.path("retry").path("budgetRatio").asDouble() : null;
             if (ratio != null && (ratio < 0 || ratio > settings.maximumRetryRatio())) ratio = null;
+            // Rate v2 (R4): the healthy target is C4's own; a sync updates the current rate and retry ratio but keeps the
+            // existing healthy target (set from the rate only the first time).
+            Policy known = workflow.current(entry.getKey(), Source.PROMETHEUS);
+            Double healthy = known != null && known.healthyBucketTarget() != null ? known.healthyBucketTarget() : rate;
             try {
-                workflow.putPolicy(new Policy(entry.getKey(), epoch, validUntil, rate, rate, ratio, null), Source.PROMETHEUS);
+                workflow.putPolicy(new Policy(entry.getKey(), epoch, validUntil, rate, healthy, ratio, null), Source.PROMETHEUS);
             } catch (IllegalArgumentException ignored) {
                 // incomplete policy for this service; the engine keeps waiting for a usable reference
             }

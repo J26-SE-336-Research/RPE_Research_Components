@@ -80,11 +80,26 @@ Approved as proposed below, with these notes:
 
 | # | Question | Proposed answer |
 |---|---|---|
-
-| # | Question | Proposed answer |
-|---|---|---|
 | R1 | A service window without load data (`engine.service(window)` from tests, `MockScenarios` or `POST /services`, or a missing queue-depth series) | Rate diagnosis **UNKNOWN → hold**, as guide §4.2 says, with the reason in the evidence |
 | R2 | Retry when the rate diagnosis is UNKNOWN but health is persistently OVERLOADED | Keep today's protective **retry → 0** (the safe direction), so the protective rule doesn't depend on queue data. When the diagnosis is RATE_TOO_LOW, hold instead (guide §5) |
 | R3 | How to show an ADVISORY retry increase (retry data missing) | **No proposal**: an evidence line "Advisory: retry X → Y not proposed (retry-data-unavailable)". Nothing can be approved or delivered. With retry data (simulations now, C2 PP2 later), an increase is a normal proposal: PENDING_APPROVAL unless `RETRY_INCREASE` is allowed |
 | R4 | `healthyRate` storage | C4's own `RateState`, set once from the first synced rate, then only from verified healthy decisions. `Component3Bridge.sync` keeps the policy's existing `healthyBucketTarget` instead of overwriting it with the current rate (current rate and retry ratio are still updated) |
-| R5 | Queue-depth query | `avg(avg_over_time(rpe_backpressure_inbound_queue_depth{service,namespace}[W]))`, added to `loadQueries` (so it also appears in `GET /queries`); missing → R1 |
+| R5 | Queue-depth query | `avg(avg_over_time(rpe_backpressure_inbound_queue_depth{service,namespace}[W]))`, added to `loadQueries` (so it also appears in `GET /queries`); missing → R1. **Implemented as the maximum, see §6** |
+
+## 6. Implementation notes and deviations (recorded per step)
+
+- **R5 uses the maximum (Step 2).** The query is `max(max_over_time(rpe_backpressure_inbound_queue_depth{...}[W]))`,
+  not the average. When the queue fills in bursts, p95 contains the full-queue waits. An average depth underestimates
+  `Wq = depth / rate`, so `Papp = p95 − Wq` made the app look slow and repeating bursts were diagnosed APP_OVERLOADED
+  (a cut). With the maximum, example 4 is diagnosed RATE_TOO_LOW and the rate is raised.
+- **Burst model corrected (Step 2).** The first model alternated whole windows at 80 and 160. Real bursts happen inside
+  every window, so `ServiceSimulation` now averages the base and burst halves of each window and keeps the worst queue
+  depth, utilisation and p95. The old-logic example 4 in `evaluation/rate-retry-v1-baseline.md` is re-recorded with this model.
+- **Cooldown before any state change (Step 2).** During the per-service cooldown the diagnosis is still computed and shown
+  in the evidence, but the anti-ratchet and `goodRate` state are not changed.
+- **Lowering the healthy rate is never automatic.** The slow step down (rate > 2 × target for 30 min) is proposed
+  without an automatic kind, so it always waits for a reviewer.
+- **Example 2 with a human approving every step.** After the first cut to `max(floor, 0.8 × accepted)`, v2 keeps probing
+  upwards while the bucket sheds. Every probe that slows the app lowers the `brokeAt` ceiling to 0.9 × that rate, so the
+  probes get smaller and the rate settles between the floor (50) and about 1.1 × the app capacity (60). It never ratchets
+  below the floor. In automatic mode the flip limit (Step 5) pauses this probing.
