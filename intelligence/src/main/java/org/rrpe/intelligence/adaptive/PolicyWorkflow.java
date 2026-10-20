@@ -50,6 +50,7 @@ public class PolicyWorkflow {
         for (var item : new ArrayList<>(history.values())) {
             if (key(item.proposal().target(), item.proposal().source()).equals(key(policy.target(), source))
                     && !item.proposal().baseVersion().equals(policy.version()) && active(item)) {
+                if (rebase(item, policy)) continue;
                 replace(item, item.decision(), item.reviewer(), item.decidedAt(), Delivery.SUPERSEDED, "Current policy version changed", item.attempts(), item.lastAttempt(), null);
             }
         }
@@ -216,6 +217,30 @@ public class PolicyWorkflow {
     private double value(Policy policy, Action action) {
         Double value = switch (action) { case LEAKY_BUCKET -> policy.bucketRate(); case RETRY_BUDGET -> policy.retryRatio(); case CHAIN_DEADLINE -> policy.deadlineMs(); };
         if (value == null) throw new IllegalArgumentException("Current policy value is missing"); return value;
+    }
+    /**
+     * An approved change that is not yet sent moves to the new policy version when its own value did not change there
+     * (another lever of the same policy was applied first, e.g. a rate change before a retry change). Pending, sent or
+     * outdated changes are superseded as before.
+     */
+    private boolean rebase(PolicyChange item, Policy policy) {
+        if (item.decision() != Decision.APPROVED || item.delivery() == Delivery.SENT) return false;
+        Double value = switch (item.proposal().action()) {
+            case LEAKY_BUCKET -> policy.bucketRate(); case RETRY_BUDGET -> policy.retryRatio(); case CHAIN_DEADLINE -> policy.deadlineMs();
+        };
+        if (value == null || Double.compare(value, item.proposal().currentValue()) != 0) return false;
+        var p = item.proposal();
+        var moved = new Proposal(p.id(), p.target(), p.action(), p.source(), policy.version(), p.currentValue(), p.proposedValue(), p.unit(),
+                p.generatedAt(), p.expiresAt(), p.measurements(), p.evidence());
+        history.put(p.id(), new PolicyChange(moved, item.decision(), item.reviewer(), item.decidedAt(), item.delivery(),
+                "Moved to policy version " + policy.version() + " (another change of this policy was applied first)", item.attempts(), item.lastAttempt(), item.appliedVersion()));
+        return true;
+    }
+    /** Rate and retry changes approved by a reviewer (not automatically) for a target at or after {@code since}. */
+    public synchronized boolean reviewerApprovedSince(String target, Source source, Instant since) {
+        return history.values().stream().anyMatch(item -> item.proposal().target().equals(target) && item.proposal().action() != Action.CHAIN_DEADLINE
+                && key(target, item.proposal().source()).equals(key(target, source)) && item.decision() == Decision.APPROVED
+                && item.reviewer() != null && !item.reviewer().startsWith("c4-auto") && item.decidedAt() != null && !item.decidedAt().isBefore(since));
     }
     private boolean sameControl(Proposal a, Proposal b) { return a.action() == b.action() && key(a.target(), a.source()).equals(key(b.target(), b.source())); }
     private boolean active(PolicyChange item) { return item.delivery() != Delivery.APPLIED && item.delivery() != Delivery.EXPIRED && item.delivery() != Delivery.SUPERSEDED && item.decision() != Decision.REJECTED; }

@@ -183,3 +183,39 @@ Approved as proposed below, with these notes:
 - **Note for the console owner:** the Recommendations page says "Nothing is applied until a reviewer approves it". With
   `RRPE_ADAPTIVE_AUTOAPPROVEACTIONS` set this is true **only for request deadlines**; automatic rate/retry changes appear
   in **Reviewed** with reviewer `c4-auto` (or `c4-auto-revert` for an automatic undo). The console is not changed here.
+
+## 8. Owner decisions of 21 Oct 2026 (e2e 95 gap, changes applied together)
+
+- **Deadline not settled → no automatic rate/retry change** (`AdaptiveEngine.unsettledDeadline`, replaces the narrower
+  cross-lever lock of Step 5). For a service, every analysed chain through it must be settled. A chain is unsettled when:
+  - its deadline v2 state is LEARNING, PROPOSED or SETTLING (a chain without per-request analysis yet counts as LEARNING);
+  - a deadline proposal is pending;
+  - its deadline or route budget changed within the settle period **2 × window + cooldown**: by C4 (applied), or by anyone
+    else, seen as a change of the policy reference (C3 sync) or of the budget stamped in the traces (a window with mixed
+    budgets counts as a change);
+  - *(addition)* a raise is building: healthy requests exceed the deadline (Case A persistence streak > 0). This is the
+    e2e 95 situation right after the operator's 100 ms rollout, and it covers the time until the proposal appears even
+    when that takes longer than the settle period.
+  The proposal is still made, as PENDING_APPROVAL, with the evidence line
+  "Automatic approval not used: deadline not settled: … (cross-lever lock); a reviewer decides".
+- **No automatic change on missing data.** When the rate diagnosis is UNKNOWN (for example no queue-depth series), no
+  automatic approval at all, including the protective retry → 0. Evidence: "insufficient data for automatic change".
+- **Reviewer change during settling → deadline verification INCONCLUSIVE.** When a rate or retry change for a service on
+  the chain is approved by a reviewer (not `c4-auto…`) after the deadline change was applied, the deadline check ends
+  INCONCLUSIVE ("a reviewer approved a rate or retry change for … while the deadline was settling") and can never cause a
+  revert. (`PolicyWorkflow.reviewerApprovedSince`, additive.)
+- **Interaction with deadline v2 (unchanged rule).** Deadline v2 holds a deadline decision while a *rate* proposal is
+  pending on the chain (`PENDING_RATE_PROPOSAL`). With the lock, that rate proposal cannot be automatic while the deadline
+  is unsettled, so both wait for a reviewer: approving or rejecting the rate proposal releases the deadline. In e2e 95
+  the demo traffic is low and the gateway gets no rate proposal, so the deadline flow is not held.
+- **One change per service per cycle** (`Component3Bridge`). A new C3 version is built from the effective spec, so a rate
+  and a retry change delivered together would undo each other. The bridge now delivers at most one change per service
+  policy per cycle (a chain deadline counts for the gateway), and none while another change of that policy is still
+  rolling out (SENT).
+- **An approved change survives another lever's version** (`PolicyWorkflow.putPolicy`). When the policy version changes,
+  an *approved, not yet sent* change whose own value is unchanged in the new version moves to the new version (detail
+  "Moved to policy version …") instead of being superseded. Pending, sent and outdated changes are superseded exactly as
+  before (`PolicyWorkflowTests` unchanged). The duplicate "0.050 → 0" retry row in the reviewer-mode results no longer
+  happens.
+- Tests: `DeadlineSettledLockTests` (the e2e 95 time gap with no automatic gateway change, settled chains still
+  automatic, a budget change by anyone, missing data, INCONCLUSIVE verification) and `BridgeOneChangePerServiceTests`.

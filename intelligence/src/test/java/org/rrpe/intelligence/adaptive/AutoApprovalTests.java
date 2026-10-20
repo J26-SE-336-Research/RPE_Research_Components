@@ -129,25 +129,26 @@ class AutoApprovalTests {
         var all = EnumSet.allOf(AdaptiveConfig.AutoKind.class);
         java.util.function.Function<AutoApprovalGuard.Request, Boolean> ok = q -> AutoApprovalGuard.check(q, all, rate, retry).approve();
         var raise = AdaptiveConfig.AutoKind.BUCKET_RAISE; var cut = AdaptiveConfig.AutoKind.BUCKET_CUT;
-        assertTrue(ok.apply(new AutoApprovalGuard.Request(raise, Source.PROMETHEUS, 100, 150, 50.0, 200.0, true, false, false, false)));
-        assertFalse(ok.apply(new AutoApprovalGuard.Request(raise, Source.PROMETHEUS, 100, 151, 50.0, 200.0, true, false, false, false)), "+50% at most");
-        assertFalse(ok.apply(new AutoApprovalGuard.Request(raise, Source.PROMETHEUS, 100, 140, 50.0, 130.0, true, false, false, false)), "ceiling");
-        assertTrue(ok.apply(new AutoApprovalGuard.Request(raise, Source.PROMETHEUS, 50, 100, 50.0, 90.0, true, true, false, false)), "an undo may return to the previous value");
-        assertTrue(ok.apply(new AutoApprovalGuard.Request(cut, Source.PROMETHEUS, 100, 80, 50.0, null, true, false, false, false)));
-        assertFalse(ok.apply(new AutoApprovalGuard.Request(cut, Source.PROMETHEUS, 100, 79, 50.0, null, true, false, false, false)), "−20% at most");
-        assertFalse(ok.apply(new AutoApprovalGuard.Request(cut, Source.PROMETHEUS, 60, 49, 50.0, null, true, false, false, false)), "floor");
-        assertFalse(ok.apply(new AutoApprovalGuard.Request(cut, Source.PROMETHEUS, 100, 90, 50.0, null, false, false, false, false)), "persistence");
-        assertFalse(ok.apply(new AutoApprovalGuard.Request(cut, Source.PROMETHEUS, 100, 90, 50.0, null, true, false, true, false)), "cross-lever lock");
-        assertFalse(ok.apply(new AutoApprovalGuard.Request(cut, Source.PROMETHEUS, 100, 90, 50.0, null, true, false, false, true)), "paused");
-        assertFalse(ok.apply(new AutoApprovalGuard.Request(cut, Source.MOCK, 100, 90, 50.0, null, true, false, false, false)), "synthetic");
+        assertTrue(ok.apply(new AutoApprovalGuard.Request(raise, Source.PROMETHEUS, 100, 150, 50.0, 200.0, true, false, null, true, false)));
+        assertFalse(ok.apply(new AutoApprovalGuard.Request(raise, Source.PROMETHEUS, 100, 151, 50.0, 200.0, true, false, null, true, false)), "+50% at most");
+        assertFalse(ok.apply(new AutoApprovalGuard.Request(raise, Source.PROMETHEUS, 100, 140, 50.0, 130.0, true, false, null, true, false)), "ceiling");
+        assertTrue(ok.apply(new AutoApprovalGuard.Request(raise, Source.PROMETHEUS, 50, 100, 50.0, 90.0, true, true, null, true, false)), "an undo may return to the previous value");
+        assertTrue(ok.apply(new AutoApprovalGuard.Request(cut, Source.PROMETHEUS, 100, 80, 50.0, null, true, false, null, true, false)));
+        assertFalse(ok.apply(new AutoApprovalGuard.Request(cut, Source.PROMETHEUS, 100, 79, 50.0, null, true, false, null, true, false)), "−20% at most");
+        assertFalse(ok.apply(new AutoApprovalGuard.Request(cut, Source.PROMETHEUS, 60, 49, 50.0, null, true, false, null, true, false)), "floor");
+        assertFalse(ok.apply(new AutoApprovalGuard.Request(cut, Source.PROMETHEUS, 100, 90, 50.0, null, false, false, null, true, false)), "persistence");
+        assertFalse(ok.apply(new AutoApprovalGuard.Request(cut, Source.PROMETHEUS, 100, 90, 50.0, null, true, false, "GET /api/orders is PROPOSED", true, false)), "cross-lever lock");
+        assertFalse(ok.apply(new AutoApprovalGuard.Request(cut, Source.PROMETHEUS, 100, 90, 50.0, null, true, false, null, true, true)), "paused");
+        assertFalse(ok.apply(new AutoApprovalGuard.Request(cut, Source.MOCK, 100, 90, 50.0, null, true, false, null, true, false)), "synthetic");
+        assertFalse(ok.apply(new AutoApprovalGuard.Request(AdaptiveConfig.AutoKind.RETRY_DECREASE, Source.PROMETHEUS, .10, 0, null, null, true, false, null, false, false)), "rate UNKNOWN: not even the protective retry 0");
         var down = AdaptiveConfig.AutoKind.RETRY_DECREASE; var up = AdaptiveConfig.AutoKind.RETRY_INCREASE;
-        assertTrue(ok.apply(new AutoApprovalGuard.Request(down, Source.PROMETHEUS, .10, 0, null, null, true, false, false, false)), "protective 0");
-        assertTrue(ok.apply(new AutoApprovalGuard.Request(down, Source.PROMETHEUS, .05, .02, null, null, true, false, false, false)), "protective 0.02");
-        assertFalse(ok.apply(new AutoApprovalGuard.Request(down, Source.PROMETHEUS, .10, .05, null, null, true, false, false, false)));
-        assertTrue(ok.apply(new AutoApprovalGuard.Request(up, Source.PROMETHEUS, .06, .08, null, null, true, false, false, false)));
-        assertFalse(ok.apply(new AutoApprovalGuard.Request(up, Source.PROMETHEUS, .04, .10, null, null, true, false, false, false)));
-        assertFalse(AutoApprovalGuard.check(new AutoApprovalGuard.Request(up, Source.PROMETHEUS, .06, .08, null, null, true, false, false, false),
+        assertTrue(ok.apply(new AutoApprovalGuard.Request(down, Source.PROMETHEUS, .10, 0, null, null, true, false, null, true, false)), "protective 0");
+        assertTrue(ok.apply(new AutoApprovalGuard.Request(down, Source.PROMETHEUS, .05, .02, null, null, true, false, null, true, false)), "protective 0.02");
+        assertFalse(ok.apply(new AutoApprovalGuard.Request(down, Source.PROMETHEUS, .10, .05, null, null, true, false, null, true, false)));
+        assertTrue(ok.apply(new AutoApprovalGuard.Request(up, Source.PROMETHEUS, .06, .08, null, null, true, false, null, true, false)));
+        assertFalse(ok.apply(new AutoApprovalGuard.Request(up, Source.PROMETHEUS, .04, .10, null, null, true, false, null, true, false)));
+        assertFalse(AutoApprovalGuard.check(new AutoApprovalGuard.Request(up, Source.PROMETHEUS, .06, .08, null, null, true, false, null, true, false),
                 EnumSet.of(down), rate, retry).approve(), "RETRY_INCREASE not in the list");
-        assertFalse(ok.apply(new AutoApprovalGuard.Request(null, Source.PROMETHEUS, 200, 180, 50.0, null, true, false, false, false)), "relaxing down: always a reviewer");
+        assertFalse(ok.apply(new AutoApprovalGuard.Request(null, Source.PROMETHEUS, 200, 180, 50.0, null, true, false, null, true, false)), "relaxing down: always a reviewer");
     }
 }

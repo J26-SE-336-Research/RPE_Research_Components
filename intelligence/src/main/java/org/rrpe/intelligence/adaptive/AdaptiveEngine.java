@@ -151,33 +151,66 @@ public class AdaptiveEngine {
     private record ChainPath(String chain, Source source, List<String> services) {}
     private final Map<String, ChainPath> chainPaths = new ConcurrentHashMap<>();
 
-    /** A deadline change is pending, or was applied within the stabilisation period, on a chain through this service. */
-    private boolean crossLeverLocked(String service, Source source) {
-        Instant now = clock.instant();
+    /** The last deadline seen for a chain, from the policy reference (C3 sync or an applied C4 change) and from the stamped budget. */
+    private static final class BudgetWatch { Long policyMs, stampedMs; Instant policyChangedAt, stampedChangedAt; }
+    private final Map<String, BudgetWatch> budgets = new ConcurrentHashMap<>();
+    private void watchPolicyBudget(String chain, Source source, Instant now) {
+        Policy p = workflow.current(chain, source);
+        if (p == null || !number(p.deadlineMs())) return;
+        var w = budgets.computeIfAbsent(key(chain, source), ignored -> new BudgetWatch());
+        long ms = Math.round(p.deadlineMs());
+        synchronized (w) { if (w.policyMs != null && w.policyMs != ms) w.policyChangedAt = now; w.policyMs = ms; }
+    }
+    private void watchStampedBudget(String chain, Source source, Long ms, Instant now) {
+        var w = budgets.computeIfAbsent(key(chain, source), ignored -> new BudgetWatch());
+        synchronized (w) { if (ms == null || w.stampedMs != null && !w.stampedMs.equals(ms)) w.stampedChangedAt = now; if (ms != null) w.stampedMs = ms; }
+    }
+    /** 2 × window + cooldown: how long a deadline change needs before the chain is settled again. */
+    private Duration settlePeriod() { return settings.window().multipliedBy(2).plus(settings.cooldown()); }
+
+    /**
+     * Cross-lever lock: why a chain through this service has an unsettled deadline, or null when all are settled. Unsettled:
+     * state LEARNING, PROPOSED or SETTLING (a chain not analysed per request yet counts as LEARNING); a pending deadline
+     * proposal; a raise building (healthy requests persistently over the deadline); or a deadline / route budget change by
+     * C4 or anyone else (policy reference or stamped budget) within the settle period.
+     */
+    private String unsettledDeadline(String service, Source source) {
+        Instant now = clock.instant(); Duration settle = settlePeriod();
         for (var path : chainPaths.values()) {
             if ((path.source() == Source.MOCK) != (source == Source.MOCK) || !path.services().contains(service)) continue;
-            if (workflow.pending(path.chain(), Action.CHAIN_DEADLINE, path.source()).isPresent()) return true;
-            Instant applied = workflow.lastApplied(path.chain(), Action.CHAIN_DEADLINE, path.source());
-            if (applied != null && Duration.between(applied, now).compareTo(rate.stabilisation()) < 0) return true;
+            String chain = path.chain(), k = key(chain, path.source());
+            ChainV2 v = v2.get(k);
+            ChainDeadlineState state = v == null ? ChainDeadlineState.LEARNING : v.state;
+            if (state == ChainDeadlineState.LEARNING || state == ChainDeadlineState.PROPOSED || state == ChainDeadlineState.SETTLING)
+                return chain + " is " + state;
+            if (workflow.pending(chain, Action.CHAIN_DEADLINE, path.source()).isPresent()) return chain + " has a pending deadline proposal";
+            if (v != null && v.raiseBuilding) return chain + ": healthy requests exceed the deadline (a raise is building)";
+            watchPolicyBudget(chain, path.source(), now);
+            var w = budgets.get(k);
+            Instant applied = workflow.lastApplied(chain, Action.CHAIN_DEADLINE, path.source());
+            for (Instant changed : new Instant[]{applied, w == null ? null : w.policyChangedAt, w == null ? null : w.stampedChangedAt}) {
+                if (changed != null && Duration.between(changed, now).compareTo(settle) < 0)
+                    return chain + ": the deadline changed " + Duration.between(changed, now).toSeconds() + " s ago (settle period " + settle.toSeconds() + " s)";
+            }
         }
-        return false;
+        return null;
     }
 
-    /** Automatic approval is possible now for this kind and service (allowed, live, not paused, no cross-lever lock). */
+    /** Automatic approval is possible now for this kind and service (allowed, live, not paused, deadlines settled). */
     private boolean automaticAllowed(AdaptiveConfig.AutoKind kind, String service, Source source, RateState rs) {
-        return autoApproval.kinds().contains(kind) && source != Source.MOCK && !rs.autoPaused(clock.instant()) && !crossLeverLocked(service, source);
+        return autoApproval.kinds().contains(kind) && source != Source.MOCK && !rs.autoPaused(clock.instant()) && unsettledDeadline(service, source) == null;
     }
 
     /** Offers a rate or retry recommendation; the guard may approve it automatically (reviewer {@code c4-auto}). */
     private PolicyChange offerAuto(String service, Action action, Source source, Policy policy, double current, double proposed, String unit,
             Instant windowEnd, Map<String, Double> measurements, String rule, List<String> evidence, String kind, Double floor, Double ceiling,
-            boolean persistent, boolean undo) {
+            boolean persistent, boolean undo, boolean dataComplete) {
         RateState rs = rateState(service, source);
         Review auto = null; String guard = null;
         if (kind != null && !autoApproval.kinds().isEmpty()) {
             var autoKind = AdaptiveConfig.AutoKind.valueOf(kind);
             var check = AutoApprovalGuard.check(new AutoApprovalGuard.Request(autoKind, source, current, proposed, floor, ceiling, persistent, undo,
-                    crossLeverLocked(service, source), rs.autoPaused(clock.instant())), autoApproval.kinds(), rate, retrySettings);
+                    unsettledDeadline(service, source), dataComplete, rs.autoPaused(clock.instant())), autoApproval.kinds(), rate, retrySettings);
             guard = check.reason();
             if (check.approve()) auto = new Review("c4-auto", true, "Approved automatically by policy: " + check.reason());
             else if (autoApproval.kinds().contains(autoKind)) evidence.add("Automatic approval not used: " + check.reason() + "; a reviewer decides");
@@ -408,7 +441,8 @@ public class AdaptiveEngine {
             var measurements = new HashMap<String, Double>(inputs);
             // HEALTHY proposes only after recovery-windows healthy cycles, so it is persistent too.
             var change = offerAuto(service, Action.LEAKY_BUCKET, source, policy, current, proposed, "requests/second", window.end(), measurements, rule, evidence,
-                    kind, floor, ceiling, persistent || result.diagnosis() == RateDiagnosis.Diagnosis.HEALTHY, undo);
+                    kind, floor, ceiling, persistent || result.diagnosis() == RateDiagnosis.Diagnosis.HEALTHY, undo,
+                    result.diagnosis() != RateDiagnosis.Diagnosis.UNKNOWN);
             changes.add(change);
             if (AdaptiveConfig.AutoKind.BUCKET_CUT.name().equals(kind) && !change.proposal().id().equals(rs.lastProposalId)) {
                 rs.rememberBrokeAt(current, now, rate.brokeAtMemory());
@@ -459,7 +493,7 @@ public class AdaptiveEngine {
                 changes.add(offerAuto(service, Action.RETRY_BUDGET, source, policy, current, 0, "extra attempts/original request", window.end(), inputs,
                         appOverloaded ? "APP_OVERLOADED: disable additional retries; original requests remain allowed"
                                 : "Overloaded: disable additional retries; original requests remain allowed", evidence,
-                        AdaptiveConfig.AutoKind.RETRY_DECREASE.name(), null, null, true, false));
+                        AdaptiveConfig.AutoKind.RETRY_DECREASE.name(), null, null, true, false, rateKnown));
                 return true;
             }
             return false;
@@ -476,7 +510,7 @@ public class AdaptiveEngine {
             changes.add(offerAuto(service, Action.RETRY_BUDGET, source, policy, current, next, "extra attempts/original request", window.end(), inputs,
                     String.format(Locale.ROOT, "Retries rarely succeed: %.0f of %.0f (upper bound %.2f < %.2f) for %d cycles; step down to %s, then 0",
                             successes, attempts, success.upper(), retrySettings.minSuccess(), rs.retryLowStreak, fmtRatio(retrySettings.step())), evidence,
-                    AdaptiveConfig.AutoKind.RETRY_DECREASE.name(), null, null, true, false));
+                    AdaptiveConfig.AutoKind.RETRY_DECREASE.name(), null, null, true, false, rateKnown));
             return true;
         }
         if (health == Health.STRESSED) { evidence.add("Retry v2: hold while STRESSED"); return false; }
@@ -496,7 +530,7 @@ public class AdaptiveEngine {
         changes.add(offerAuto(service, Action.RETRY_BUDGET, source, policy, current, next, "extra attempts/original request", window.end(), inputs,
                 String.format(Locale.ROOT, "Healthy for %d cycles with a quiet queue and retries that succeed (%.0f of %.0f); +%s toward %s",
                         state.healthy, successes, attempts, fmtRatio(retrySettings.step()), fmtRatio(target)), evidence,
-                AdaptiveConfig.AutoKind.RETRY_INCREASE.name(), null, null, true, false));
+                AdaptiveConfig.AutoKind.RETRY_INCREASE.name(), null, null, true, false, rateKnown));
         return true;
     }
     private static String fmtRatio(double v) { return String.format(Locale.ROOT, "%.2f", v); }
@@ -518,6 +552,7 @@ public class AdaptiveEngine {
         State state = chains.computeIfAbsent(key(window.chain(), window.source()), ignored -> new State());
         if (window.services() != null && !window.services().isEmpty())
             chainPaths.put(key(window.chain(), window.source()), new ChainPath(window.chain(), window.source(), List.copyOf(window.services())));
+        watchPolicyBudget(window.chain(), window.source(), clock.instant());
         synchronized (state) {
             if (window.end() != null && window.end().isAfter(clock.instant())) {
                 reset(state); workflow.withdraw(window.chain(), Action.CHAIN_DEADLINE, window.source(), "Future-dated chain evidence");
@@ -574,10 +609,13 @@ public class AdaptiveEngine {
         String pausedReason; Instant pauseCauseLastSeen;
         final DeadlineSafety safety = new DeadlineSafety();
         Proportion lastH; String lastAuditedDecision; Instant conflictSince;
+        /** Healthy requests persistently exceed the deadline (Case A streak): the deadline is not settled (cross-lever lock). */
+        boolean raiseBuilding;
     }
     /** An applied change being verified: skip {@code settleLeft} counted windows, then collect {@code verify-windows} at the new budget. */
     private static class Settling {
         final DeadlineCase applied; final long fromMs, toMs; final Proportion hBefore; int settleLeft, verified;
+        Instant startedAt;
         final List<LabelledSample> pool = new ArrayList<>();
         Settling(DeadlineCase applied, long fromMs, long toMs, Proportion hBefore, int settleLeft) {
             this.applied = applied; this.fromMs = fromMs; this.toMs = toMs; this.hBefore = hBefore; this.settleLeft = settleLeft;
@@ -673,6 +711,8 @@ public class AdaptiveEngine {
             oStreak = tracker.streak(key, "O", oShare >= deadline.shareThreshold(), end, settings.window());
             dStreak = tracker.streak(key, "D", target != null && current != null && current > (1 + deadline.deadbandHealthy()) * target, end, settings.window());
         } else { aStreak = tracker.current(key, "A"); oStreak = tracker.current(key, "O"); dStreak = tracker.current(key, "D"); }
+        v.raiseBuilding = aStreak > 0;
+        watchStampedBudget(chain, source, mixed ? null : windowBudget, clock.instant());
 
         var overloadedOnOPaths = new TreeSet<String>();
         for (var l : labelled) if (l.label() == RequestLabel.O) for (String s : l.sample().path()) if (loads.get(s) == ServiceLoad.OVERLOADED) overloadedOnOPaths.add(s);
@@ -704,7 +744,7 @@ public class AdaptiveEngine {
                 v.trackedApplied = applied.proposal().id();
                 long from = Math.round(applied.proposal().currentValue()), to = Math.round(applied.proposal().proposedValue());
                 DeadlineCase appliedCase = v.lastProposalCase != null ? v.lastProposalCase : to > from ? DeadlineCase.A_RAISE : DeadlineCase.D_TIGHTEN;
-                v.settling = new Settling(appliedCase, from, to, v.lastH, deadline.settleWindows());
+                v.settling = new Settling(appliedCase, from, to, v.lastH, deadline.settleWindows()); v.settling.startedAt = now;
                 v.state = ChainDeadlineState.SETTLING; v.verification = null;
                 String reason = v.safety.applied(from, to, now);
                 if (reason != null) pause(v, reason, now, chain, source);
@@ -720,6 +760,13 @@ public class AdaptiveEngine {
                     var hAfter = proportionOf(s.pool, RequestLabel.H); var oAfter = proportionOf(s.pool, RequestLabel.O);
                     boolean cleared = share(s.pool, l -> l.label() == RequestLabel.O) < deadline.shareThreshold();
                     var result = DeadlineVerifier.verify(s.applied, s.hBefore, hAfter, oAfter, cleared, deadline, settings.minimumChainRequests());
+                    // A reviewer changed a rate or retry budget on this path while the deadline was settling: the windows mix
+                    // two changes, so the deadline check proves nothing (and never causes a revert).
+                    Source serviceSource = source == Source.MOCK ? Source.MOCK : Source.PROMETHEUS;
+                    String confounded = s.startedAt == null ? null
+                            : services.stream().filter(svc -> workflow.reviewerApprovedSince(svc, serviceSource, s.startedAt)).findFirst().orElse(null);
+                    if (confounded != null) result = new DeadlineVerifier.Verification(DeadlineVerifier.Result.INCONCLUSIVE,
+                            "a reviewer approved a rate or retry change for " + confounded + " while the deadline was settling");
                     v.verification = result.result() + " after " + s.applied + " " + s.fromMs + " → " + s.toMs + " ms: " + result.detail();
                     audit.deadline(AuditLog.DEADLINE_VERIFICATION, chain, source, s.toMs, null, result.result().name(), v.verification);
                     v.settling = null;

@@ -7,8 +7,8 @@ import java.util.Set;
  * Safety rules for approving a rate or retry recommendation automatically (guide §6.3). A recommendation is approved by
  * {@code c4-auto} only when its kind is in {@code rrpe.adaptive.auto-approve-actions}, it is not synthetic, it stays within
  * the floor and ceiling and the step limits (rate up ≤ +50%, down ≤ −20%; retry ±0.02, or down to the protective 0.02 or
- * 0), its condition is persistent, no deadline change is pending or recent on a chain through the service (cross-lever
- * lock), and automatic approval is not paused for the service. Otherwise a human decides, as before. The existing
+ * 0), its condition is persistent, its data is complete (rate diagnosis not UNKNOWN), every chain through the service has a
+ * settled deadline (cross-lever lock), and automatic approval is not paused for the service. Otherwise a human decides. The existing
  * cooldown is checked before any recommendation is made. Chain deadlines have no kind and are never approved here.
  */
 final class AutoApprovalGuard {
@@ -16,7 +16,7 @@ final class AutoApprovalGuard {
     private static final double EPS = 1e-9;
 
     record Request(AdaptiveConfig.AutoKind kind, Source source, double from, double to, Double floor, Double ceiling,
-                   boolean persistent, boolean undo, boolean locked, boolean paused) {}
+                   boolean persistent, boolean undo, String unsettledDeadline, boolean dataComplete, boolean paused) {}
     record Result(boolean approve, String reason) {
         static Result no(String reason) { return new Result(false, reason); }
     }
@@ -26,7 +26,8 @@ final class AutoApprovalGuard {
         if (!allowed.contains(r.kind())) return Result.no(r.kind() + " is not in rrpe.adaptive.auto-approve-actions");
         if (r.source() == Source.MOCK) return Result.no("synthetic recommendations are never approved automatically");
         if (r.paused()) return Result.no("automatic approval is paused for this service");
-        if (r.locked()) return Result.no("a deadline change is pending or recent on a chain through this service (cross-lever lock)");
+        if (!r.dataComplete()) return Result.no("insufficient data for automatic change (rate diagnosis UNKNOWN)");
+        if (r.unsettledDeadline() != null) return Result.no("deadline not settled: " + r.unsettledDeadline() + " (cross-lever lock)");
         if (!r.persistent()) return Result.no("the condition is not yet persistent");
         return switch (r.kind()) {
             case BUCKET_RAISE -> !(r.to() > r.from()) ? Result.no("not a raise")

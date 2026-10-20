@@ -39,8 +39,9 @@ scenario was added: **Recovery after an earlier cut** (rate 60, app fine, demand
 
 In automatic mode the first healthy raise of example 2 (100 → 110) is undone automatically when the app slows down
 (its capacity dropped right after); no scenario reached the pause limit (2 undos or 3 direction changes in 30 min).
-In reviewer mode, example 2 lists "0.050 → 0" twice: the rate cut and the retry change were applied in the same cycle;
-the rate change created a new policy version first, which superseded the approved retry change, so it was proposed again.
+In reviewer mode, example 2 lists "0.050 → 0" twice (recorded before the fix of 21 Oct): the rate cut and the retry change were applied in the same cycle;
+the rate change created a new policy version first, which superseded the approved retry change, so it was proposed again. Now the approved
+retry change moves to the new version and is applied once (RATE_RETRY_V2_MIGRATION.md §8).
 
 ## Old logic vs v2
 
