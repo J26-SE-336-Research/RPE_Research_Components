@@ -18,6 +18,10 @@ public final class RateState {
     Verification verification; UUID trackedApplied, lastProposalId; String lastKind;
     final List<Instant> undos = new ArrayList<>(), flips = new ArrayList<>(); int lastDirection; Instant autoPausedUntil;
     Double lastAppMs, lastShed; String lastVerification;
+    /** The last cut (for the anti-ratchet rule: a second cut only if this one helped). */
+    record Cut(double fromRate, double toRate, double appBefore) {}
+    Cut lastCut; boolean antiRatchetHold;
+    AdaptiveEngine.RateDecision lastDecision;
 
     /** An applied change being checked on the next disjoint windows. */
     static final class Verification {

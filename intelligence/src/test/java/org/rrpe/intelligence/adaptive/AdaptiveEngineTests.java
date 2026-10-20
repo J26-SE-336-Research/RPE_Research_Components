@@ -56,21 +56,43 @@ class AdaptiveEngineTests {
         }
         PolicyChange action(Outcome outcome, Action action) { return outcome.changes().stream().filter(c -> c.proposal().action() == action).findFirst().orElseThrow(); }
     }
+    /** Rate v2 load signals for order-service: a quiet queue (20% full, empty on average, nothing shed). */
+    static ServiceLoadSnapshot quietQueue() { return new ServiceLoadSnapshot("order-service", 20.0, 0.0, 0.0, 0.0, null, null, null, null, List.of(), 0.0); }
+    /** Like {@code Context.learnService}, with load signals, so rate v2 also learns its app-time baseline P0. */
+    static void learnServiceWithLoad(Context c, boolean normalRetries) {
+        double[] latencies = {80,90,100,110,120}; double[] throughputs = {90,105,120,135,150};
+        for (int i = 0; i < 5; i++) {
+            var outcome = c.engine.service(c.service(latencies[i], throughputs[i], normalRetries ? 100 : 0, normalRetries ? 40.0 : 0.0), quietQueue());
+            if (i == 4) assertEquals(Health.BASELINE_READY, outcome.assessment().health());
+            c.clock.next(60);
+        }
+        c.clock.next(300);
+    }
+    static boolean noRateCut(Outcome o) {
+        return o.changes().stream().noneMatch(ch -> ch.proposal().action() == Action.LEAKY_BUCKET && ch.proposal().proposedValue() < ch.proposal().currentValue());
+    }
+    // rate-retry v2: intended behaviour change (see RATE_RETRY_V2_MIGRATION.md) - a slower app is cut only when the app time is above 1.5 × P0 for 2 cycles; the cut uses the accepted (successful) throughput: max(floor, 0.8 × min(rate, accepted))
     @Test void correctedMadExamplePersistsAndRateUsesSuccessfulCapacity() {
-        var c = new Context(); c.policy(120, .05, 1000); c.learnService(false);
-        var pending = c.engine.service(c.service(125, 100, 0, 0.0));
+        var c = new Context(); c.policy(120, .05, 1000); learnServiceWithLoad(c, false);
+        var pending = c.engine.service(c.service(125, 100, 0, 0.0), quietQueue());
         assertEquals(100, pending.assessment().baseline().get("latency").median());
         assertEquals(10, pending.assessment().baseline().get("latency").mad());
-        assertEquals(Health.PENDING_BREACH, pending.assessment().health()); assertTrue(pending.changes().isEmpty());
-        c.clock.next(60); var stressed = c.engine.service(c.service(125, 100, 0, 0.0));
+        assertEquals(Health.PENDING_BREACH, pending.assessment().health()); assertTrue(noRateCut(pending));
+        c.clock.next(60); var stressed = c.engine.service(c.service(125, 100, 0, 0.0), quietQueue());
         assertEquals(Health.STRESSED, stressed.assessment().health());
-        var rate = c.action(stressed, Action.LEAKY_BUCKET);
-        assertEquals(90, rate.proposal().proposedValue()); assertEquals(Decision.PENDING_APPROVAL, rate.decision());
+        assertTrue(noRateCut(stressed), "app time 125 ms is within 1.5 × P0 (100 ms): no cut");
         assertEquals(120, c.workflow.current("order-service", Source.MOCK).bucketRate(), "Desired updates do not pretend to be applied");
-        c.clock.next(60); var overloaded = c.engine.service(c.service(150, 80, 0, 0.0));
+        c.clock.next(60); var overloaded = c.engine.service(c.service(150, 80, 0, 0.0), quietQueue());
         assertEquals(Health.OVERLOADED, overloaded.assessment().health());
-        assertEquals(60, c.action(overloaded, Action.LEAKY_BUCKET).proposal().proposedValue());
+        assertTrue(noRateCut(overloaded), "exactly 1.5 × P0 is still within tolerance");
         assertEquals(100, overloaded.assessment().baseline().get("latency").median(), "Freeze baseline during overload");
+        c.clock.next(60); assertTrue(noRateCut(c.engine.service(c.service(200, 80, 0, 0.0), quietQueue())), "the app is slow, but not yet for 2 cycles");
+        c.clock.next(60); var slow = c.engine.service(c.service(200, 80, 0, 0.0), quietQueue());
+        var rate = c.action(slow, Action.LEAKY_BUCKET);
+        assertEquals(64, rate.proposal().proposedValue(), "max(floor 60, 0.8 × min(rate 120, accepted 80))");
+        assertEquals(Decision.PENDING_APPROVAL, rate.decision());
+        assertTrue(rate.proposal().evidence().stream().anyMatch(e -> e.contains("APP_OVERLOADED")));
+        assertEquals(120, c.workflow.current("order-service", Source.MOCK).bucketRate(), "Desired updates do not pretend to be applied");
     }
     @Test void nearZeroMadFromVerySteadyTrafficDoesNotTurnNoiseIntoABreach() {
         var c = new Context(); c.policy(120, .05, 1000);
@@ -103,17 +125,18 @@ class AdaptiveEngineTests {
         c.clock.next(60); var second = c.engine.service(c.service(150, 80, 0, null));
         assertEquals(0, c.action(second, Action.RETRY_BUDGET).proposal().proposedValue());
     }
+    // rate-retry v2: intended behaviour change (see RATE_RETRY_V2_MIGRATION.md) - the rate rises toward demand + 25% headroom by a = 0.10 × goodRate after 3 healthy cycles (66 = 60 + 6); load signals are now part of the input
     @Test void recoveryRequiresHealthyWindowsAndAppliedPolicyThenHonoursCooldown() {
-        var c = new Context(); c.policy(60, .02, 1000); c.learnService(true);
-        for (int i = 0; i < 2; i++) { assertTrue(c.engine.service(c.service(100, 120, 100, 40.0)).changes().isEmpty()); c.clock.next(60); }
-        var outcome = c.engine.service(c.service(100, 120, 100, 40.0));
+        var c = new Context(); c.policy(60, .02, 1000); learnServiceWithLoad(c, true);
+        for (int i = 0; i < 2; i++) { assertTrue(c.engine.service(c.service(100, 120, 100, 40.0), quietQueue()).changes().isEmpty()); c.clock.next(60); }
+        var outcome = c.engine.service(c.service(100, 120, 100, 40.0), quietQueue());
         assertEquals(66, c.action(outcome, Action.LEAKY_BUCKET).proposal().proposedValue());
         var retry = c.action(outcome, Action.RETRY_BUDGET);
         assertEquals(.03, retry.proposal().proposedValue(), 1e-10);
         c.workflow.decide(retry.proposal().id(), new Review("sre", true, null));
         c.workflow.deliveryResult(retry.proposal().id(), new Acknowledgement("APPLIED", "v2", .03), null);
-        c.clock.next(60); assertTrue(c.engine.service(c.service(100, 120, 100, 40.0)).changes().stream().noneMatch(p -> p.proposal().action() == Action.RETRY_BUDGET));
-        c.clock.next(120); var next = c.engine.service(c.service(100, 120, 100, 40.0));
+        c.clock.next(60); assertTrue(c.engine.service(c.service(100, 120, 100, 40.0), quietQueue()).changes().stream().noneMatch(p -> p.proposal().action() == Action.RETRY_BUDGET));
+        c.clock.next(120); var next = c.engine.service(c.service(100, 120, 100, 40.0), quietQueue());
         assertEquals(.04, c.action(next, Action.RETRY_BUDGET).proposal().proposedValue(), 1e-10);
     }
     /** One window of per-request traffic for the Context chain (deadline v2). */

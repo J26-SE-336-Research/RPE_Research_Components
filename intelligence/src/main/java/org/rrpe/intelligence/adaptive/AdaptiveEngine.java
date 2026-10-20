@@ -34,11 +34,16 @@ public class AdaptiveEngine {
         // Deadline v2: healthy time, disjoint-window streaks and chain state start again (state LEARNING).
         java.util.function.Predicate<String> live = k -> !k.startsWith(Source.MOCK + ":");
         healthy.resetIf(live); tracker.forgetIf(live); v2.keySet().removeIf(live);
+        rates.keySet().removeIf(live); // rate v2: app-time baseline P0, healthy/good rate and streaks are learned again
     }
     private Duration freshness() { return settings.cycle().multipliedBy(2).plus(evaluationDelay); }
     private String key(String target, Source source) { return source + ":" + target; }
 
-    public Outcome service(ServiceWindow window) {
+    /** A service window without load signals (tests, simulations without queue data, POST /services): the rate decision is UNKNOWN. */
+    public Outcome service(ServiceWindow window) { return service(window, null); }
+
+    /** One service window with its per-service load signals (queue utilisation and depth, rejections) for rate v2. */
+    public Outcome service(ServiceWindow window, ServiceLoadSnapshot load) {
         if (window == null || window.service() == null || window.service().isBlank() || window.source() == null) throw new IllegalArgumentException("Service and source are required");
         State state = services.computeIfAbsent(key(window.service(), window.source()), ignored -> new State());
         synchronized (state) {
@@ -67,8 +72,13 @@ public class AdaptiveEngine {
                         && window.rejections() == 0
                         && window.p95Ms() > 0 && window.successfulThroughput() > 0;
                 Health phase = learn(state, values, window.end(), clean, List.of("latency", "throughput"));
-                return save(state, window.service(), window.source(), window.end(), phase, values,
-                        List.of("Learning a stable Healthy reference; current samples=" + state.samples.size()), List.of());
+                // Rate v2 does not wait for the health baseline: it learns its own app-time baseline (P0), so a bucket that
+                // sheds from day one can still be fixed (guide §4.5).
+                var learningEvidence = new ArrayList<String>(List.of("Learning a stable Healthy reference; current samples=" + state.samples.size()));
+                var learningChanges = new ArrayList<PolicyChange>();
+                Policy learningPolicy = workflow.current(window.service(), window.source());
+                if (learningPolicy != null) bucket(window, load, learningPolicy, false, learningEvidence, learningChanges);
+                return save(state, window.service(), window.source(), window.end(), phase, values, learningEvidence, learningChanges);
             }
             if (!window.start().isAfter(state.baselineEnd)) return save(state, window.service(), window.source(), window.end(),
                     Health.BASELINE_READY, values, List.of("Waiting for a recent window separate from baseline observations"), List.of());
@@ -97,40 +107,157 @@ public class AdaptiveEngine {
             evidence.add("Counts normalized by " + window.originalRequests() + " original requests; healthy cycles=" + state.healthy);
             List<PolicyChange> changes = new ArrayList<>();
             Policy policy = workflow.current(window.service(), window.source());
+            // Service errors above their baseline (503 overload rejections are not errors): app evidence for rate v2.
+            Statistic errorBase = state.baseline.get("errorRate");
+            boolean errorsHigh = errorBase != null
+                    && (values.get("errorRate") - errorBase.median()) / variation(errorBase, "errorRate") >= settings.stressedMad();
             if (policy == null) evidence.add("Waiting for current Component 3 policy reference");
             else {
-                bucket(window, state, policy, health, persistentPolicy, evidence, changes);
+                bucket(window, load, policy, errorsHigh, evidence, changes);
                 retry(window, state, policy, health, persistentPolicy, evidence, changes);
             }
-            if (!protective && health != Health.HEALTHY) withdrawService(window, "Condition is not yet persistent");
+            // Rate v2 withdraws its own proposals when its diagnosis changes; the retry rule still follows health persistence.
+            if (!protective && health != Health.HEALTHY) workflow.withdraw(window.service(), Action.RETRY_BUDGET, window.source(), "Condition is not yet persistent");
             if (health == Health.HEALTHY && state.healthy >= settings.recoveryWindows()) refreshBaseline(state, values);
             return save(state, window.service(), window.source(), window.end(), health, values, evidence, changes);
         }
     }
 
-    private void bucket(ServiceWindow window, State state, Policy policy, Health health, boolean persistent,
-                        List<String> evidence, List<PolicyChange> changes) {
-        if (!number(policy.bucketRate()) || policy.bucketRate() <= 0 || !number(policy.healthyBucketTarget())) {
-            evidence.add("Leaky Bucket waits for current rate and Healthy target"); return;
-        }
-        double baseline = state.baseline.get("throughput").median();
-        double candidate = policy.bucketRate();
-        String rule = null;
-        if (persistent) {
-            candidate = Math.min(policy.bucketRate(), Math.min(baseline, window.successfulThroughput()) * (health == Health.OVERLOADED ? .75 : .90));
-            rule = "capacity=min(baseline throughput,recent throughput); factor=" + (health == Health.OVERLOADED ? .75 : .90);
-        } else if (health == Health.HEALTHY && state.healthy >= settings.recoveryWindows()) {
-            candidate = Math.min(Math.min(policy.healthyBucketTarget(), baseline), policy.bucketRate() + baseline * .05);
-            rule = "Healthy recovery: add 5% of baseline throughput, capped at Healthy target and baseline";
-        }
-        if (rule != null && candidate != policy.bucketRate() && cooldown(window.service(), Action.LEAKY_BUCKET, window.source())) {
-            if (candidate <= 0 || Math.abs(candidate / policy.bucketRate() - 1) > settings.maximumRateChange()) {
-                evidence.add("Leaky Bucket candidate blocked by configured change/positive-rate limits"); return;
-            }
-            changes.add(offer(window.service(), Action.LEAKY_BUCKET, window.source(), policy, policy.bucketRate(), candidate,
-                    "requests/second", window.end(), Map.of("baselineThroughput", baseline, "recentThroughput", window.successfulThroughput()), rule, evidence));
-        } else if (rule == null && health == Health.HEALTHY) workflow.withdraw(window.service(), Action.LEAKY_BUCKET, window.source(), "Waiting for stable Healthy recovery");
+    // ---------------------------------------------------------------- rate v2 ----------------------------------------------------------------
+
+    private AdaptiveConfig.RateSettings rate = AdaptiveConfig.RateSettings.defaults();
+    private AdaptiveConfig.RetrySettings retrySettings = AdaptiveConfig.RetrySettings.defaults();
+    private AdaptiveConfig.BaselineSettings baselineSettings = AdaptiveConfig.BaselineSettings.defaults();
+    private AdaptiveConfig.AutoSettings autoSettings = AdaptiveConfig.AutoSettings.defaults();
+    private final Map<String, RateState> rates = new ConcurrentHashMap<>();
+
+    @Autowired(required = false)
+    public void configureRate(AdaptiveConfig.RateSettings rate, AdaptiveConfig.RetrySettings retry, AdaptiveConfig.BaselineSettings baseline,
+            AdaptiveConfig.AutoSettings auto) {
+        if (rate != null) this.rate = rate;
+        if (retry != null) this.retrySettings = retry;
+        if (baseline != null) this.baselineSettings = baseline;
+        if (auto != null) this.autoSettings = auto;
     }
+    RateState rateState(String service, Source source) { return rates.computeIfAbsent(key(service, source), ignored -> new RateState()); }
+
+    /** Latest rate decision per service, for the evidence. */
+    record RateDecision(RateDiagnosis.Result result, Double rate, Double proposed, String kind, String rule, Map<String, Double> inputs) {}
+
+    /**
+     * Leaky-bucket rate v2 (guide §4): separates waiting in our own queue from a slow app. RATE_TOO_LOW → raise toward demand
+     * plus headroom; APP_OVERLOADED → cut once, never below the floor, and a second cut only if the previous one helped
+     * (anti-ratchet); HEALTHY → move slowly toward demand plus headroom; WATCH and UNKNOWN → hold.
+     */
+    private void bucket(ServiceWindow window, ServiceLoadSnapshot load, Policy policy, boolean errorsHigh, List<String> evidence, List<PolicyChange> changes) {
+        String service = window.service(); Source source = window.source(); Instant now = clock.instant();
+        if (!number(policy.bucketRate()) || policy.bucketRate() <= 0) { evidence.add("Leaky Bucket waits for the current rate"); return; }
+        RateState rs = rateState(service, source);
+        double current = policy.bucketRate();
+        if (rs.healthyRate == null) rs.healthyRate = number(policy.healthyBucketTarget()) && policy.healthyBucketTarget() > 0 ? policy.healthyBucketTarget() : current;
+        if (rs.goodRate == null) rs.goodRate = rs.healthyRate;
+        double seconds = settings.window().toSeconds();
+        Double queuePct = load == null ? null : load.queuePressurePercent(), depth = load == null ? null : load.queueDepth();
+        Double rejected = load == null ? null : load.overloadRejections() != null || load.backpressureRejections() != null
+                ? Math.max(load.overloadRejections() == null ? 0 : load.overloadRejections(), load.backpressureRejections() == null ? 0 : load.backpressureRejections())
+                : window.rejections();
+        Double shed = rejected == null ? null : rejected / seconds;
+        double accepted = window.successfulThroughput();
+        Double p0 = rs.p0(settings.baselineSamples());
+        var result = RateDiagnosis.diagnose(new RateDiagnosis.Inputs(current, queuePct, depth, window.p95Ms(), accepted, shed, p0, errorsHigh), rate);
+        // Learn the app-time baseline after diagnosing, so this window is judged against the past only.
+        boolean clean = queuePct != null && queuePct < rate.queueLowPercent() && shed != null && shed == 0;
+        rs.learnApp(result.appMs(), clean, shed != null && shed > 0, !errorsHigh, baselineSettings.allowShedWindows(),
+                queuePct != null && queuePct >= rate.queueHighPercent(), settings.baselineSamples());
+        int streak = rs.observe(result.diagnosis());
+        double retryRatio = number(policy.retryRatio()) ? policy.retryRatio() : 0;
+        double demand = (accepted + (shed == null ? 0 : shed)) * (1 + retryRatio);
+        double maxDemand = rs.maxDemand(demand, 3);
+        double floor = RateDiagnosis.floor(rs.goodRate, rate), ceiling = RateDiagnosis.ceiling(rs.brokeAt(now), rate);
+        Instant lastApplied = workflow.lastApplied(service, Action.LEAKY_BUCKET, source);
+        boolean stable = lastApplied == null || Duration.between(lastApplied, now).compareTo(rate.stabilisation()) >= 0;
+        var inputs = new LinkedHashMap<String, Double>();
+        put(inputs, "queuePercent", queuePct); put(inputs, "queueDepth", depth); put(inputs, "queueWaitMs", result.queueWaitMs());
+        put(inputs, "appMs", result.appMs()); put(inputs, "p0Ms", p0); put(inputs, "p95Ms", window.p95Ms());
+        put(inputs, "acceptedPerSecond", accepted); put(inputs, "shedPerSecond", shed); put(inputs, "demandPerSecond", demand);
+        put(inputs, "maxDemandPerSecond", maxDemand); put(inputs, "floor", floor); put(inputs, "ceiling", ceiling);
+        put(inputs, "goodRate", rs.goodRate); put(inputs, "healthyRate", rs.healthyRate); put(inputs, "brokeAt", rs.brokeAt);
+        inputs.put("errorsHigh", errorsHigh ? 1.0 : 0.0); inputs.put("persistentCycles", (double) streak);
+        evidence.add("Rate v2: " + result.diagnosis() + " (" + result.reason() + ")");
+
+        Double proposed = null; String kind = null, rule = null;
+        boolean persistent = streak >= settings.persistence();
+        boolean cooldownOk = cooldown(service, Action.LEAKY_BUCKET, source);
+        if (!cooldownOk) {
+            // Decide nothing (and change no state) until the cooldown after the last applied rate change has passed.
+            evidence.add("Rate v2: waiting for the cooldown after the last applied rate change");
+        } else switch (result.diagnosis()) {
+            case APP_OVERLOADED -> {
+                if (!persistent) break;
+                var last = rs.lastCut;
+                if (last != null && Math.abs(current - last.toRate()) < 1e-9) {
+                    // Anti-ratchet: a second cut only if the previous cut made the app time fall by ≥ 20% or back to normal.
+                    boolean helped = result.appMs() <= (1 - rate.minImprovement()) * last.appBefore() || result.appMs() <= rate.appTolerance() * p0;
+                    if (!helped) {
+                        proposed = last.fromRate(); kind = AdaptiveConfig.AutoKind.BUCKET_RAISE.name();
+                        rule = String.format(Locale.ROOT, "Anti-ratchet: the previous cut %s → %s did not help the app (%.0f → %.0f ms); undo it and hold, the rate was not the problem",
+                                fmt(last.fromRate()), fmt(last.toRate()), last.appBefore(), result.appMs());
+                        rs.lastCut = null; rs.antiRatchetHold = true;
+                        break;
+                    }
+                }
+                if (rs.antiRatchetHold) { evidence.add("Rate v2: holding after an anti-ratchet undo (the rate was not the problem)"); break; }
+                double cut = Math.max(RateDiagnosis.cut(current, accepted, floor, rate), RateDiagnosis.round(current * (1 - settings.maximumRateChange())));
+                if (cut < current) {
+                    proposed = cut; kind = AdaptiveConfig.AutoKind.BUCKET_CUT.name();
+                    rule = String.format(Locale.ROOT, "APP_OVERLOADED: cut max(floor %s, %.1f × min(rate %s, accepted %.1f req/s))", fmt(floor), rate.cutFactor(), fmt(current), accepted);
+                }
+            }
+            case RATE_TOO_LOW -> {
+                rs.antiRatchetHold = false;
+                if (!persistent) break;
+                double up = RateDiagnosis.raise(current, demand, rs.goodRate, ceiling, rate);
+                if (up > current) {
+                    proposed = up; kind = AdaptiveConfig.AutoKind.BUCKET_RAISE.name();
+                    rule = String.format(Locale.ROOT, "RATE_TOO_LOW: the bucket is the bottleneck; raise toward max(rate + %.1f, demand %.1f × %.2f), at most +%.0f%% per step, ceiling %s",
+                            rate.stepFraction() * rs.goodRate, demand, 1 + rate.headroom(), 100 * rate.maxRaise(), fmt(ceiling));
+                }
+            }
+            case HEALTHY -> {
+                rs.antiRatchetHold = false;
+                if (rs.healthyStreak < settings.recoveryWindows()) break;
+                rs.goodRate = current; // a persistently healthy rate is good
+                double target = RateDiagnosis.healthyTarget(maxDemand, floor, ceiling, rate);
+                if (current > 2 * target) { if (rs.relaxSince == null) rs.relaxSince = now; } else rs.relaxSince = null;
+                boolean relax = rs.relaxSince != null && Duration.between(rs.relaxSince, now).compareTo(rate.relaxAfter()) >= 0;
+                if (!stable) break;
+                double next = RateDiagnosis.healthyStep(current, target, rs.goodRate, relax, rate);
+                if (next != current) {
+                    proposed = next;
+                    // Raising toward demand is safe to automate; relaxing a generous rate downward is left to a human.
+                    kind = next > current ? AdaptiveConfig.AutoKind.BUCKET_RAISE.name() : null;
+                    rule = String.format(Locale.ROOT, "HEALTHY: move toward max demand of the last 3 windows %.1f × %.2f = %s (floor %s, ceiling %s)%s",
+                            maxDemand, 1 + rate.headroom(), fmt(target), fmt(floor), fmt(ceiling), next < current ? "; the rate stayed above 2 × target for " + rate.relaxAfter().toMinutes() + " min" : "");
+                }
+            }
+            default -> { /* WATCH and UNKNOWN: hold */ }
+        }
+        if (proposed != null) {
+            var measurements = new HashMap<String, Double>(inputs);
+            var change = offer(service, Action.LEAKY_BUCKET, source, policy, current, proposed, "requests/second", window.end(), measurements, rule, evidence);
+            changes.add(change);
+            if (AdaptiveConfig.AutoKind.BUCKET_CUT.name().equals(kind) && !change.proposal().id().equals(rs.lastProposalId)) {
+                rs.rememberBrokeAt(current, now, rate.brokeAtMemory());
+                rs.lastCut = new RateState.Cut(current, proposed, result.appMs() == null ? Double.NaN : result.appMs());
+            }
+            rs.lastProposalId = change.proposal().id(); rs.lastKind = kind;
+        } else if (result.diagnosis() == RateDiagnosis.Diagnosis.HEALTHY || result.diagnosis() == RateDiagnosis.Diagnosis.WATCH) {
+            workflow.withdraw(service, Action.LEAKY_BUCKET, source, "Rate v2: " + result.diagnosis() + ", no rate change supported");
+        }
+        rs.lastDecision = new RateDecision(result, current, proposed, kind, rule, Map.copyOf(inputs));
+        rs.lastAppMs = result.appMs(); rs.lastShed = shed;
+    }
+    private static String fmt(double v) { return v == Math.rint(v) ? String.valueOf((long) v) : String.format(Locale.ROOT, "%.1f", v); }
 
     private void retry(ServiceWindow window, State state, Policy policy, Health health, boolean persistent,
                        List<String> evidence, List<PolicyChange> changes) {
