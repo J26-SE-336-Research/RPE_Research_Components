@@ -248,11 +248,15 @@ type chainResult struct {
 	Error  string            `json:"error,omitempty"`
 }
 
-func (h *hub) runChain(ctx context.Context, path string) chainResult {
+func (h *hub) runChain(ctx context.Context, method, path string) chainResult {
 	if path == "" || !strings.HasPrefix(path, "/") {
 		path = "/api/orders"
 	}
-	code, hdr, body, d, err := h.call(ctx, http.MethodGet, h.cfg.gatewayURL+path, nil)
+	// the gateway routes differ by method (GET /api/orders and POST /api/orders have their own budgets)
+	if method != http.MethodPost {
+		method = http.MethodGet
+	}
+	code, hdr, body, d, err := h.call(ctx, method, h.cfg.gatewayURL+path, nil)
 	res := chainResult{Status: code, Ms: d.Milliseconds(), Hops: []Hop{}}
 	if err != nil {
 		res.Error = err.Error()
@@ -269,9 +273,9 @@ func (h *hub) runChain(ctx context.Context, path string) chainResult {
 }
 
 func (h *hub) chain(w http.ResponseWriter, r *http.Request) {
-	var in struct{ Path string }
+	var in struct{ Method, Path string }
 	_ = decode(r, &in)
-	writeJSON(w, 200, h.runChain(r.Context(), in.Path))
+	writeJSON(w, 200, h.runChain(r.Context(), strings.ToUpper(in.Method), in.Path))
 }
 
 // ---------- Scenario Lab ----------

@@ -67,11 +67,11 @@ gateway_policy
 assert_eq "${GW_ORDERS_BUDGET}" 1100 "the chain deadline survives a retry-ratio rollout"
 
 # --- 5. a new chain deadline version replaces the old one on the gateway only -----------------------------------
-r=$(deliver "{\"control\":\"chain-deadline\",\"route\":\"GET /api/orders\",\"deadlineMs\":1000,\"policyId\":\"${gw_id}\",\"rollout\":\"two-phase\"}")
+r=$(deliver "{\"control\":\"chain-deadline\",\"route\":\"GET /api/orders\",\"deadlineMs\":300,\"policyId\":\"${gw_id}\",\"rollout\":\"two-phase\"}")
 assert_eq "$(wait_settled "${r}")" Complete "chain deadline ${gw_id}-v2 is delivered"
 gateway_policy
 assert_eq "${GW_EPOCH}" "${gw_id}-v2" "the gateway enforces the new version"
-assert_eq "${GW_ORDERS_BUDGET}" 1000 "the gateway stamps the new budget (back to the default)"
+assert_eq "${GW_ORDERS_BUDGET}" 300 "the gateway stamps the new budget (back to the default)"
 assert_eq "$(proxy_holds gateway "${gw_id}-v1" active)" 0 "the replaced chain deadline is retired from the gateway"
 assert_ge "$(proxy_holds payment-svc "${pay_id}-v2" active)" 1 "payment-svc keeps its own policy"
 

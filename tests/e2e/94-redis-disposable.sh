@@ -23,7 +23,7 @@ wait_effective() { for _ in $(seq 1 60); do [[ "$(effective_epoch "$1")" == "$2"
 
 # --- 1. two services with an effective policy -------------------------------------------------------------------------
 assert_eq "$(deliver "{\"control\":\"rate-limit\",\"service\":\"payment-svc\",\"ratePerSec\":110,\"policyId\":\"${pay_id}\",\"rollout\":\"two-phase\"}")" Complete "rate limit ${pay_id}-v1 is delivered"
-assert_eq "$(deliver "{\"control\":\"chain-deadline\",\"route\":\"GET /api/orders\",\"deadlineMs\":1000,\"policyId\":\"${gw_id}\",\"rollout\":\"two-phase\"}")" Complete "chain deadline ${gw_id}-v1 is delivered"
+assert_eq "$(deliver "{\"control\":\"chain-deadline\",\"route\":\"GET /api/orders\",\"deadlineMs\":300,\"policyId\":\"${gw_id}\",\"rollout\":\"two-phase\"}")" Complete "chain deadline ${gw_id}-v1 is delivered"
 pay_epoch=$(effective_epoch payment-svc); gw_epoch=$(effective_epoch gateway)
 assert_eq "${pay_epoch}" "${pay_id}-v1" "Redis knows the effective policy of payment-svc"
 assert_eq "${gw_epoch}" "${gw_id}-v1" "Redis knows the effective policy of the gateway"

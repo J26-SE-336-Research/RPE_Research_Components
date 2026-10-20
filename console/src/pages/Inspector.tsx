@@ -4,11 +4,12 @@ import { TraceTable } from "../components/TraceTable";
 import { Alert, Button, Empty, Kpi, PageHeader, Panel, Status, httpTone } from "../components/ui";
 
 export function InspectorPage() {
+  const [method, setMethod] = useState<"GET" | "POST">("GET");
   const [path, setPath] = useState("/api/orders");
-  const [history, setHistory] = useState<{ at: Date; path: string; r: ChainResult }[]>([]);
+  const [history, setHistory] = useState<{ at: Date; method: string; path: string; r: ChainResult }[]>([]);
   const send = useAction(async () => {
-    const r = await api<ChainResult>("POST", "/chain", { path });
-    setHistory((h) => [{ at: new Date(), path, r }, ...h].slice(0, 10));
+    const r = await api<ChainResult>("POST", "/chain", { method, path });
+    setHistory((h) => [{ at: new Date(), method, path, r }, ...h].slice(0, 10));
     return r;
   });
   const r = send.result;
@@ -27,7 +28,10 @@ export function InspectorPage() {
               send.run();
             }}
           >
-            <span className="tag">GET</span>
+            <select value={method} onChange={(e) => setMethod(e.target.value as "GET" | "POST")} aria-label="Request method">
+              <option>GET</option>
+              <option>POST</option>
+            </select>
             <span className="muted mono">gateway.rpe-demo</span>
             <input className="grow mono" value={path} onChange={(e) => setPath(e.target.value)} aria-label="Request path" />
             <Button variant="primary" type="submit" busy={send.busy}>
@@ -67,7 +71,9 @@ export function InspectorPage() {
                 {history.map((h, i) => (
                   <tr key={i}>
                     <td className="muted">{h.at.toLocaleTimeString()}</td>
-                    <td className="mono">{h.path}</td>
+                    <td className="mono">
+                      {h.method} {h.path}
+                    </td>
                     <td>
                       <Status tone={httpTone(h.r.status)}>{h.r.status}</Status>
                     </td>

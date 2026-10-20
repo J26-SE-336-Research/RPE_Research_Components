@@ -6,7 +6,7 @@ source "$(dirname "$0")/lib.sh"
 reset_demo
 fault payment-svc '{"latencyMs":1500}'
 client GET "${GW}/api/orders"
-assert_eq "${CODE}" 200 "slow payment exceeds the 1000 ms budget: the request is still served (no 504)"
+assert_eq "${CODE}" 200 "slow payment exceeds the 300 ms budget: the request is still served (no 504)"
 assert_contains "$(header X-RPE-Result)" "cs=expired" "the late chain carries the cancellation signal upstream (cs=expired)"
 assert_ge "${MS}" 1500 "the slow work was not cut off at the deadline (${MS} ms)"
 sleep 1

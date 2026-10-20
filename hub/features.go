@@ -124,7 +124,7 @@ func (h *hub) demoDeadline(w http.ResponseWriter, r *http.Request) {
 	// what changed during this demo (counter deltas).
 	time.Sleep(500 * time.Millisecond)
 	payBefore, invBefore := h.counters(r, "payment-svc"), h.counters(r, "inventory-svc")
-	res := h.runChain(r.Context(), "/api/orders")
+	res := h.runChain(r.Context(), http.MethodGet, "/api/orders")
 	time.Sleep(300 * time.Millisecond) // let the counters settle
 	pay, inv := delta(h.counters(r, "payment-svc"), payBefore), delta(h.counters(r, "inventory-svc"), invBefore)
 	_, _, _, _, _ = h.call(r.Context(), http.MethodPost, svcURL("payment-svc", "/admin/faults"), map[string]any{})
@@ -141,7 +141,7 @@ func (h *hub) demoFanout(w http.ResponseWriter, r *http.Request) {
 	}
 	h.resetAllServices(r.Context())
 	_, _, _, _, _ = h.call(r.Context(), http.MethodPost, svcURL(in.Failing, "/admin/faults"), map[string]any{"errorRate": 1.0})
-	res := h.runChain(r.Context(), "/api/orders")
+	res := h.runChain(r.Context(), http.MethodGet, "/api/orders")
 	_, _, _, _, _ = h.call(r.Context(), http.MethodPost, svcURL(in.Failing, "/admin/faults"), map[string]any{})
 	writeJSON(w, 200, map[string]any{"failing": in.Failing, "chain": res})
 }

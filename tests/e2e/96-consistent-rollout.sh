@@ -13,8 +13,8 @@
 source "$(dirname "$0")/lib.sh"
 hub_login admin >/dev/null
 pol=chain-orders
-# leave the baseline in place for the suites that follow
-trap 'hub POST /api/hub/policies "{\"policyId\":\"${pol}\",\"rollout\":\"two-phase\",\"changes\":[{\"control\":\"chain-deadline\",\"route\":\"GET /api/orders\",\"deadlineMs\":1000},{\"control\":\"rate-limit\",\"service\":\"payment-svc\",\"ratePerSec\":100}]}" >/dev/null 2>&1' EXIT
+# afterwards, restore the default route deadline (300 ms) and payment's rate for the suites that follow
+trap 'hub POST /api/hub/policies "{\"policyId\":\"${pol}\",\"rollout\":\"two-phase\",\"changes\":[{\"control\":\"chain-deadline\",\"route\":\"GET /api/orders\",\"deadlineMs\":300},{\"control\":\"rate-limit\",\"service\":\"payment-svc\",\"ratePerSec\":100}]}" >/dev/null 2>&1' EXIT
 
 # --- 1. consistent (two-phase) --------------------------------------------------------------------------------------
 consistency_run '{"mode":"two-phase"}' || bad "the two-phase run did not finish"

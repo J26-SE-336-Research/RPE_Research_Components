@@ -124,7 +124,7 @@ out=$(psqlc -c "update intel.audit set actor='someone-else' where proposal_id='$
 assert_contains "${out}" "append-only" "the audit table is append-only"
 
 # ---------- restore ----------
-hub POST /api/hub/policies "{\"policyId\":\"${gw_policy}\",\"service\":\"gateway\",\"route\":\"GET /api/orders\",\"deadlineMs\":1000,\"retryBudget\":3,\"retryRatio\":0.1,\"ratePerSec\":100,\"rollout\":\"two-phase\"}"
-wait_for 90 "the gateway deadline to be restored" gw_budget_is 1000
-assert_eq "${GW_ORDERS_BUDGET}" 1000 "restored the 1000 ms route deadline"
+hub POST /api/hub/policies "{\"policyId\":\"${gw_policy}\",\"service\":\"gateway\",\"route\":\"GET /api/orders\",\"deadlineMs\":300,\"retryBudget\":3,\"retryRatio\":0.1,\"ratePerSec\":100,\"rollout\":\"two-phase\"}"
+wait_for 90 "the gateway deadline to be restored" gw_budget_is 300
+assert_eq "${GW_ORDERS_BUDGET}" 300 "restored the 300 ms route deadline"
 finish

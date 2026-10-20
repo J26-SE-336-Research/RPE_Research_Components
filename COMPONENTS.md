@@ -311,11 +311,11 @@ Pages show only what is built. New capabilities are added as real pages or secti
 ### A request today (verified by the e2e tests)
 
 1. A client calls `gateway:8080/api/orders`. iptables (set up by `rpe-init`) redirects the call into the gateway's **sidecar** (C2) on 15006, which forwards it to the app over loopback.
-2. The gateway app's **C1 middleware** creates a fresh root context: `bud=1000` for this route, `rb=3`, policy epoch `pe=e0`, and a new `rid` bound to the W3C trace id.
+2. The gateway app's **C1 middleware** creates a fresh root context: `bud=300` for this route (`POST /api/orders` gets 500 ms), `rb=3`, policy epoch `pe=e0`, and a new `rid` bound to the W3C trace id.
 3. The gateway calls `order-svc`. The **C1 transport** derives the child context: new `iid`, `pid` set to the gateway's `iid`, `ttl` reduced by the elapsed time. The call is redirected into the gateway sidecar's outbound port 15001, which forwards it over a pooled connection.
 4. `order-svc` fans out in parallel to inventory, payment, loyalty and legacy. The retry budget is **split, not copied** (3 → 1/1/1/0).
 5. `legacy-svc` has a sidecar like every other service, so `shipping-svc` behind it receives the context too.
-6. If payment is slow and the 1000 ms budget runs out:
+6. If payment is slow and the 300 ms budget runs out:
    - payment notices that its own request context expired and **abandons before committing** (no card charged);
    - order's transport turns the timeout into a **terminal** 504 (`term=?1`);
    - the client gets the answer at about 1000 ms;
@@ -540,7 +540,7 @@ A change counts as **done** only when `make test-unit` and `make test-e2e` both 
 | `PORT` | `8080` | Listen port |
 | `ROLE` | `service` | `gateway` creates the root context |
 | `RPE_ENABLED` | `true` | `false` = a non-RPE service (no context handling) |
-| `ROUTE_BUDGETS` | none | Gateway budgets, e.g. `GET /api/orders=1000;POST /api/orders=2000` |
+| `ROUTE_BUDGETS` | none | Gateway budgets, e.g. `GET /api/orders=300;POST /api/orders=500` |
 | `DEFAULT_BUDGET_MS` | `1000` | Gateway budget for unmatched routes |
 | `RETRY_BUDGET` | `3` | Root retry budget |
 | `POLICY_EPOCH` | none | Epoch stamped by the gateway |

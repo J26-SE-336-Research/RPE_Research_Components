@@ -18,7 +18,7 @@ spec:
         resilience.rpe.dev/role: gateway
         # the gateway sidecar starts every chain with these budgets (same as ROUTE_BUDGETS of the app below);
         # the active Component 3 policy overrides them per route
-        resilience.rpe.dev/route-deadlines: "GET /api/orders=1000;POST /api/orders=2000"
+        resilience.rpe.dev/route-deadlines: "GET /api/orders=300;POST /api/orders=500"
     spec:
       containers:
         - name: app
@@ -28,7 +28,7 @@ spec:
           env:
             - {name: SERVICE_NAME, value: gateway}
             - {name: ROLE, value: gateway}
-            - {name: ROUTE_BUDGETS, value: "GET /api/orders=1000;POST /api/orders=2000"}
+            - {name: ROUTE_BUDGETS, value: "GET /api/orders=300;POST /api/orders=500"}
             - {name: DEFAULT_BUDGET_MS, value: "1000"}
             - {name: RETRY_BUDGET, value: "3"}
             - {name: POLICY_EPOCH, value: "e0"}

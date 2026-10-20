@@ -57,14 +57,14 @@ traffic_pause() {
 }
 traffic_resume() { k -n rpe-e2e scale deploy/rpe-traffic --replicas=1 >/dev/null 2>&1 || true; }
 reset_demo() { traffic_pause; for s in "${RPE_SERVICES[@]}"; do client POST "http://${s}.rpe-demo:8080/admin/reset" >/dev/null; done; }
-# gateway_policy -> sets GW_EPOCH and GW_ORDERS_BUDGET from the policy active on the gateway proxy (e0/1000 when none)
+# gateway_policy -> sets GW_EPOCH and GW_ORDERS_BUDGET from the policy active on the gateway proxy (e0/300 when none)
 gateway_policy() {
   client GET "http://$(pod_ip gateway):15020/rpe/v1/policy/active"
   if [[ "${CODE}" == 200 ]]; then
     GW_EPOCH=$(echo "${BODY}" | jq -r '.epoch')
-    GW_ORDERS_BUDGET=$(echo "${BODY}" | jq -r '.policy.routes["GET /api/orders"].deadlineMs // 1000')
+    GW_ORDERS_BUDGET=$(echo "${BODY}" | jq -r '.policy.routes["GET /api/orders"].deadlineMs // 300')
   else
-    GW_EPOCH=e0; GW_ORDERS_BUDGET=1000
+    GW_EPOCH=e0; GW_ORDERS_BUDGET=300
   fi
 }
 

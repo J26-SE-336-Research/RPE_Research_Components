@@ -20,7 +20,7 @@ assert_eq "$(field "$order" rid)" "$(field "$gw" rid)" "R-T01 rid is identical a
 assert_eq "$(field "$order" pid)" "$(field "$gw" iid)" "R-T06 order pid = gateway iid"
 assert_ne "$(field "$order" iid)" "$(field "$gw" iid)" "R-T06 order gets a fresh iid"
 assert_lt "$(field "$order" ttl)" "$(( $(field "$gw" ttl) + 1 ))" "R-T02 ttl never increases (gateway -> order)"
-assert_eq "$(field "$order" bud)" 1000 "R-T01 bud is immutable"
+assert_eq "$(field "$order" bud)" "${GW_ORDERS_BUDGET}" "R-T01 bud is immutable"
 assert_eq "$(field "$inv" pid)" "$(field "$order" iid)" "inventory pid = order iid"
 assert_lt "$(field "$inv" ttl)" "$(( $(field "$order" ttl) + 1 ))" "R-T02 ttl never increases (order -> inventory)"
 rb_sum=$(( $(field "$inv" rb) + $(field "$pay" rb) ))
@@ -29,7 +29,7 @@ assert_eq "$(field "$legacy_ship" rid)" "$(field "$gw" rid)" "context reaches sh
 assert_contains "$(header X-RPE-Result)" "out=ok" "gateway response carries X-RPE-Result"
 
 client GET "${GW}/api/orders" "" -H 'X-RPE-Context: v=1, rid="4bf92f3577b34da6a3ce929d0e0e4736", iid="00f067aa0ba902b7", pid="0000000000000000", ttl=99999, bud=99999, rb=99, cs=none, rt="GET /api/orders"'
-assert_eq "$(field "$(echo "${BODY}" | jq -r .context)" bud)" 1000 "R-S01 client-supplied context is ignored at the gateway"
+assert_eq "$(field "$(echo "${BODY}" | jq -r .context)" bud)" "${GW_ORDERS_BUDGET}" "R-S01 client-supplied context is ignored at the gateway"
 
 client GET "http://order-svc.rpe-demo:8080/orders" "" -H 'X-RPE-Context: v=1, rid=nonsense'
 assert_eq "${CODE}" 400 "invalid context rejected by a service"

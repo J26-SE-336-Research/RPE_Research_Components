@@ -191,7 +191,7 @@ function ExperimentsTab() {
     <div className="stack">
       <Panel
         title="Slow dependency"
-        subtitle="Delays payment-svc beyond the route deadline (1000 ms), sends one request, then removes the fault."
+        subtitle="Delays payment-svc beyond the route deadline (300 ms), sends one request, then removes the fault."
         actions={
           <div className="row" style={{ alignItems: "flex-end" }}>
             <Field label="Payment delay (ms)">
