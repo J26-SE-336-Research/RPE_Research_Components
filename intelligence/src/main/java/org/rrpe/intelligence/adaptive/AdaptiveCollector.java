@@ -42,10 +42,12 @@ public class AdaptiveCollector {
         if (!connections.collect()) return;
         Instant end = clock.instant().minus(evaluationDelay).truncatedTo(java.time.temporal.ChronoUnit.SECONDS);
         Map<String, Health> health = new HashMap<>(); var errors = new ArrayList<String>(); var guardResults = new ArrayList<Assessment>();
+        var loads = new HashMap<String, ServiceLoadSnapshot>();
         for (String service : connections.services()) {
             var data = prometheus.collect(service, end); latest.put(service, data);
             engine.service(data.window()); // Full service analysis can wait for retries/rejections independently.
             var guard = deadlineHealth.observe(data); guardResults.add(guard); health.put(service, guard.health());
+            loads.put(service, prometheus.collectLoad(service, end)); // deadline v2 load signals; never blocks
             if (Thread.currentThread().isInterrupted()) return;
         }
         guards = List.copyOf(guardResults);
@@ -57,6 +59,8 @@ public class AdaptiveCollector {
                         && !workflow.observeConfiguredDeadline(chain.chain(), measurement.currentDeadlineMs(), end)) {
                     errors.add(chain.chain() + ": observed configuration conflicts with a confirmed applied policy");
                     workflow.withdraw(chain.chain(), Action.CHAIN_DEADLINE, Source.TEMPO, "Current deadline configuration conflict");
+                    engine.configurationConflict(chain.chain(), Source.TEMPO, "CONFIGURATION_CONFLICT: the stamped budget " + Math.round(measurement.currentDeadlineMs())
+                            + " ms differs from the last approved policy");
                     continue;
                 }
                 var evidence = new ArrayList<String>();
@@ -71,7 +75,12 @@ public class AdaptiveCollector {
                 measurements.put("observedPathCount", (double) measurement.paths().size());
                 evidence.add("One deadline policy for method + route; p99 pools complete gateway durations across observed paths");
                 for (var path : measurement.paths()) evidence.add("Observed path (" + path.traceCount() + " complete traces): " + String.join(" > ", path.services()));
-                engine.chain(chain, measurements, evidence);
+                // Hops without a sidecar have no metrics: reported, ignored when labelling requests.
+                var unmonitored = new HashSet<String>();
+                for (String service : chain.services()) if (!service.equals(connections.gatewayService()) && !connections.services().contains(service)) unmonitored.add(service);
+                var samples = measurement.samples() == null ? new ChainSamples(List.of(), Map.of()) : measurement.samples();
+                if (!samples.excluded().isEmpty()) evidence.add("Excluded from deadline timing: " + samples.excluded());
+                engine.chain(chain, new ChainEvidence(samples, loads, health, unmonitored), measurements, evidence);
             }
         }
         catch (RuntimeException exception) {

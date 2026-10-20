@@ -52,6 +52,10 @@ data:
             target_label: namespace
           - source_labels: [__meta_kubernetes_pod_name]
             target_label: pod
+      # C3 Operator: coverage ratio, drift repairs, rollout convergence and mixed-policy requests
+      - job_name: rpe-operator
+        static_configs:
+          - targets: ["rpe-policy-api.rpe-system:8081"]
 ---
 apiVersion: apps/v1
 kind: Deployment

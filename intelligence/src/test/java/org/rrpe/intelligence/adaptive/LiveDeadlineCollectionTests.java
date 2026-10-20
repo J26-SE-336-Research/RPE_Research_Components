@@ -14,9 +14,12 @@ class LiveDeadlineCollectionTests {
     private final AdaptiveConfig.Connections connections = new AdaptiveConfig.Connections(true, "http://localhost:9090", "http://localhost:3200",
             "default", List.of("api-gateway", "order-service"), "api-gateway", Duration.ofSeconds(1), Duration.ofSeconds(15), Duration.ofSeconds(30), 5000, "", "", Map.of());
     private class ExistingTelemetry extends TelemetryHttp {
-        double duration = 1000; double failures; boolean mixedBudgets;
+        // v2: intended behaviour change (see DEADLINE_V2_MIGRATION.md) - v2 counts duration >= budget as an exceedance, so a healthy chain takes 900 ms (was 1000 = the budget)
+        double duration = 900; double failures; boolean mixedBudgets;
         ExistingTelemetry() { super(connections); }
         public Double prometheus(String query, Instant end) {
+            // deadline v2 load signals (backpressure, breaker, cAdvisor) are not exported by this telemetry: unavailable
+            if (query.contains("rpe_backpressure") || query.contains("rpe_circuit_breaker") || query.contains("container_") || query.contains("reason=\"overload\"")) return null;
             // retries and proxy rejections are not reported yet: full service classification must wait for them
             if (query.contains("rpe_original_requests_total") || query.contains("rpe_retries_total") || query.contains("rpe_rejections_total")) return null;
             if (query.contains("rpe_chain_deadline_exceeded_total")) return failures;
@@ -53,9 +56,11 @@ class LiveDeadlineCollectionTests {
                 """.formatted(start, end, budget, start + 100_000_000, end - 50_000_000, start + 150_000_000, end - 100_000_000));
         }
     }
+    // v2: intended behaviour change (see DEADLINE_V2_MIGRATION.md) - persistence counts disjoint windows; the censored healthy time gives Case A ×1.5
     @Test void existingComponent2TelemetryProducesAnApprovalWithoutManualPolicyOrRetryMetrics() {
         var http = new ExistingTelemetry(); var workflow = new PolicyWorkflow(connections, settings, clock);
         var engine = new AdaptiveEngine(settings, workflow, clock); var prometheus = new PrometheusWindows(http, connections, settings);
+        engine.configureDeadline(AdaptiveConfig.DeadlineSettings.demo(), null, null);
         var tempo = new TempoWindows(http, connections, settings);
         var collector = new AdaptiveCollector(connections, engine, prometheus, tempo, new DeadlineHealth(settings, connections, clock), workflow, clock);
         for (int i = 0; i < 9; i++) { collector.collect(); clock.next(60); }
@@ -63,11 +68,12 @@ class LiveDeadlineCollectionTests {
         assertEquals(1000, workflow.current(target, Source.TEMPO).deadlineMs());
         assertTrue(engine.assessments().stream().filter(a -> a.source() == Source.PROMETHEUS).allMatch(a -> a.health() == Health.INSUFFICIENT_DATA),
                 "Full service classification remains incomplete without retries, independently of deadlines");
-        clock.next(300); http.duration = 1200; http.failures = 20;
-        collector.collect(); assertTrue(workflow.list().isEmpty(), "First failing cycle alone cannot recommend a deadline");
-        clock.next(60); collector.collect();
+        clock.next(300); http.duration = 1200; http.failures = 100;
+        collector.collect(); assertTrue(workflow.list().isEmpty(), "First failing counted window alone cannot recommend a deadline");
+        clock.next(60); collector.collect(); assertTrue(workflow.list().isEmpty(), "An overlapping window is not a second counted window");
+        clock.next(240); collector.collect();
         var proposed = workflow.list().get(0);
-        assertEquals(1440, proposed.proposal().proposedValue());
+        assertEquals(1500, proposed.proposal().proposedValue());
         assertEquals(Decision.PENDING_APPROVAL, proposed.decision());
         assertEquals(100, proposed.proposal().measurements().get("completeTraceCount"));
         assertEquals(100, proposed.proposal().measurements().get("prometheusRequestCount"));

@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math/rand/v2"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -15,13 +17,29 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// target is one proxy that must receive a policy.
+// target is one proxy that must receive a policy; Part is the service whose part of the policy it receives.
 type target struct {
-	Pod, Service, Role, IP string
+	Pod, Service, Role, IP, Part string
 }
 
-// resolveTargets returns the proxies a policy for `service` must reach: every ready proxy of the
-// service, plus the gateway proxies (they stamp the policy epoch into new requests at the ingress).
+// serviceOf is the RPE service name of a pod, in the webhook's order: annotation, label app, app.kubernetes.io/name.
+func serviceOf(p corev1.Pod) string {
+	for _, v := range []string{p.Annotations["resilience.rpe.dev/service"], p.Labels["app"], p.Labels["app.kubernetes.io/name"]} {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// gatewayService is the RPE service name of the API gateway. A policy scoped to it (the chain deadline, which only
+// the gateway applies) reaches the gateway proxies; a policy scoped to any other service reaches only that
+// service's proxies. The gateway is never a target of a service-scoped policy: activating one on the gateway
+// would replace the chain deadlines it enforces.
+var gatewayService = env("GATEWAY_SERVICE", "gateway")
+
+// resolveTargets returns the proxies a policy for `service` must reach: the ready proxies of that service (the
+// gateway proxies when the policy is scoped to the gateway), and nothing else.
 func resolveTargets(ctx context.Context, r client.Reader, ns, service string) ([]target, error) {
 	var pods corev1.PodList
 	if err := r.List(ctx, &pods, client.InNamespace(ns)); err != nil {
@@ -36,13 +54,48 @@ func resolveTargets(ctx context.Context, r client.Reader, ns, service string) ([
 		if p.Annotations["resilience.rpe.dev/role"] == "gateway" {
 			role = "gateway"
 		}
-		if p.Labels["app"] == service || role == "gateway" {
-			out = append(out, target{Pod: p.Name, Service: p.Labels["app"], Role: role, IP: p.Status.PodIP})
+		svc := serviceOf(p)
+		if svc == service || (role == "gateway" && service == gatewayService) {
+			out = append(out, target{Pod: p.Name, Service: svc, Role: role, IP: p.Status.PodIP, Part: service})
 		}
 	}
-	// gateways first: the two-phase flip happens at the ingress
+	// gateways first (only present for a gateway-scoped policy)
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Role == "gateway" && out[j].Role != "gateway" })
 	return out, nil
+}
+
+// resolveAll returns the proxies of every scope of a rollout (the parts of a joint policy), each with the part it
+// receives. A proxy is listed once, for the first part that concerns it.
+func resolveAll(ctx context.Context, r client.Reader, ns string, scopes []string) ([]target, error) {
+	var out []target
+	seen := map[string]bool{}
+	for _, s := range scopes {
+		ts, err := resolveTargets(ctx, r, ns, s)
+		if err != nil {
+			return nil, err
+		}
+		for _, t := range ts {
+			if !seen[t.Pod] {
+				seen[t.Pod] = true
+				out = append(out, t)
+			}
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Role == "gateway" && out[j].Role != "gateway" })
+	return out, nil
+}
+
+func (r *RolloutReconciler) targets(ctx context.Context, ro *RPERollout) ([]target, error) {
+	return resolveAll(ctx, r.reader, r.demoNS, ro.Spec.scopes())
+}
+
+// partOf is the policy as the proxies of one service see it: the part for that service of a joint policy, or the
+// policy itself.
+func partOf(p Policy, service string) Policy {
+	if q, ok := p.forService(service); ok {
+		return q
+	}
+	return p
 }
 
 func hasSidecar(p corev1.Pod) bool {
@@ -54,19 +107,49 @@ func hasSidecar(p corev1.Pod) bool {
 	return false
 }
 
+// rolloutStore is the part of the PostgreSQL policy store the rollout state machine uses.
+type rolloutStore interface {
+	get(ctx context.Context, policyID string, version int) (Policy, error)
+	recordRollout(ctx context.Context, name string, spec RolloutSpec) error
+	updateRollout(ctx context.Context, name, state, message string, done bool) error
+	setStatus(ctx context.Context, policyID string, version int, status string) error
+	activate(ctx context.Context, policyID string, version int) error
+	recordDelivery(ctx context.Context, pod, service, epoch string, version int, hash, state, errMsg string) error
+	confirmations(ctx context.Context, epoch string) (map[string]confirmation, error)
+	recordMeasurements(ctx context.Context, name string, st RolloutStatus, skewMs int) error
+}
+
+// eventBus is the Redis fast path the state machine reports to.
+type eventBus interface {
+	emit(ctx context.Context, typ string, fields map[string]string)
+	ack(ctx context.Context, epoch, pod, state string)
+	setEffective(ctx context.Context, p Policy)
+}
+
 // RolloutReconciler drives an RPERollout through its phases.
 //
-// two-phase: Staging (every target holds the new epoch inactive) → Activating (gateways flip first, then
-// services) → Draining (in-flight requests on the previous epoch finish) → Complete (previous epoch retired).
-// naive: every target is switched to active at once (the comparison baseline, no consistency guarantee).
+// two-phase (per-request consistent): Staging (every target holds the new epoch inactive, verified by its content
+// hash) → Activating (gateways flip first and stamp the new epoch into new requests; then services) → Draining
+// (until no request pinned to the previous epoch is in flight on any target) → Complete (previous epoch retired).
+// Every proxy serves a request under the epoch the request carries, so one request never sees two versions.
+// A joint policy (parts for several services under one epoch) is activated in two steps: the loosening parts
+// first, then, once no request stamped with the previous version is in flight any more, the tightening parts
+// (planJoint). A limit that is a property of the proxy (the leaky-bucket rate) cannot be chosen per request, so this
+// order is what keeps a request of the old version from meeting a tightened limit.
+// naive: every target switches to the new version at once and drops the previous one, as a proxy holding a
+// single configuration does (the baseline). Requests in flight during the switch can see both versions.
+//
+// Rollouts run one at a time (the gateway stamps one epoch). The mixed-policy count is read from the proxies'
+// counters (relative to the start) during the rollout and once more after it settled.
 type RolloutReconciler struct {
 	client.Client
 	reader   client.Reader
-	store    *store
-	bus      *bus
+	store    rolloutStore
+	bus      eventBus
 	side     *sidecars
 	demoNS   string
-	drain    time.Duration
+	drain    time.Duration // longest wait for in-flight requests on the previous epoch
+	settle   time.Duration // wait after completion before the final mixed-policy count
 	attempts int
 }
 
@@ -75,8 +158,11 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if err := r.Get(ctx, req.NamespacedName, &ro); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-	if ro.Status.Phase == PhaseComplete || ro.Status.Phase == PhaseFailed {
+	switch {
+	case ro.Status.Phase == PhaseFailed || (ro.Status.Phase == PhaseComplete && ro.Status.Settled):
 		return ctrl.Result{}, nil
+	case ro.Status.Phase == PhaseComplete:
+		return r.settleRollout(ctx, &ro)
 	}
 	policy, err := r.store.get(ctx, ro.Spec.PolicyID, ro.Spec.Version)
 	if err != nil {
@@ -85,7 +171,7 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	var next time.Duration
 	switch ro.Status.Phase {
 	case "", PhasePending:
-		next, err = r.start(ctx, &ro)
+		next, err = r.start(ctx, &ro, policy)
 	case PhaseStaging:
 		next, err = r.stage(ctx, &ro, policy)
 	case PhaseActivating:
@@ -96,48 +182,99 @@ func (r *RolloutReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if err != nil {
 		return ctrl.Result{}, err
 	}
+	if ro.Status.MixedBaseline != nil {
+		r.refreshMixed(ctx, &ro)
+		r.refreshConfirmations(ctx, &ro, policy)
+	}
 	if uerr := r.Status().Update(ctx, &ro); uerr != nil {
 		if apierrors.IsConflict(uerr) {
 			return ctrl.Result{Requeue: true}, nil
 		}
 		return ctrl.Result{}, uerr
 	}
-	if ro.Status.Phase == PhaseComplete || ro.Status.Phase == PhaseFailed {
+	switch ro.Status.Phase {
+	case PhaseFailed:
 		return ctrl.Result{}, nil
+	case PhaseComplete:
+		return ctrl.Result{RequeueAfter: r.settle}, nil
 	}
 	return ctrl.Result{RequeueAfter: next}, nil
 }
 
-func (r *RolloutReconciler) start(ctx context.Context, ro *RPERollout) (time.Duration, error) {
-	targets, err := resolveTargets(ctx, r.reader, r.demoNS, ro.Spec.Service)
+// waitingFor returns the earlier rollout that has not finished (and settled) yet, if any.
+func (r *RolloutReconciler) waitingFor(ctx context.Context, ro *RPERollout) string {
+	var list RPERolloutList
+	if err := r.List(ctx, &list, client.InNamespace(ro.Namespace)); err != nil {
+		return ""
+	}
+	for _, o := range list.Items {
+		if o.Name == ro.Name || o.Status.Phase == PhaseFailed || (o.Status.Phase == PhaseComplete && o.Status.Settled) {
+			continue
+		}
+		if o.CreationTimestamp.Before(&ro.CreationTimestamp) ||
+			(o.CreationTimestamp.Equal(&ro.CreationTimestamp) && o.Name < ro.Name) {
+			return o.Name
+		}
+	}
+	return ""
+}
+
+func (r *RolloutReconciler) start(ctx context.Context, ro *RPERollout, p Policy) (time.Duration, error) {
+	if other := r.waitingFor(ctx, ro); other != "" {
+		ro.Status.Phase, ro.Status.Message = PhasePending, "waiting for rollout "+other+" to finish"
+		return time.Second, nil
+	}
+	targets, err := r.targets(ctx, ro)
 	if err != nil {
 		return 0, err
 	}
-	ro.Status.StartedAt = now()
+	ro.Status.StartedAt = nowNano()
 	ro.Status.TargetPods = len(targets)
 	ro.Status.Pods = nil
+	ro.Status.MixedBaseline = map[string]int64{}
+	ro.Status.Plan, ro.Status.Step = nil, 1
+	if p.joint() && ro.Spec.Mode != "naive" {
+		var prev *Policy
+		if v := versionOf(ro.Spec.PreviousEpoch); v > 0 {
+			if q, err := r.store.get(ctx, ro.Spec.PolicyID, v); err == nil {
+				prev = &q
+			}
+		}
+		ro.Status.Plan = planJoint(p, prev)
+	}
 	for _, t := range targets {
-		ro.Status.Pods = append(ro.Status.Pods, PodStatus{Name: t.Pod, Service: t.Service, Role: t.Role, State: "pending"})
+		ro.Status.Pods = append(ro.Status.Pods, PodStatus{Name: t.Pod, Service: t.Service, Role: t.Role, State: "pending", Part: t.Part})
+		if held, err := r.side.epochs(ctx, t.IP); err == nil {
+			ro.Status.MixedBaseline[t.Pod] = held.Mismatched
+		} else {
+			ro.Status.MixedBaseline[t.Pod] = 0
+		}
 	}
 	if len(targets) == 0 {
-		ro.Status.Phase, ro.Status.Message = PhaseFailed, "no running proxies found for "+ro.Spec.Service
+		ro.Status.Phase, ro.Status.Message = PhaseFailed, "no running proxies found for "+strings.Join(ro.Spec.scopes(), ", ")
 		r.finish(ctx, ro, false)
 		return 0, nil
 	}
 	_ = r.store.recordRollout(ctx, ro.Name, ro.Spec)
 	_ = r.store.setStatus(ctx, ro.Spec.PolicyID, ro.Spec.Version, StatusRollingOut)
-	if ro.Spec.Mode == "naive" {
+	switch {
+	case ro.Spec.Mode == "naive" && ro.Spec.Order != "":
+		ro.Status.Phase, ro.Status.Message = PhaseActivating, "switching the proxies without coordination ("+ro.Spec.Order+")"
+	case ro.Spec.Mode == "naive":
 		ro.Status.Phase, ro.Status.Message = PhaseActivating, "switching every proxy to the new version at once"
-	} else {
+	default:
 		ro.Status.Phase, ro.Status.Message = PhaseStaging, "staging the new version on every proxy"
 	}
-	r.bus.emit(ctx, "rollout-started", map[string]string{"rollout": ro.Name, "policyId": ro.Spec.PolicyID, "epoch": ro.Spec.Epoch, "mode": ro.Spec.Mode, "targets": fmt.Sprint(len(targets))})
+	r.bus.emit(ctx, "rollout-started", map[string]string{"rollout": ro.Name, "policyId": ro.Spec.PolicyID, "epoch": ro.Spec.Epoch,
+		"mode": ro.Spec.Mode, "targets": fmt.Sprint(len(targets)), "skewMs": fmt.Sprint(ro.Spec.SkewMs)})
 	return 0, nil
 }
 
-// forEachPod applies fn to every pod not yet in `done`, concurrently, and records the outcome.
-func (r *RolloutReconciler) forEachPod(ctx context.Context, ro *RPERollout, done string, fn func(t target) error) (int, error) {
-	targets, err := resolveTargets(ctx, r.reader, r.demoNS, ro.Spec.Service)
+// forEachPod applies fn to every pod not yet in `done` that `only` selects (nil: every pod), concurrently, and
+// records the outcome. Each delivery starts after a random 0..skew delay (spec.skewMs, the same for every mode).
+func (r *RolloutReconciler) forEachPod(ctx context.Context, ro *RPERollout, done string, skew time.Duration, only func(t target) bool,
+	fn func(t target, ps *PodStatus) error) (int, error) {
+	targets, err := r.targets(ctx, ro)
 	if err != nil {
 		return 0, err
 	}
@@ -151,7 +288,10 @@ func (r *RolloutReconciler) forEachPod(ctx context.Context, ro *RPERollout, done
 	for i := range ro.Status.Pods {
 		ps := &ro.Status.Pods[i]
 		if ps.State == done {
+			// deliveries started earlier in this loop also update count
+			mu.Lock()
 			count++
+			mu.Unlock()
 			continue
 		}
 		t, ok := ips[ps.Name]
@@ -159,10 +299,20 @@ func (r *RolloutReconciler) forEachPod(ctx context.Context, ro *RPERollout, done
 			ps.State, ps.Error = "gone", "pod no longer running"
 			continue
 		}
+		if only != nil && !only(t) {
+			continue
+		}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			err := fn(t)
+			if skew > 0 {
+				select {
+				case <-time.After(rand.N(skew)):
+				case <-ctx.Done():
+					return
+				}
+			}
+			err := fn(t, ps)
 			mu.Lock()
 			defer mu.Unlock()
 			if err != nil {
@@ -170,6 +320,9 @@ func (r *RolloutReconciler) forEachPod(ctx context.Context, ro *RPERollout, done
 				return
 			}
 			ps.State, ps.Error = done, ""
+			if done == "active" {
+				ps.ActiveAt = nowNano()
+			}
 			count++
 		}()
 	}
@@ -177,14 +330,35 @@ func (r *RolloutReconciler) forEachPod(ctx context.Context, ro *RPERollout, done
 	return count, nil
 }
 
+// payload is what one proxy receives: the part of the policy for its own service.
 func (r *RolloutReconciler) payload(p Policy, state string) stagedPolicy {
 	return stagedPolicy{Epoch: p.Epoch, Version: p.Version, Hash: specHash(p.Spec), State: state, Policy: p.Spec}
 }
 
+// verified checks the proxy's answer: it must hold the epoch with the approved content hash (of its part).
+func verified(ps *PodStatus, held sidecarEpochs, err error, p Policy) error {
+	if err != nil {
+		return err
+	}
+	ps.Hash = held.hashOf(p.Epoch)
+	if err := held.verify(p.Epoch, specHash(p.Spec)); err != nil {
+		ps.Verified = false
+		return err
+	}
+	ps.Verified = true
+	return nil
+}
+
+func (r *RolloutReconciler) skew(ro *RPERollout) time.Duration {
+	return time.Duration(ro.Spec.SkewMs) * time.Millisecond
+}
+
 func (r *RolloutReconciler) stage(ctx context.Context, ro *RPERollout, p Policy) (time.Duration, error) {
-	staged, err := r.forEachPod(ctx, ro, "staged", func(t target) error {
-		err := r.side.put(ctx, t.IP, r.payload(p, "staged"))
-		r.delivered(ctx, t, p, "staged", err)
+	staged, err := r.forEachPod(ctx, ro, "staged", r.skew(ro), nil, func(t target, ps *PodStatus) error {
+		part := partOf(p, t.Part)
+		held, err := r.side.put(ctx, t.IP, r.payload(part, "staged"))
+		err = verified(ps, held, err, part)
+		r.delivered(ctx, t, part, "staged", err)
 		return err
 	})
 	if err != nil {
@@ -192,6 +366,7 @@ func (r *RolloutReconciler) stage(ctx context.Context, ro *RPERollout, p Policy)
 	}
 	ro.Status.Staged = staged
 	if staged == countLive(ro) {
+		ro.Status.StagedAt = nowNano()
 		ro.Status.Phase, ro.Status.Message, ro.Status.Attempts = PhaseActivating, "every proxy holds the new version; activating at the gateway first", 0
 		r.bus.emit(ctx, "rollout-staged", map[string]string{"rollout": ro.Name, "epoch": p.Epoch, "pods": fmt.Sprint(staged)})
 		return 0, nil
@@ -201,29 +376,62 @@ func (r *RolloutReconciler) stage(ctx context.Context, ro *RPERollout, p Policy)
 
 func (r *RolloutReconciler) activate(ctx context.Context, ro *RPERollout, p Policy) (time.Duration, error) {
 	naive := ro.Spec.Mode == "naive"
-	// two-phase: gateways first; only after every gateway stamps the new epoch do services switch.
-	for _, role := range []string{"gateway", "service"} {
-		if naive && role == "service" {
-			break
+	prev := ro.Spec.PreviousEpoch
+	step := max(ro.Status.Step, 1)
+	skew := r.skew(ro)
+	if at, err := time.Parse(time.RFC3339Nano, ro.Status.NextStepAt); err == nil && time.Until(at) > 0 {
+		// a naive rollout with an arrival order: the second group is not reached yet (a status update may have
+		// started this reconcile early)
+		return time.Until(at), nil
+	}
+	// inStep selects the proxies the current step activates: every proxy, except for a joint policy (the
+	// loosening parts in step 1, the tightening parts in step 2) and a naive rollout with a fixed arrival order (one
+	// group in step 1, the other SkewMs later in step 2).
+	inStep := func(role, part string) bool { return true }
+	switch {
+	case naive && ro.Spec.Order != "":
+		gatewayFirst := ro.Spec.Order == "gateway-first"
+		inStep = func(role, _ string) bool { return (role == "gateway") == (gatewayFirst == (step == 1)) }
+		skew = 0
+	case len(ro.Status.Plan) > 0:
+		inStep = func(_, part string) bool { return stepOf(ro.Status.Plan, part) == step }
+	}
+	activateOne := func(t target, ps *PodStatus) error {
+		part := partOf(p, t.Part)
+		var held sidecarEpochs
+		var err error
+		if naive {
+			held, err = r.side.put(ctx, t.IP, r.payload(part, "active"))
+		} else {
+			held, err = r.side.activate(ctx, t.IP, p.Epoch)
 		}
-		_, err := r.forEachPod(ctx, ro, "active", func(t target) error {
-			if !naive && t.Role != role {
-				return fmt.Errorf("waiting for gateways")
+		err = verified(ps, held, err, part)
+		r.delivered(ctx, t, part, "active", err)
+		if err == nil && naive && prev != "" && prev != p.Epoch {
+			// a proxy with a single configuration drops the previous one when it switches
+			if r.side.retire(ctx, t.IP, prev) == nil {
+				r.bus.ack(ctx, prev, t.Pod, "retired")
+				_ = r.store.recordDelivery(ctx, t.Pod, t.Service, prev, p.Version, "", "retired", "")
 			}
-			var err error
-			if naive {
-				err = r.side.put(ctx, t.IP, r.payload(p, "active"))
-			} else {
-				err = r.side.activate(ctx, t.IP, p.Epoch)
-			}
-			r.delivered(ctx, t, p, "active", err)
-			return err
-		})
-		if err != nil {
+		}
+		return err
+	}
+	if naive {
+		// every selected target switches in one pass
+		if _, err := r.forEachPod(ctx, ro, "active", skew, func(t target) bool { return inStep(t.Role, t.Part) }, activateOne); err != nil {
 			return 0, err
 		}
-		if !naive && role == "gateway" && !allRole(ro, "gateway", "active") {
-			return r.retry(ctx, ro, "activating gateways")
+	} else {
+		// Two-phase: the gateways of this step first (they stamp the new epoch into new requests), then the
+		// services. A policy scoped to a service has no gateway among its targets, so that pass selects nothing.
+		for _, role := range []string{"gateway", "service"} {
+			only := func(t target) bool { return t.Role == role && inStep(t.Role, t.Part) }
+			if _, err := r.forEachPod(ctx, ro, "active", skew, only, activateOne); err != nil {
+				return 0, err
+			}
+			if role == "gateway" && !allActive(ro, func(ps PodStatus) bool { return ps.Role == "gateway" && inStep(ps.Role, ps.Part) }) {
+				return r.retry(ctx, ro, "activating gateways")
+			}
 		}
 	}
 	active := 0
@@ -233,24 +441,90 @@ func (r *RolloutReconciler) activate(ctx context.Context, ro *RPERollout, p Poli
 		}
 	}
 	ro.Status.Active = active
-	if active < countLive(ro) {
+	if !allActive(ro, func(ps PodStatus) bool { return inStep(ps.Role, ps.Part) }) {
 		return r.retry(ctx, ro, "activating")
 	}
-	if naive {
+	if active < countLive(ro) {
+		if step >= 2 {
+			return r.retry(ctx, ro, "activating")
+		}
+		// step 1 is done; step 2 remains
+		ro.Status.Attempts = 0
+		switch {
+		case naive:
+			ro.Status.Step = 2
+			ro.Status.NextStepAt = time.Now().Add(r.skew(ro)).UTC().Format(time.RFC3339Nano)
+			ro.Status.Message = fmt.Sprintf("%s: the first proxies switched; the others follow in %d ms", ro.Spec.Order, ro.Spec.SkewMs)
+			return r.skew(ro), nil
+		case prev != "" && prev != p.Epoch && stepChangesGateway(ro, 1):
+			// The gateway stamps the new version since step 1. Tighten only once no request stamped with the
+			// previous version is in flight: such a request still carries the previous version's settings.
+			ro.Status.Phase, ro.Status.GateStartedAt = PhaseDraining, nowNano()
+			ro.Status.Message = fmt.Sprintf("loosening applied; waiting until no request stamped with %s is in flight before tightening", prev)
+			return 0, nil
+		default:
+			ro.Status.Step = 2
+			ro.Status.Message = "loosening applied; tightening"
+			return 0, nil
+		}
+	}
+	ro.Status.ActivatedAt = nowNano()
+	ro.Status.ConvergenceMs = since(ro.Status.StartedAt, ro.Status.ActivatedAt)
+	r.bus.emit(ctx, "rollout-activated", map[string]string{"rollout": ro.Name, "epoch": p.Epoch, "pods": fmt.Sprint(active)})
+	if naive || prev == "" || prev == p.Epoch {
 		return 0, r.complete(ctx, ro, p)
 	}
-	ro.Status.Phase = PhaseDraining
-	ro.Status.DrainUntil = time.Now().Add(r.drain).UTC().Format(time.RFC3339Nano)
-	ro.Status.Message = fmt.Sprintf("draining requests pinned to %s", nonEmpty(ro.Spec.PreviousEpoch, "the previous version"))
-	r.bus.emit(ctx, "rollout-activated", map[string]string{"rollout": ro.Name, "epoch": p.Epoch, "pods": fmt.Sprint(active)})
-	return r.drain, nil
+	ro.Status.Phase, ro.Status.Attempts = PhaseDraining, 0
+	ro.Status.Message = fmt.Sprintf("draining requests pinned to %s", prev)
+	return 0, nil
 }
 
+// gating reports whether a joint rollout waits between its loosening and its tightening step.
+func gating(ro *RPERollout) bool { return ro.Status.GateStartedAt != "" && ro.Status.Step <= 1 }
+
+// finishDrain waits until no target proxy has a request pinned to the previous epoch in flight (at most r.drain).
+// Between the two steps of a joint rollout it is the gate before the tightening step; after the last step it is
+// the drain before the previous epoch is retired.
 func (r *RolloutReconciler) finishDrain(ctx context.Context, ro *RPERollout, p Policy) (time.Duration, error) {
-	until, _ := time.Parse(time.RFC3339Nano, ro.Status.DrainUntil)
-	if wait := time.Until(until); wait > 0 {
-		return wait, nil
+	prev := ro.Spec.PreviousEpoch
+	targets, err := r.targets(ctx, ro)
+	if err != nil {
+		return 0, err
 	}
+	var inflight int64
+	for _, t := range targets {
+		cctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		held, err := r.side.epochs(cctx, t.IP)
+		cancel()
+		if err == nil {
+			inflight += held.Inflight[prev]
+		}
+	}
+	ro.Status.InflightPrevious = inflight
+	gate := gating(ro)
+	from := ro.Status.ActivatedAt
+	if gate {
+		from = ro.Status.GateStartedAt
+	}
+	waited := time.Duration(since(from, nowNano())) * time.Millisecond
+	if inflight > 0 && waited < r.drain {
+		if gate {
+			ro.Status.Message = fmt.Sprintf("waiting before tightening: %d request(s) stamped with %s still in flight", inflight, prev)
+		} else {
+			ro.Status.Message = fmt.Sprintf("draining: %d request(s) still pinned to %s", inflight, prev)
+		}
+		return 200 * time.Millisecond, nil
+	}
+	if inflight > 0 {
+		log.Printf("rollout %s: drain limit %s reached with %d request(s) on %s", ro.Name, r.drain, inflight, prev)
+	}
+	if gate {
+		ro.Status.GateMs = waited.Milliseconds()
+		ro.Status.Phase, ro.Status.Step, ro.Status.Attempts = PhaseActivating, 2, 0
+		ro.Status.Message = fmt.Sprintf("no request stamped with %s in flight after %d ms; tightening", prev, ro.Status.GateMs)
+		return 0, nil
+	}
+	ro.Status.DrainMs = waited.Milliseconds()
 	return 0, r.complete(ctx, ro, p)
 }
 
@@ -260,8 +534,8 @@ func (r *RolloutReconciler) complete(ctx context.Context, ro *RPERollout, p Poli
 	if err := r.store.activate(ctx, p.PolicyID, p.Version); err != nil {
 		return err
 	}
-	if prev := ro.Spec.PreviousEpoch; prev != "" && prev != p.Epoch {
-		targets, _ := resolveTargets(ctx, r.reader, r.demoNS, ro.Spec.Service)
+	if prev := ro.Spec.PreviousEpoch; prev != "" && prev != p.Epoch && ro.Spec.Mode != "naive" {
+		targets, _ := r.targets(ctx, ro)
 		for _, t := range targets {
 			if err := r.side.retire(ctx, t.IP, prev); err == nil {
 				r.bus.ack(ctx, prev, t.Pod, "retired")
@@ -269,12 +543,99 @@ func (r *RolloutReconciler) complete(ctx context.Context, ro *RPERollout, p Poli
 			}
 		}
 	}
-	r.bus.setEffective(ctx, p)
-	ro.Status.Phase, ro.Status.CompletedAt = PhaseComplete, now()
+	for _, part := range p.projections() {
+		r.bus.setEffective(ctx, part)
+	}
+	ro.Status.Phase, ro.Status.CompletedAt = PhaseComplete, nowNano()
 	ro.Status.Message = fmt.Sprintf("%s is active on %d proxies", p.Epoch, ro.Status.Active)
 	r.finish(ctx, ro, true)
-	r.markPolicy(ctx, p, ro.Name, PhaseComplete)
+	r.markPolicy(ctx, p, ro)
 	return nil
+}
+
+// settleRollout reads the proxies' mixed-policy counters and acknowledgements once more after the rollout, so
+// requests that were still in flight at completion are counted, then records the measurements.
+func (r *RolloutReconciler) settleRollout(ctx context.Context, ro *RPERollout) (ctrl.Result, error) {
+	if wait := r.settle - time.Duration(since(ro.Status.CompletedAt, nowNano()))*time.Millisecond; wait > 0 {
+		return ctrl.Result{RequeueAfter: wait}, nil
+	}
+	p, err := r.store.get(ctx, ro.Spec.PolicyID, ro.Spec.Version)
+	if err == nil {
+		r.refreshConfirmations(ctx, ro, p)
+	}
+	r.refreshMixed(ctx, ro)
+	ro.Status.Settled = true
+	if err := r.Status().Update(ctx, ro); err != nil {
+		if apierrors.IsConflict(err) {
+			return ctrl.Result{Requeue: true}, nil
+		}
+		return ctrl.Result{}, err
+	}
+	mixedRequests.WithLabelValues(ro.Spec.Mode).Add(float64(ro.Status.MixedPolicyRequests))
+	rolloutConvergence.WithLabelValues(ro.Spec.Mode).Observe(float64(ro.Status.ConvergenceMs) / 1000)
+	_ = r.store.recordMeasurements(ctx, ro.Name, ro.Status, ro.Spec.SkewMs)
+	r.bus.emit(ctx, "rollout-settled", map[string]string{"rollout": ro.Name, "epoch": ro.Spec.Epoch, "mode": ro.Spec.Mode,
+		"mixedPolicyRequests": fmt.Sprint(ro.Status.MixedPolicyRequests), "convergenceMs": fmt.Sprint(ro.Status.ConvergenceMs),
+		"drainMs": fmt.Sprint(ro.Status.DrainMs)})
+	if err == nil {
+		r.markPolicy(ctx, p, ro)
+	}
+	log.Printf("rollout %s (%s, skew %d ms): %d mixed-policy request(s), converged in %d ms, drained in %d ms",
+		ro.Name, ro.Spec.Mode, ro.Spec.SkewMs, ro.Status.MixedPolicyRequests, ro.Status.ConvergenceMs, ro.Status.DrainMs)
+	return ctrl.Result{}, nil
+}
+
+// refreshMixed sums the target proxies' mixed-policy counters relative to the rollout start. A proxy that
+// restarted (counter below its baseline) contributes what it counted since.
+func (r *RolloutReconciler) refreshMixed(ctx context.Context, ro *RPERollout) {
+	targets, err := r.targets(ctx, ro)
+	if err != nil {
+		return
+	}
+	var total int64
+	for _, t := range targets {
+		base, ok := ro.Status.MixedBaseline[t.Pod]
+		if !ok {
+			continue
+		}
+		cctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		held, err := r.side.epochs(cctx, t.IP)
+		cancel()
+		if err != nil {
+			continue
+		}
+		if held.Mismatched >= base {
+			total += held.Mismatched - base
+		} else {
+			total += held.Mismatched
+		}
+	}
+	if total > ro.Status.MixedPolicyRequests {
+		ro.Status.MixedPolicyRequests = total
+	}
+}
+
+// refreshConfirmations adds the proxies' own acknowledgements (POST /api/k8s/acks) to the pod list.
+func (r *RolloutReconciler) refreshConfirmations(ctx context.Context, ro *RPERollout, p Policy) {
+	acks, err := r.store.confirmations(ctx, p.Epoch)
+	if err != nil {
+		return
+	}
+	for i := range ro.Status.Pods {
+		ps := &ro.Status.Pods[i]
+		c, ok := acks[ps.Name]
+		if !ok {
+			continue
+		}
+		want := specHash(partOf(p, ps.Part).Spec)
+		ps.ConfirmedAt = c.At.UTC().Format(time.RFC3339Nano)
+		if ps.Hash == "" {
+			ps.Hash = c.Hash
+		}
+		if c.Hash != want && ps.State != "failed" {
+			ps.Verified, ps.Error = false, fmt.Sprintf("proxy acknowledged hash %s, approved %s", c.Hash, want)
+		}
+	}
 }
 
 func (r *RolloutReconciler) retry(ctx context.Context, ro *RPERollout, what string) (time.Duration, error) {
@@ -283,11 +644,12 @@ func (r *RolloutReconciler) retry(ctx context.Context, ro *RPERollout, what stri
 		_, err := r.fail(ctx, ro, fmt.Sprintf("%s did not converge after %d attempts", what, r.attempts))
 		return 0, err
 	}
-	return time.Second, nil
+	// exponential backoff 250 ms .. 4 s
+	return min(250*time.Millisecond<<min(ro.Status.Attempts-1, 4), 4*time.Second), nil
 }
 
 func (r *RolloutReconciler) fail(ctx context.Context, ro *RPERollout, msg string) (ctrl.Result, error) {
-	ro.Status.Phase, ro.Status.Message, ro.Status.CompletedAt = PhaseFailed, msg, now()
+	ro.Status.Phase, ro.Status.Message, ro.Status.CompletedAt = PhaseFailed, msg, nowNano()
 	_ = r.store.setStatus(ctx, ro.Spec.PolicyID, ro.Spec.Version, StatusFailed)
 	r.finish(ctx, ro, false)
 	return ctrl.Result{}, r.Status().Update(ctx, ro)
@@ -295,6 +657,7 @@ func (r *RolloutReconciler) fail(ctx context.Context, ro *RPERollout, msg string
 
 func (r *RolloutReconciler) finish(ctx context.Context, ro *RPERollout, ok bool) {
 	_ = r.store.updateRollout(ctx, ro.Name, ro.Status.Phase, ro.Status.Message, true)
+	rolloutsFinished.WithLabelValues(ro.Spec.Mode, ro.Status.Phase).Inc()
 	typ := "rollout-complete"
 	if !ok {
 		typ = "rollout-failed"
@@ -312,12 +675,24 @@ func (r *RolloutReconciler) delivered(ctx context.Context, t target, p Policy, s
 	r.bus.ack(ctx, p.Epoch, t.Pod, state)
 }
 
-func (r *RolloutReconciler) markPolicy(ctx context.Context, p Policy, rollout, phase string) {
+// markPolicy reports desired vs observed on the RPEPolicy mirror.
+func (r *RolloutReconciler) markPolicy(ctx context.Context, p Policy, ro *RPERollout) {
 	var cr RPEPolicy
 	if err := r.Get(ctx, types.NamespacedName{Namespace: currentNamespace(), Name: crName(p.PolicyID)}, &cr); err != nil {
 		return
 	}
-	cr.Status = PolicyStatus{ActiveEpoch: p.Epoch, Rollout: rollout, Phase: phase}
+	st := PolicyStatus{ActiveEpoch: p.Epoch, DesiredEpoch: p.Epoch, Rollout: ro.Name, Phase: ro.Status.Phase, DriftPods: cr.Status.DriftPods}
+	verifiedPods := 0
+	for _, ps := range ro.Status.Pods {
+		st.Observed = append(st.Observed, ObservedPod{Pod: ps.Name, Epoch: p.Epoch, Hash: ps.Hash, State: ps.State})
+		if ps.State == "active" && ps.Verified {
+			verifiedPods++
+		}
+	}
+	if live := countLive(ro); live > 0 {
+		st.ConvergencePct = verifiedPods * 100 / live
+	}
+	cr.Status = st
 	_ = r.Status().Update(ctx, &cr)
 }
 
@@ -331,61 +706,44 @@ func countLive(ro *RPERollout) int {
 	return n
 }
 
-func allRole(ro *RPERollout, role, state string) bool {
+// allActive reports whether every live pod that `which` selects is active.
+func allActive(ro *RPERollout, which func(PodStatus) bool) bool {
 	for _, p := range ro.Status.Pods {
-		if p.Role == role && p.State != state && p.State != "gone" {
+		if which(p) && p.State != "active" && p.State != "gone" {
 			return false
 		}
 	}
 	return true
 }
 
-func now() string { return time.Now().UTC().Format(time.RFC3339) }
+// stepChangesGateway reports whether a gateway proxy whose part really changes is activated in the given step of a
+// joint rollout. Only then can a request of the previous version carry a setting the next step depends on (the old
+// deadline); a gateway part that is unchanged needs no wait before the tightening.
+func stepChangesGateway(ro *RPERollout, step int) bool {
+	for _, p := range ro.Status.Pods {
+		if p.Role == "gateway" && stepOf(ro.Status.Plan, p.Part) == step && kindOf(ro.Status.Plan, p.Part) != changeUnchanged {
+			return true
+		}
+	}
+	return false
+}
+
+func now() string     { return time.Now().UTC().Format(time.RFC3339) }
+func nowNano() string { return time.Now().UTC().Format(time.RFC3339Nano) }
+
+// since is the number of milliseconds from a to b (RFC 3339 timestamps); 0 when either is missing.
+func since(a, b string) int64 {
+	ta, err1 := time.Parse(time.RFC3339Nano, a)
+	tb, err2 := time.Parse(time.RFC3339Nano, b)
+	if err1 != nil || err2 != nil || tb.Before(ta) {
+		return 0
+	}
+	return tb.Sub(ta).Milliseconds()
+}
 
 func nonEmpty(s, def string) string {
 	if s == "" {
 		return def
 	}
 	return s
-}
-
-// repairDrift periodically checks that every proxy enforcing an active policy still holds it (for example a
-// restarted pod comes up without any policy) and re-delivers it: stage, then activate.
-func repairDrift(ctx context.Context, interval time.Duration, reader client.Reader, s *store, b *bus, side *sidecars, ns string) {
-	t := time.NewTicker(interval)
-	defer t.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-		}
-		policies, err := s.active(ctx)
-		if err != nil {
-			continue
-		}
-		for _, p := range policies {
-			targets, err := resolveTargets(ctx, reader, ns, p.Scope.Service)
-			if err != nil {
-				continue
-			}
-			for _, tg := range targets {
-				held, err := side.epochs(ctx, tg.IP)
-				if err != nil || held.holds(p.Epoch, "active") {
-					continue
-				}
-				payload := stagedPolicy{Epoch: p.Epoch, Version: p.Version, Hash: specHash(p.Spec), State: "staged", Policy: p.Spec}
-				if err := side.put(ctx, tg.IP, payload); err != nil {
-					continue
-				}
-				if err := side.activate(ctx, tg.IP, p.Epoch); err != nil {
-					continue
-				}
-				_ = s.recordDelivery(ctx, tg.Pod, tg.Service, p.Epoch, p.Version, payload.Hash, "active", "")
-				b.ack(ctx, p.Epoch, tg.Pod, "active")
-				b.emit(ctx, "drift-repaired", map[string]string{"pod": tg.Pod, "policyId": p.PolicyID, "epoch": p.Epoch})
-				log.Printf("drift repaired: %s now enforces %s", tg.Pod, p.Epoch)
-			}
-		}
-	}
 }

@@ -77,8 +77,61 @@ hub() {
   CODE=$out; BODY=$(k -n rpe-e2e exec e2e-client -- cat /tmp/hub-body 2>/dev/null || true)
 }
 hub_login() { hub POST /api/hub/login "{\"username\":\"$1\",\"password\":\"$1\"}" "/tmp/jar-$1"; }
+# wait_settled NAME [SECONDS] -> final phase of a rollout once its measurements settled (call it in $(...),
+# then hub GET the rollout for its status)
+wait_settled() {
+  local phase="" settled=""
+  for _ in $(seq 1 "${2:-120}"); do
+    hub GET "/api/hub/rollouts/$1"
+    phase=$(echo "${BODY}" | jq -r '.status.phase // empty')
+    settled=$(echo "${BODY}" | jq -r '.status.settled // false')
+    [[ "${phase}" == Failed || ( "${phase}" == Complete && "${settled}" == true ) ]] && break
+    sleep 1
+  done
+  echo "${phase}"
+}
+# load_start SECONDS [CONCURRENCY] -> steady GET /api/orders through the gateway in the background (load_wait)
+load_start() {
+  k -n rpe-e2e exec e2e-client -- sh -c "end=\$((\$(date +%s)+$1)); n=0; while [ \$(date +%s) -lt \$end ]; do
+    i=0; while [ \$i -lt ${2:-8} ]; do curl -s -o /dev/null --max-time 10 ${GW}/api/orders & i=\$((i+1)); done; wait; n=\$((n+${2:-8}));
+  done; echo \$n" >/tmp/rpe-load.out 2>&1 &
+  LOAD_PID=$!
+}
+load_wait() { wait "${LOAD_PID}" 2>/dev/null; LOAD_SENT=$(tail -1 /tmp/rpe-load.out 2>/dev/null | tr -dc 0-9); }
+# queue_capacity SERVICE -> waiting-queue capacity of the inbound leaky bucket on the first sidecar of SERVICE
+queue_capacity() {
+  local ip; ip=$(pod_ip "$1")
+  k -n rpe-e2e exec e2e-client -- curl -s --max-time 5 "http://${ip}:15090/metrics" \
+    | awk '/^rpe_backpressure_inbound_queue_capacity / {printf "%g", $2}'
+}
+# rate_gauge SERVICE -> inbound release rate (requests/s) the first sidecar of SERVICE enforces right now
+rate_gauge() {
+  local ip; ip=$(pod_ip "$1")
+  k -n rpe-e2e exec e2e-client -- curl -s --max-time 5 "http://${ip}:15090/metrics" \
+    | awk '/^rpe_backpressure_inbound_rate_per_second / {printf "%g", $2}'
+}
+# burst N -> latency in ms of the slowest of N concurrent chain requests through the gateway
+burst() {
+  k -n rpe-e2e exec e2e-client -- sh -c "rm -f /tmp/burst.out; i=0; while [ \$i -lt $1 ]; do curl -s -o /dev/null --max-time 60 -w '%{time_total}\n' ${GW}/api/orders >> /tmp/burst.out & i=\$((i+1)); done; wait; sort -n /tmp/burst.out | tail -1" \
+    | awk '{printf "%d", $1 * 1000}'
+}
 # proxy_holds SERVICE EPOCH STATE -> number of that service's proxies holding EPOCH in STATE
 proxy_holds() {
   hub GET /api/hub/sidecars
   echo "${BODY}" | jq --arg s "$1" --arg e "$2" --arg st "$3" '[.[] | select(.service==$s) | select([.policy.epochs[]? | select(.epoch==$e and .state==$st)] | length > 0)] | length'
+}
+# consistency_run JSON [SECONDS] -> runs one consistency demo run in the hub (a joint change delivered naive or
+# two-phase under demo traffic) and sets RUN to the finished run (JSON)
+consistency_run() {
+  RUN=""
+  hub POST /api/hub/demos/consistency "$1"
+  [[ "${CODE}" == 202 ]] || { echo "consistency run not started: ${CODE} ${BODY}" >&2; return 1; }
+  local id; id=$(echo "${BODY}" | jq -r .id)
+  for _ in $(seq 1 "${2:-240}"); do
+    hub GET "/api/hub/demos/consistency?id=${id}"
+    RUN=${BODY}
+    [[ "$(echo "${RUN}" | jq -r '.state // empty')" == running ]] || return 0
+    sleep 1
+  done
+  return 1
 }

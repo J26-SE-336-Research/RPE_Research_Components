@@ -46,17 +46,18 @@ type status struct {
 
 func main() {
 	cfg := config{
-		sidecarImage:         env("SIDECAR_IMAGE", "rpe/sidecar:dev"),
-		sidecarPullPolicy:    env("SIDECAR_IMAGE_PULL_POLICY", "IfNotPresent"),
-		defaultOutboundPorts: env("DEFAULT_OUTBOUND_PORTS", "80,8080"),
-		defaultInboundMode:   env("DEFAULT_INBOUND_MODE", "redirect"),
-		defaultDeadlineMs:    env("DEFAULT_DEADLINE_MS", "1000"),
-		policyAPIURL:         env("POLICY_API_URL", ""),
-		hubURL:               env("HUB_URL", ""),
-		otelEndpoint:         env("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
-		certFile:             env("TLS_CERT_FILE", "/tls/tls.crt"),
-		keyFile:              env("TLS_KEY_FILE", "/tls/tls.key"),
-		port:                 env("WEBHOOK_PORT", "8443"),
+		sidecarImage:          env("SIDECAR_IMAGE", "rpe/sidecar:dev"),
+		sidecarPullPolicy:     env("SIDECAR_IMAGE_PULL_POLICY", "IfNotPresent"),
+		defaultOutboundPorts:  env("DEFAULT_OUTBOUND_PORTS", "80,8080"),
+		defaultInboundMode:    env("DEFAULT_INBOUND_MODE", "redirect"),
+		defaultDeadlineMs:     env("DEFAULT_DEADLINE_MS", "1000"),
+		defaultMissingContext: env("DEFAULT_MISSING_CONTEXT", "passthrough"),
+		policyAPIURL:          env("POLICY_API_URL", ""),
+		hubURL:                env("HUB_URL", ""),
+		otelEndpoint:          env("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
+		certFile:              env("TLS_CERT_FILE", "/tls/tls.crt"),
+		keyFile:               env("TLS_KEY_FILE", "/tls/tls.key"),
+		port:                  env("WEBHOOK_PORT", "8443"),
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/mutate", func(w http.ResponseWriter, r *http.Request) { handleAdmission(w, r, cfg) })

@@ -31,7 +31,7 @@ jobs:
       fail-fast: true
       matrix:
         include:
-          - {image: sidecar,           context: sidecar,                dockerfile: sidecar/Dockerfile}
+          - {image: sidecar,           context: .,                      dockerfile: netty-sidecar-proxy/docker/Dockerfile}
           - {image: admission-webhook, context: k8s/admission-webhook,  dockerfile: k8s/admission-webhook/Dockerfile}
           - {image: operator,          context: k8s/operator,           dockerfile: k8s/operator/Dockerfile}
           - {image: intelligence,      context: intelligence,           dockerfile: intelligence/Dockerfile}

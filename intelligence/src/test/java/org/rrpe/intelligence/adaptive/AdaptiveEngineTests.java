@@ -116,34 +116,70 @@ class AdaptiveEngineTests {
         c.clock.next(120); var next = c.engine.service(c.service(100, 120, 100, 40.0));
         assertEquals(.04, c.action(next, Action.RETRY_BUDGET).proposal().proposedValue(), 1e-10);
     }
+    /** One window of per-request traffic for the Context chain (deadline v2). */
+    static Outcome chainV2(Context c, ChainSimulation.Profile profile, int window, long deadline, Map<String, Health> guards, boolean complete) {
+        var phase = new ChainSimulation.Phase("p", 1, List.of(new ChainSimulation.PathTraffic(1, profile, "api-gateway", "order-service")), guards, Map.of());
+        var set = ChainSimulation.samples(phase, window, deadline, 300, c.clock.now, "POST", "/api/orders", "t");
+        var all = new HashMap<String, Health>(Map.of("api-gateway", Health.HEALTHY, "order-service", Health.HEALTHY)); all.putAll(guards);
+        double failures = set.samples().stream().filter(DeadlineSample::expired).count();
+        var w = new ChainWindow(c.chain(1, 0, Health.HEALTHY).chain(), List.of("api-gateway", "order-service"), c.clock.now.minusSeconds(300), c.clock.now,
+                Source.MOCK, complete, 300.0, failures, TempoWindows.percentile99(set.samples().stream().mapToDouble(DeadlineSample::durationMs).toArray()),
+                all.values().stream().anyMatch(h -> h == Health.OVERLOADED) ? Health.OVERLOADED : Health.HEALTHY, List.of("t"));
+        return c.engine.chain(w, new ChainEvidence(set, Map.of(), all, Set.of()), Map.of(), List.of());
+    }
+    static final ChainSimulation.Profile OVER_SIGNALLED = ChainSimulation.profile(500, 1150, 1180, 1200, 1220); // ~25% over 1000 ms
+    static final ChainSimulation.Profile HEALTHY_1000 = ChainSimulation.profile(500, 950, 980, 1000, 1020);
+    static final ChainSimulation.Profile HEALTHY_400 = ChainSimulation.profile(150, 350, 380, 400, 420);
+
+    // v2: intended behaviour change (see DEADLINE_V2_MIGRATION.md) - Case A (raise) and Case D (tighten) replace the bands and the restoration formula
     @Test void deadlineBandsAndRestorationRequireApproval() {
-        var c = new Context(); c.policy(120, .05, 1000); c.learnChain();
-        assertTrue(c.engine.chain(c.chain(1200, 20, Health.STRESSED)).changes().isEmpty()); c.clock.next(60);
-        var increase = c.action(c.engine.chain(c.chain(1200, 20, Health.STRESSED)), Action.CHAIN_DEADLINE);
-        assertEquals(1440, increase.proposal().proposedValue()); assertEquals(.20, increase.proposal().measurements().get("safetyMargin"));
-        assertEquals(1000, increase.proposal().measurements().get("requestCount"));
-        assertEquals(20, increase.proposal().measurements().get("deadlineFailureCount"));
-        assertEquals(2, increase.proposal().measurements().get("failureCycles"));
-        assertEquals(0, increase.proposal().measurements().get("healthyCycles"));
+        var c = new Context(); c.policy(120, .05, 1000); c.engine.configureDeadline(AdaptiveConfig.DeadlineSettings.demo(), null, null);
+        PolicyChange increase = null;
+        for (int i = 0; i < 10 && increase == null; i++) {
+            increase = chainV2(c, OVER_SIGNALLED, i, 1000, Map.of(), true).changes().stream().findFirst().orElse(null); c.clock.next(60);
+        }
+        assertNotNull(increase, "Case A after k = 2 disjoint windows");
+        assertEquals(1500, increase.proposal().proposedValue(), "censored healthy time: raise ×1.5");
+        assertEquals(300, increase.proposal().measurements().get("requestCount"));
+        assertEquals(.253, increase.proposal().measurements().get("healthyExceedRate"), .001);
+        assertTrue(increase.proposal().evidence().get(0).contains("censored"));
         assertEquals(Decision.PENDING_APPROVAL, increase.decision());
         assertTrue(c.workflow.deliverable().isEmpty(), "Unapproved deadlines are never delivered");
         c.workflow.decide(increase.proposal().id(), new Review("researcher", true, "test"));
-        c.workflow.deliveryResult(increase.proposal().id(), new Acknowledgement("APPLIED", "v2", 1440.0), null);
-        c.clock.next(60); c.engine.chain(c.chain(1000, 0, Health.HEALTHY));
-        c.clock.next(60); c.engine.chain(c.chain(1000, 0, Health.HEALTHY));
-        c.clock.next(60); var restore = c.action(c.engine.chain(c.chain(1000, 0, Health.HEALTHY)), Action.CHAIN_DEADLINE);
-        assertEquals(1296, restore.proposal().proposedValue()); assertEquals(Decision.PENDING_APPROVAL, restore.decision());
-        assertEquals(0, restore.proposal().measurements().get("deadlineFailureCount"));
-        assertEquals(3, restore.proposal().measurements().get("healthyCycles"));
+        c.workflow.deliveryResult(increase.proposal().id(), new Acknowledgement("APPLIED", "v2", 1500.0), null);
+        PolicyChange restore = null;
+        for (int i = 10; i < 60 && restore == null; i++) {
+            c.clock.next(60);
+            restore = chainV2(c, HEALTHY_1000, i, 1500, Map.of(), true).changes().stream().findFirst().orElse(null);
+        }
+        assertNotNull(restore, "Case D once the healthy time (1000 ms) is learned at the new deadline");
+        double target = restore.proposal().measurements().get("targetMs");
+        assertTrue(target >= 1150 && target <= 1180, "D* = T_h (1000–1020 ms) × (1 + m), m = 3σ̂/T_h with σ̂ ≥ 5% of the median: " + target);
+        assertEquals(Math.max(target, 1200), restore.proposal().proposedValue(), "max(D*, ceil10(0.80 × 1500))");
+        assertEquals(0, restore.proposal().measurements().get("predictedHealthyExceed"), "impact preview");
+        assertEquals(Decision.PENDING_APPROVAL, restore.decision());
     }
+    // v2: intended behaviour change (see DEADLINE_V2_MIGRATION.md) - overload no longer blocks every change: Case B lowers; a firing signal is kept (Case C)
     @Test void overloadBlocksDeadlineChangesAndLargeIncreasesAreBoundedSteps() {
-        var c = new Context(); c.policy(120, .05, 1000); c.learnChain();
-        c.engine.chain(c.chain(2000, 20, Health.STRESSED)); c.clock.next(60);
-        var bounded = c.action(c.engine.chain(c.chain(2000, 20, Health.STRESSED)), Action.CHAIN_DEADLINE);
-        assertEquals(1500, bounded.proposal().proposedValue(), "2600 ms wanted; one step never exceeds +50%");
-        assertTrue(bounded.proposal().evidence().stream().anyMatch(e -> e.contains("maximum step")));
-        assertEquals(Decision.PENDING_APPROVAL, bounded.decision());
-        c.clock.next(60); assertTrue(c.engine.chain(c.chain(1200, 20, Health.OVERLOADED)).changes().isEmpty());
+        var c = new Context(); c.policy(120, .05, 600); c.engine.configureDeadline(AdaptiveConfig.DeadlineSettings.demo(), null, null);
+        for (int i = 0; i < 15; i++) { assertTrue(chainV2(c, HEALTHY_400, i, 600, Map.of(), true).changes().isEmpty(), "600 ms is in the healthy band"); c.clock.next(60); }
+        PolicyChange lower = null; var notFiring = ChainSimulation.profile(520, 580, 585, 590, 595);
+        for (int i = 15; i < 40 && lower == null; i++) {
+            lower = chainV2(c, notFiring, i, 600, Map.of("order-service", Health.OVERLOADED), true).changes().stream().findFirst().orElse(null); c.clock.next(60);
+        }
+        assertNotNull(lower);
+        assertEquals(490, lower.proposal().proposedValue(), "Case B: max(D* = 490, ceil10(0.75 × 600))");
+        assertEquals(1, lower.proposal().measurements().get("predictedOverloadExceed"), "at 490 ms the overloaded requests would be signalled");
+        assertEquals(Decision.PENDING_APPROVAL, lower.decision());
+        // a second chain context where the overloaded requests already pass the deadline: the signal fires, nothing changes
+        var firing = new Context(); firing.policy(120, .05, 600); firing.engine.configureDeadline(AdaptiveConfig.DeadlineSettings.demo(), null, null);
+        for (int i = 0; i < 15; i++) { chainV2(firing, HEALTHY_400, i, 600, Map.of(), true); firing.clock.next(60); }
+        for (int i = 15; i < 40; i++) {
+            assertTrue(chainV2(firing, ChainSimulation.profile(800, 880, 900), i, 600, Map.of("order-service", Health.OVERLOADED), true).changes().isEmpty(),
+                    "never an increase while overloaded requests are signalled");
+            firing.clock.next(60);
+        }
+        assertEquals(DeadlineCase.C_KEEP_FIRING, firing.engine.deadlineEvidence(firing.chain(1, 0, Health.HEALTHY).chain(), Source.MOCK).decisionCase());
     }
     @Test void missingCountsAndTooFewRequestsNeverBecomeHealthy() {
         var c = new Context(); c.policy(120, .05, 1000); c.learnService(false);
@@ -172,19 +208,19 @@ class AdaptiveEngineTests {
         c.clock.next(300);
         assertEquals(Health.HEALTHY, c.engine.service(c.service(101,120,0,0.0)).assessment().health());
     }
+    // v2: intended behaviour change (see DEADLINE_V2_MIGRATION.md) - persistence counts disjoint windows, not consecutive cycles
     @Test void deadlineFailuresMustPersistAcrossDistinctFreshCyclesAndGapsResetThem() {
-        var c = new Context(); c.policy(120, .05, 1000); c.learnChain();
-        var first = c.chain(1200, 20, Health.STRESSED);
-        assertTrue(c.engine.chain(first).changes().isEmpty());
-        assertTrue(c.engine.chain(first).changes().isEmpty(), "Refreshing the same window is not a second cycle");
-        c.clock.next(180);
-        assertTrue(c.engine.chain(c.chain(1200, 20, Health.STRESSED)).changes().isEmpty(), "A collection gap resets persistence");
-        c.clock.next(60); var next = c.engine.chain(c.chain(1200, 20, Health.STRESSED));
-        assertEquals(1440, c.action(next, Action.CHAIN_DEADLINE).proposal().proposedValue());
-        c.clock.next(60); var good = c.chain(1200, 20, Health.STRESSED);
-        var incomplete = new ChainWindow(good.chain(), good.services(), good.start(), good.end(), good.source(), false,
-                good.requests(), good.deadlineFailures(), good.p99Ms(), good.health(), good.traceIds());
-        assertEquals(Health.INSUFFICIENT_DATA, c.engine.chain(incomplete).assessment().health());
+        var c = new Context(); c.policy(120, .05, 1000); c.engine.configureDeadline(AdaptiveConfig.DeadlineSettings.demo(), null, null);
+        assertTrue(chainV2(c, OVER_SIGNALLED, 0, 1000, Map.of(), true).changes().isEmpty(), "first counted window");
+        assertTrue(chainV2(c, OVER_SIGNALLED, 0, 1000, Map.of(), true).changes().isEmpty(), "Refreshing the same window is not a second cycle");
+        c.clock.next(60);
+        assertTrue(chainV2(c, OVER_SIGNALLED, 1, 1000, Map.of(), true).changes().isEmpty(), "An overlapping window is not a second counted window");
+        c.clock.next(900);
+        assertTrue(chainV2(c, OVER_SIGNALLED, 2, 1000, Map.of(), true).changes().isEmpty(), "A collection gap resets persistence");
+        c.clock.next(300); var next = chainV2(c, OVER_SIGNALLED, 3, 1000, Map.of(), true);
+        assertEquals(1500, c.action(next, Action.CHAIN_DEADLINE).proposal().proposedValue());
+        c.clock.next(60);
+        assertEquals(Health.INSUFFICIENT_DATA, chainV2(c, OVER_SIGNALLED, 4, 1000, Map.of(), false).assessment().health());
         assertTrue(c.workflow.list().stream().noneMatch(item -> item.delivery() == Delivery.READY || item.delivery() == Delivery.WAITING_FOR_COMPONENT_3));
     }
 }

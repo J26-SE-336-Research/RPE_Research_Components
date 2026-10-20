@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	rpe "github.com/J26-SE-336-Research/rpe/libs/rpe-go"
 )
 
 // policyFollower keeps the gateway's root-context parameters in line with the policy its sidecar enforces
@@ -94,4 +96,33 @@ func (f *policyFollower) RouteBudget(static func(*http.Request) (string, time.Du
 		}
 		return route, budget
 	}
+}
+
+// stampedBudget makes the gateway application start each chain with the deadline its sidecar stamped into the root
+// context the application received (X-RPE-Context bud). The sidecar applies a new policy the moment it is
+// activated; the followed copy is polled and can lag behind it, so without this an application could start chains
+// with an older deadline than the policy version they are stamped with. Without a received context the next rule
+// applies (the followed policy, then the static budgets).
+func stampedBudget(next func(*http.Request) (string, time.Duration)) func(*http.Request) (string, time.Duration) {
+	return func(r *http.Request) (string, time.Duration) {
+		route, budget := next(r)
+		if c, err := rpe.DecodeContext(r.Header.Get(rpe.HeaderContext)); err == nil && c.BudgetMillis > 0 {
+			return route, time.Duration(c.BudgetMillis) * time.Millisecond
+		}
+		return route, budget
+	}
+}
+
+// stampedEpoch does the same for the policy epoch (pe). The gateway sidecar forwards the epoch it stamped on the
+// request, so the application must start the chain with that epoch too, not with the polled copy; otherwise, while a
+// rollout switches the gateway, the gateway hop and the next hop carry different epochs (rule R-T01: pe never
+// changes along a chain). When the sidecar stamped no epoch (no policy active) the configured epoch source applies.
+func stampedEpoch(cfg rpe.SignalConfig, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c := cfg
+		if in, err := rpe.DecodeContext(r.Header.Get(rpe.HeaderContext)); err == nil && in.PolicyEpoch != "" {
+			c.Epoch = func() string { return in.PolicyEpoch }
+		}
+		rpe.SignalMiddleware(c, next).ServeHTTP(w, r)
+	})
 }

@@ -64,6 +64,7 @@ type service struct {
 	split       rpe.SplitMode
 	fanout      string        // partial | all
 	sideEffect  string        // counter incremented when this service commits
+	nonCritical bool          // optional work: skipped when the chain is cancelled (the developer decides)
 	baseLatency time.Duration // simulated steady work (e.g. a payment provider call)
 	baseJitter  time.Duration
 	client      *http.Client
@@ -74,17 +75,12 @@ type service struct {
 
 func main() {
 	s := newService()
-	stopTracing := setupTracing(s.name)
-	defer stopTracing()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 	mux.HandleFunc("/admin/faults", s.handleFaults)
 	mux.HandleFunc("/admin/counters", s.handleCounters)
 	mux.HandleFunc("/admin/reset", s.handleReset)
-	var app http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		annotateSpan(r)
-		s.handle(w, r)
-	})
+	var app http.Handler = http.HandlerFunc(s.handle)
 	if s.rpeEnabled {
 		budgets := routeBudgets(env("ROUTE_BUDGETS", ""), envInt("DEFAULT_BUDGET_MS", 1000))
 		epoch := func() string { return env("POLICY_EPOCH", "") }
@@ -94,15 +90,24 @@ func main() {
 			budgets = follower.RouteBudget(budgets)
 			epoch = func() string { return follower.Epoch(env("POLICY_EPOCH", "")) }
 		}
-		app = rpe.Middleware(rpe.MiddlewareConfig{
+		if env("ROLE", "service") == "gateway" {
+			budgets = stampedBudget(budgets)
+		}
+		cfg := rpe.SignalConfig{
 			Gateway:     env("ROLE", "service") == "gateway",
 			RouteBudget: budgets,
 			RetryBudget: int64(envInt("RETRY_BUDGET", 3)),
 			Epoch:       epoch,
 			Now:         s.now,
-		}, app)
+		}
+		if cfg.Gateway {
+			app = stampedEpoch(cfg, app)
+		} else {
+			app = rpe.SignalMiddleware(cfg, app)
+		}
 	}
-	mux.Handle("/", traceServer(s.name, app))
+	// Metrics and traces are produced by the RPE sidecar next to this service, not by the service itself.
+	mux.Handle("/", app)
 
 	srv := &http.Server{Addr: ":" + env("PORT", "8080"), Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	go func() {
@@ -126,6 +131,7 @@ func newService() *service {
 		split:       rpe.SplitMode(env("SPLIT_MODE", string(rpe.SplitParallel))),
 		fanout:      env("FANOUT", "partial"),
 		sideEffect:  env("SIDE_EFFECT", ""),
+		nonCritical: env("NON_CRITICAL", "false") == "true",
 		counters:    map[string]int64{},
 		baseLatency: time.Duration(envInt("BASE_LATENCY_MS", 0)) * time.Millisecond,
 		baseJitter:  time.Duration(envInt("BASE_JITTER_MS", 0)) * time.Millisecond,
@@ -133,7 +139,7 @@ func newService() *service {
 	s.children = parseChildren(env("CHILDREN", ""))
 	var transport http.RoundTripper = http.DefaultTransport
 	if s.rpeEnabled {
-		transport = &rpe.Transport{Reserve: time.Duration(envInt("RESERVE_MS", 5)) * time.Millisecond, Now: s.now}
+		transport = &rpe.SignalTransport{Reserve: time.Duration(envInt("RESERVE_MS", 5)) * time.Millisecond, Now: s.now}
 	}
 	s.client = &http.Client{Transport: transport, Timeout: 30 * time.Second}
 	return s
@@ -157,6 +163,16 @@ func (s *service) handle(w http.ResponseWriter, r *http.Request) {
 	if hasCtx {
 		resp.Context = in.Ctx.Encode()
 	}
+	// The developer decides what the cancellation signal means for this service: optional work is skipped, critical
+	// work (for example charging the card) always completes. The request is answered either way.
+	if hasCtx && s.nonCritical && rpe.Cancelled(r.Context()) {
+		s.count("work_skipped", 1)
+		resp.Outcome = string(rpe.OutcomeStopped)
+		w.Header().Set(rpe.HeaderResult, rpe.Result{Outcome: rpe.OutcomeStopped, Reason: rpe.ReasonCancelled,
+			PolicyEpoch: in.Ctx.PolicyEpoch}.Encode())
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
 
 	// Simulated work: steady base latency, injected latency, CPU burn, injected errors.
 	delay := s.baseLatency + time.Duration(f.LatencyMs)*time.Millisecond
@@ -166,11 +182,8 @@ func (s *service) handle(w http.ResponseWriter, r *http.Request) {
 	if f.JitterMs > 0 {
 		delay += time.Duration(rand.IntN(f.JitterMs)) * time.Millisecond
 	}
-	// Cooperative cancellation (tier T3): work stops when the propagated deadline expires.
-	select {
-	case <-time.After(delay):
-	case <-r.Context().Done():
-	}
+	// The work runs to completion: the deadline is a signal, it never cuts work off here.
+	time.Sleep(delay)
 	burnCPU(r.Context(), time.Duration(f.CPUBurnMs)*time.Millisecond)
 	if f.ErrorRate > 0 && rand.Float64() < f.ErrorRate {
 		s.count("errors_injected", 1)
@@ -178,7 +191,7 @@ func (s *service) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Downstream calls.
+	// Downstream calls (optional ones are skipped once the chain is cancelled).
 	if len(s.children) > 0 {
 		results := s.callChildren(r)
 		resp.Children = results
@@ -198,22 +211,13 @@ func (s *service) handle(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Point of no return (R-D05): if the deadline expired before the commit stage, abandon without side
-	// effects and return a terminal result so no caller retries it. Once the commit starts it always completes.
-	if hasCtx && r.Context().Err() != nil {
-		s.count("work_abandoned", 1)
-		w.Header().Set(rpe.HeaderResult, rpe.Result{Outcome: rpe.OutcomeStopped, Reason: rpe.ReasonDeadline, Terminal: true,
-			PolicyEpoch: in.Ctx.PolicyEpoch}.Encode())
-		resp.Outcome = string(rpe.OutcomeStopped)
-		writeJSON(w, http.StatusGatewayTimeout, resp)
-		return
-	}
+	// Commit: a critical side effect completes even when the request is late (the developer's decision).
 	if s.sideEffect != "" {
 		s.count(s.sideEffect, 1)
 	}
 	if hasCtx {
 		resp.RemainingMs = in.Remaining(s.now()).Milliseconds()
-		late := resp.RemainingMs < 0
+		late := resp.RemainingMs < 0 || in.Ctx.Cancel != rpe.CancelNone
 		w.Header().Set(rpe.HeaderResult, rpe.Result{Outcome: rpe.Outcome(resp.Outcome), Reason: rpe.ReasonNone, Late: late,
 			Children: annotate(resp.Children), PolicyEpoch: in.Ctx.PolicyEpoch}.Encode())
 	}
@@ -222,6 +226,9 @@ func (s *service) handle(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// callChildren calls the downstream services. Optional children are this demo's non-critical work: they go through
+// rpe.CallIfNotCancelled, which does not send them once the chain is cancelled (skipped, not an error). Required
+// children are always called.
 func (s *service) callChildren(r *http.Request) []ChildResult {
 	results := make([]ChildResult, len(s.children))
 	in, hasCtx := rpe.FromContext(r.Context())
@@ -241,9 +248,17 @@ func (s *service) callChildren(r *http.Request) []ChildResult {
 			results[i] = ChildResult{Name: c.Name, Status: 0, Outcome: string(rpe.OutcomeFailed), Error: err.Error()}
 			return
 		}
-		span := startClientSpan(req.Context(), req)
-		res, err := s.client.Do(req)
-		span.End()
+		var res *http.Response
+		if c.Optional && s.fanout == "partial" {
+			optional := rpe.CallIfNotCancelled(ctx, s.client, req)
+			if optional.Skipped {
+				results[i] = ChildResult{Name: c.Name, Outcome: "skipped"}
+				return
+			}
+			res, err = optional.Response, optional.Err
+		} else {
+			res, err = s.client.Do(req)
+		}
 		cr := ChildResult{Name: c.Name, Millis: time.Since(start).Milliseconds()}
 		if err != nil {
 			cr.Outcome, cr.Error = string(rpe.OutcomeFailed), err.Error()

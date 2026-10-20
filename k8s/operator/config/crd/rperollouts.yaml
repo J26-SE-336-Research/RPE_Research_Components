@@ -23,6 +23,7 @@ spec:
         - {name: Phase, type: string, jsonPath: .status.phase}
         - {name: Active, type: integer, jsonPath: .status.active}
         - {name: Targets, type: integer, jsonPath: .status.targetPods}
+        - {name: Mixed, type: integer, jsonPath: .status.mixedPolicyRequests}
         - {name: Age, type: date, jsonPath: .metadata.creationTimestamp}
       schema:
         openAPIV3Schema:
@@ -39,6 +40,11 @@ spec:
                 mode: {type: string, enum: [two-phase, naive]}
                 previousEpoch: {type: string}
                 requestedBy: {type: string}
+                skewMs: {type: integer, minimum: 0, maximum: 10000}
+                services:
+                  type: array
+                  items: {type: string}
+                order: {type: string, enum: [services-first, gateway-first]}
             status:
               type: object
               properties:
@@ -48,8 +54,32 @@ spec:
                 staged: {type: integer}
                 active: {type: integer}
                 startedAt: {type: string}
+                stagedAt: {type: string}
+                activatedAt: {type: string}
                 completedAt: {type: string}
-                drainUntil: {type: string}
+                convergenceMs: {type: integer}
+                drainMs: {type: integer}
+                inflightPrevious: {type: integer}
+                mixedPolicyRequests: {type: integer}
+                mixedBaseline:
+                  type: object
+                  additionalProperties: {type: integer}
+                plan:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      service: {type: string}
+                      kind: {type: string}
+                      step: {type: integer}
+                      changes:
+                        type: array
+                        items: {type: string}
+                step: {type: integer}
+                gateStartedAt: {type: string}
+                gateMs: {type: integer}
+                nextStepAt: {type: string}
+                settled: {type: boolean}
                 attempts: {type: integer}
                 pods:
                   type: array
@@ -61,3 +91,8 @@ spec:
                       role: {type: string}
                       state: {type: string}
                       error: {type: string}
+                      hash: {type: string}
+                      verified: {type: boolean}
+                      confirmedAt: {type: string}
+                      part: {type: string}
+                      activeAt: {type: string}

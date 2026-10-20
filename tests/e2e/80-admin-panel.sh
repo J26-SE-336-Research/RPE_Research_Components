@@ -38,10 +38,9 @@ hub POST /api/hub/protocol/split '{"rb":7,"reserve":1,"n":4,"mode":"parallel"}'
 assert_eq "$(echo "${BODY}" | jq -c .grants)" "[2,2,1,1]" "C1 splitter conserves the budget"
 
 hub POST /api/hub/demos/deadline '{"latencyMs":1500}'
-assert_eq "$(echo "${BODY}" | jq -r .chain.status)" 504 "C1 deadline demo: terminal 504"
-assert_eq "$(echo "${BODY}" | jq -r .chain.result.term)" "?1" "C1 deadline demo: result is terminal"
-assert_eq "$(echo "${BODY}" | jq -r '.payment.cards_charged // 0')" 0 "C1 deadline demo: no card charged after expiry"
-assert_ge "$(echo "${BODY}" | jq -r '.payment.work_abandoned // 0')" 1 "C1 deadline demo: payment abandoned its work"
+assert_eq "$(echo "${BODY}" | jq -r .chain.status)" 200 "C1 deadline demo: the late request is served (signal, never reject)"
+assert_eq "$(echo "${BODY}" | jq -r .chain.result.cs)" expired "C1 deadline demo: the sidecars signal the cancellation (cs=expired)"
+assert_ge "$(echo "${BODY}" | jq -r '.payment.cards_charged // 0')" 1 "C1 deadline demo: payment's critical work completes"
 hub POST /api/hub/demos/fanout '{"failing":"loyalty-svc"}'
 assert_eq "$(echo "${BODY}" | jq -r '.chain.hops[] | select(.service=="order-svc") | .outcome')" partial "C1 fan-out demo: optional failure gives partial"
 
@@ -61,6 +60,15 @@ assert_eq "$(echo "${BODY}" | jq -r .allowed)" false "C3 admission simulator: re
 hub POST /api/hub/policies '{"policyId":"e2e-panel","service":"payment-svc","route":"GET /api/orders","deadlineMs":1200,"retryBudget":2}'
 assert_eq "$(echo "${BODY}" | jq -r .notification.channel)" rpe_policy_approved "C3 policy store: approval fires NOTIFY"
 assert_eq "$(echo "${BODY}" | jq -r .approvedBy)" admin "C3 policy store: logged-in user recorded as approver"
+hub POST /api/hub/policies '{"control":"rate-limit","service":"gateway","ratePerSec":10}'
+assert_eq "${CODE}" 400 "C3 policy store: a service control cannot be aimed at the gateway"
+hub POST /api/hub/policies '{"control":"chain-deadline","service":"payment-svc","route":"GET /api/orders","deadlineMs":900}'
+assert_eq "${CODE}" 400 "C3 policy store: the chain deadline can only target the gateway"
+hub GET /api/hub/policies/e2e-panel/status
+assert_eq "$(echo "${BODY}" | jq -r .policyId)" e2e-panel "C3 policy status: desired vs observed per policy"
+hub GET /api/hub/fleet/audit
+assert_eq "$(echo "${BODY}" | jq -r '.coverage.ratio')" 1 "C3 coverage audit: every eligible pod in the enabled namespaces runs the proxy"
+assert_ge "$(echo "${BODY}" | jq '[.pods[] | select(.sidecar)] | length')" 7 "C3 coverage audit: policy state read from every proxy"
 
 hub GET /api/hub/intel
 assert_eq "$(echo "${BODY}" | jq -r .health.status)" UP "C4: intelligence UP"
@@ -70,6 +78,8 @@ assert_ge "$(echo "${BODY}" | jq '.outcomes | length')" 1 "C4: analysis scenario
 hub POST /api/hub/login '{"username":"viewer","password":"viewer"}' /tmp/jar-viewer
 hub POST /api/hub/load '{"count":1}' /tmp/jar-viewer
 assert_eq "${CODE}" 403 "viewer role is read-only"
+hub POST /api/hub/fleet/reinject '{"namespace":"rpe-demo","pod":"x"}' /tmp/jar-viewer
+assert_eq "${CODE}" 403 "viewer cannot recreate pods"
 hub GET /api/hub/overview "" /tmp/jar-viewer
 assert_eq "${CODE}" 200 "viewer can read"
 hub POST /api/hub/services/reset-all

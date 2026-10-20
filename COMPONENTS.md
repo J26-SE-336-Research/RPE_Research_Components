@@ -131,27 +131,28 @@ It then chooses one of: **forward**, **reject early** (the request cannot finish
 | 15020 | Control API: `/rpe/v1/health`, `/rpe/v1/policy` (staged/active epochs), `/rpe/v1/policy/active` (the active policy document), `/rpe/v1/policy/activate`, `/rpe/v1/backpressure` (planned) |
 | 15090 | Prometheus `/metrics` |
 
-**Built today (`sidecar/`, Java 21 + Netty):**
-- A pass-through skeleton: inbound and outbound proxying, keep-alive pooled upstream connections, hop-header stripping.
+**Built today (`netty-sidecar-proxy/`, Java 21 + Netty; image `rpe/sidecar:dev`):**
+- **Deadline propagation and cancellation propagation, signal-only.** The gateway proxy creates each chain (request id, route budget from `resilience.rpe.dev/route-deadlines` or the active C3 policy). Every proxy turns the received `ttl` into a local deadline. When the deadline passes, the chain is marked `cs=expired` and the signal travels downstream in `X-RPE-Context` and upstream in the `cs` member of `X-RPE-Result`. The proxy never rejects or stops a request because of its deadline; the application decides what to cancel.
+- **Backpressure handling:** inbound leaky-bucket queue (503 when full), queue-pressure signals to caller proxies (direct `POST /backpressure/signal` plus response headers), adaptive per-destination concurrency, outbound queue and circuit breaker. See `netty-sidecar-proxy/BACKPRESSURE_HANDLING_GUIDE.md`.
+- `X-RPE-Context` is read and written with `rpe-java`. An application may also send only `Request_id` on its outbound calls; the proxy then adds the chain context it stored.
+- Requests without any RPE context (probes, admin calls, callers without a sidecar) pass through unchanged (the default; counted in `rpe_passthrough_requests_total`; `reject` gives HTTP 400).
 - The control API with policy epochs.
 - Metrics (contract A3.3, scraped by Prometheus):
   - `rpe_requests_total{direction,outcome}` (every outcome series starts at 0);
   - `rpe_original_requests_total{direction}`;
   - `rpe_retries_total{result}`;
-  - `rpe_rejections_total{reason}`;
+  - `rpe_rejections_total{reason}` (`overload`, `pressure_fail_fast`, `invalid_context`);
   - `rpe_request_duration_seconds`;
   - `rpe_proxy_overhead_seconds`;
   - `rpe_inflight_requests`;
-  - on the gateway, per-route `rpe_chain_requests_total` and `rpe_chain_deadline_exceeded_total`, capped at 64 routes.
+  - on the gateway, per-route `rpe_chain_requests_total` and `rpe_chain_deadline_exceeded_total`, capped at 64 routes;
+  - the proxy's own `rpe_route_*`, `rpe_gateway_*` and `rpe_backpressure_*` series.
 
-  Retries and proxy rejections stay at zero until those mechanisms land.
-- The extension points for the mechanisms are marked in `ProxyHandler`.
+  Retries stay at zero: retries and retry-storm prevention are the next phase.
 
 **Planned:**
-- context handling via `rpe-java`;
-- the four mechanisms;
+- retries and the retry budget (retry-storm prevention);
 - the decision function;
-- push backpressure with AIMD;
 - the wasted-work metric;
 - the Envoy-baseline experiments;
 - the Scenario Lab.
@@ -322,7 +323,7 @@ Pages show only what is built. New capabilities are added as real pages or secti
 
 ### The policy loop (built end to end; verified by e2e suite 95)
 
-1. Sidecars export metrics to Prometheus and services export traces to Tempo. C4 analyses both every cycle against learned baselines.
+1. The sidecars export metrics to Prometheus and traces to Tempo (the services themselves export nothing). C4 analyses both every cycle against learned baselines.
 2. Example: an operator rolls out a 100 ms deadline for `GET /api/orders`, but payment alone takes about 120 ms. Every request now fails on the deadline. C4 detects the persistent deadline failures and proposes a bounded, censoring-aware increase. The evidence explains why.
 3. The recommendation waits in the **approval queue**. Nothing is sent while it is pending, viewers cannot approve, and a rejection needs a reason.
 4. An SRE approves it in the console. C4 sends it to the C3 policy API as the next approved version, naming the reviewer and the recommendation. PostgreSQL stores it and fires NOTIFY.
@@ -357,7 +358,7 @@ The complete contract definitions are in the component guides (Appendix A3). See
 | Component | Built and tested | Next |
 |---|---|---|
 | C1 | `rpe-go` (header set, guard, splitter, middleware/transport; e2e 30/35/40); `rpe-java` with the `java.net.http` adapter; conformance kit with 103 vectors, both libraries 100%, plus a 5,000-input differential test | Spec document, Spring/Feign/OkHttp adapters, trail + benchmarks |
-| C2 | Sidecar pass-through skeleton, pooling, control API with the active-policy document, contract metrics incl. gateway chain counters (8 JUnit tests; e2e 20/50/95) | Context via `rpe-java`, deadline/cancellation/backpressure/retry, decision function |
+| C2 | Netty sidecar (`netty-sidecar-proxy/`): signal-only deadline and cancellation propagation over `X-RPE-Context`, backpressure (leaky bucket, pressure signals, adaptive concurrency, circuit breaker), control API with the active-policy document, contract metrics incl. gateway chain counters (unit + in-process integration tests; e2e 20/30/35/50/95) | Retries and retry budget (retry-storm prevention), decision function |
 | C3 | Hardened webhook (e2e 10/20); policy store (e2e 60); Operator + policy API + Redis, two-phase/immediate rollouts, drift repair (e2e 90); receives C4's approved recommendations (e2e 95) | Regression halt, distribution study, Helm, Istio comparison |
 | C4 | Live analysis from Prometheus + Tempo; approval queue (every recommendation approved by a human); delivery to C3 with two-phase rollout and APPLIED confirmation; PostgreSQL audit trail; censoring-aware bounded deadline steps (87 tests; e2e 70/95) | Joint recommender, impact preview, outcome verification, detector comparison |
 | Shared | Demo app with tracing, Admin Panel (console + hub), Prometheus + Tempo, steady traffic generator, manifests, scripts, 12 e2e suites | k6 scenario presets, Grafana, live hop-event stream |
@@ -410,7 +411,7 @@ The first run takes about 10 minutes (image builds download Maven and Go depende
 
 | Step | Command | What happens |
 |---|---|---|
-| 1 | `make test-unit` | Go tests (`libs/rpe-go`, `conformance-kit/go`, `demo-app`, `k8s/admission-webhook`, `k8s/operator`, `hub`), the console build, and Maven tests (`libs/rpe-java` with the conformance and differential tests, `sidecar`, `intelligence`). `SKIP_JAVA=1 make test-unit` for Go only |
+| 1 | `make test-unit` | Go tests (`libs/rpe-go`, `conformance-kit/go`, `demo-app`, `k8s/admission-webhook`, `k8s/operator`, `hub`), the console build, and Maven tests (`libs/rpe-java` with the conformance and differential tests, `netty-sidecar-proxy`, `intelligence`). `SKIP_JAVA=1 make test-unit` for Go only |
 | 2 | `make cluster` | Creates the kind cluster (no-op if it exists) |
 | 3 | `make images` | Builds `rpe/sidecar:dev`, `rpe/admission-webhook:dev`, `rpe/demo-app:dev`, `rpe/intelligence:dev` and loads them into kind. Subset: `make images IMAGES="sidecar demo-app"` |
 | 4 | `make deploy` | Namespaces (`rpe-system`, `rpe-demo` with injection, `rpe-e2e`); webhook TLS + registration; PostgreSQL with migrations; Redis; Prometheus + Tempo; intelligence (live); the Operator; the hub; the demo topology; the e2e client and the traffic generator |
@@ -574,8 +575,8 @@ A change counts as **done** only when `make test-unit` and `make test-e2e` both 
 | `00-cluster` | Platform and demo topology available |
 | `10-webhook-injection` | 100% injection coverage, opt-out, namespace scope, admission validation |
 | `20-traffic-interception` | Inbound and outbound through sidecars, **including root containers** |
-| `30-context-propagation` | Rules R-T01..R-T06, budget conservation, trust boundary, unknown edge, invalid/expired rejection |
-| `35-deadline-cancellation` | Deadline enforced, cooperative cancellation, point of no return, terminal result |
+| `30-context-propagation` | Rules R-T01..R-T06, budget conservation, trust boundary, unknown edge, invalid-context rejection, expired-on-arrival served with `cs=expired` |
+| `35-deadline-cancellation` | Signal, never reject: late chains are served with `cs=expired`; non-critical work skipped, critical work completes |
 | `40-fanout` | Partial vs whole fan-out with per-child results |
 | `50-sidecar-control-api` | Health, staged/active epochs, metrics |
 | `60-policy-store` | Approval required, NOTIFY on approval, append-only |
@@ -636,7 +637,7 @@ libs/rpe-go/                C1  Go library (header set, guard, deadline, ledger,
 libs/rpe-java/              C1  Java library (codec, guard, splitter, admission, java.net.http adapter)
 conformance-kit/            C1  Shared vectors + Go runner + differential corpus generator
 spec/  bench/  services/protocol-service/                          C1 (planned)
-sidecar/                    C2  Java 21 + Netty sidecar
+netty-sidecar-proxy/        C2  Java 21 + Netty sidecar (the deployed rpe/sidecar image)
 scenarios/                  C2-led Scenario Lab (planned)
 k8s/admission-webhook/      C3  Mutating admission webhook
 k8s/policy-store/           C3  PostgreSQL schema and migrations

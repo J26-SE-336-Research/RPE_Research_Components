@@ -35,6 +35,14 @@ spec:
             - {name: RRPE_ADAPTIVE_EVALUATION_DELAY, value: 20s}
             - {name: RRPE_ADAPTIVE_BASELINESAMPLES, value: "5"}
             - {name: RRPE_ADAPTIVE_COOLDOWN, value: 1m}
+            # Deadline recommendation v2, demo-cluster values (guide §8.3); production defaults are in AdaptiveConfig.DeadlineSettings
+            - {name: RRPE_ADAPTIVE_DEADLINE_MINLEARNINGWINDOWS, value: "3"}
+            - {name: RRPE_ADAPTIVE_DEADLINE_MINLEARNINGREQUESTS, value: "150"}
+            - {name: RRPE_ADAPTIVE_DEADLINE_PERSISTENCEWINDOWS, value: "2"}
+            - {name: RRPE_ADAPTIVE_DEADLINE_MAXWIDEN, value: 5m}
+            - {name: RRPE_ADAPTIVE_DEADLINE_MAXPROPOSALSPERHOUR, value: "6"}
+            - {name: RRPE_ADAPTIVE_DEADLINE_DRIFTWINDOWS, value: "2"}
+            - {name: RRPE_ADAPTIVE_DEADLINE_COVERAGEMINSAMPLES, value: "10"}
             - {name: RRPE_DELIVERY_POLL, value: 5s}
             - {name: COMPONENT3_POLICY_URL, value: "http://rpe-policy-api.rpe-system"}
             - name: RRPE_CONTROL_TOKEN

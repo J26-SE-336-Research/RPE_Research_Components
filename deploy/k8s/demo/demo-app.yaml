@@ -14,7 +14,11 @@ spec:
   template:
     metadata:
       labels: {app: gateway}
-      annotations: {"resilience.rpe.dev/role": gateway}
+      annotations:
+        resilience.rpe.dev/role: gateway
+        # the gateway sidecar starts every chain with these budgets (same as ROUTE_BUDGETS of the app below);
+        # the active Component 3 policy overrides them per route
+        resilience.rpe.dev/route-deadlines: "GET /api/orders=1000;POST /api/orders=2000"
     spec:
       containers:
         - name: app
@@ -23,7 +27,6 @@ spec:
           ports: [{containerPort: 8080, name: http}]
           env:
             - {name: SERVICE_NAME, value: gateway}
-            - {name: OTEL_EXPORTER_OTLP_ENDPOINT, value: "http://rpe-tempo.rpe-system:4318"}
             - {name: ROLE, value: gateway}
             - {name: ROUTE_BUDGETS, value: "GET /api/orders=1000;POST /api/orders=2000"}
             - {name: DEFAULT_BUDGET_MS, value: "1000"}
@@ -70,7 +73,6 @@ spec:
           ports: [{containerPort: 8080, name: http}]
           env:
             - {name: SERVICE_NAME, value: order-svc}
-            - {name: OTEL_EXPORTER_OTLP_ENDPOINT, value: "http://rpe-tempo.rpe-system:4318"}
             - {name: CHILDREN, value: "inventory=http://inventory-svc:8080/reserve,payment=http://payment-svc:8080/pay,loyalty=http://loyalty-svc:8080/award?optional,legacy=http://legacy-svc:8080/ship?optional"}
             - {name: FANOUT, value: partial}
             - {name: SPLIT_MODE, value: parallel}
@@ -112,7 +114,6 @@ spec:
           ports: [{containerPort: 8080, name: http}]
           env:
             - {name: SERVICE_NAME, value: inventory-svc}
-            - {name: OTEL_EXPORTER_OTLP_ENDPOINT, value: "http://rpe-tempo.rpe-system:4318"}
             - {name: SIDE_EFFECT, value: stock_reserved}
           readinessProbe:
             httpGet: {path: /healthz, port: 8080}
@@ -152,7 +153,6 @@ spec:
           ports: [{containerPort: 8080, name: http}]
           env:
             - {name: SERVICE_NAME, value: payment-svc}
-            - {name: OTEL_EXPORTER_OTLP_ENDPOINT, value: "http://rpe-tempo.rpe-system:4318"}
             - {name: SIDE_EFFECT, value: cards_charged}
             # a payment provider call takes ~120-140 ms, so chain latency is realistic for deadline tuning
             - {name: BASE_LATENCY_MS, value: "120"}
@@ -195,8 +195,9 @@ spec:
           ports: [{containerPort: 8080, name: http}]
           env:
             - {name: SERVICE_NAME, value: loyalty-svc}
-            - {name: OTEL_EXPORTER_OTLP_ENDPOINT, value: "http://rpe-tempo.rpe-system:4318"}
             - {name: SIDE_EFFECT, value: points_awarded}
+            # optional work: skipped when the request chain is cancelled (the service decides; it still answers)
+            - {name: NON_CRITICAL, value: "true"}
           readinessProbe:
             httpGet: {path: /healthz, port: 8080}
             periodSeconds: 3
@@ -235,7 +236,6 @@ spec:
           ports: [{containerPort: 8080, name: http}]
           env:
             - {name: SERVICE_NAME, value: fraud-check-svc}
-            - {name: OTEL_EXPORTER_OTLP_ENDPOINT, value: "http://rpe-tempo.rpe-system:4318"}
             - {name: SIDE_EFFECT, value: fraud_checked}
           readinessProbe:
             httpGet: {path: /healthz, port: 8080}
@@ -275,7 +275,6 @@ spec:
           ports: [{containerPort: 8080, name: http}]
           env:
             - {name: SERVICE_NAME, value: legacy-svc}
-            - {name: OTEL_EXPORTER_OTLP_ENDPOINT, value: "http://rpe-tempo.rpe-system:4318"}
             - {name: RPE_ENABLED, value: "false"}
             - {name: CHILDREN, value: "shipping=http://shipping-svc:8080/ship"}
           readinessProbe:
@@ -316,7 +315,6 @@ spec:
           ports: [{containerPort: 8080, name: http}]
           env:
             - {name: SERVICE_NAME, value: shipping-svc}
-            - {name: OTEL_EXPORTER_OTLP_ENDPOINT, value: "http://rpe-tempo.rpe-system:4318"}
             - {name: SIDE_EFFECT, value: shipments_created}
           readinessProbe:
             httpGet: {path: /healthz, port: 8080}

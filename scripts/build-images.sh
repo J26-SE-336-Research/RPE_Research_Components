@@ -8,7 +8,8 @@ targets=("$@"); [[ ${#targets[@]} -eq 0 ]] && targets=("${IMAGES[@]}")
 build() {
   local name=$1
   case "${name}" in
-    sidecar)           docker build -t rpe/sidecar:dev "${ROOT}/sidecar" ;;
+    # C2 sidecar: the Netty proxy (deadline/cancellation propagation, backpressure) in netty-sidecar-proxy/
+    sidecar)           docker build -t rpe/sidecar:dev -f "${ROOT}/netty-sidecar-proxy/docker/Dockerfile" "${ROOT}" ;;
     admission-webhook) docker build -t rpe/admission-webhook:dev "${ROOT}/k8s/admission-webhook" ;;
     demo-app)          docker build -t rpe/demo-app:dev -f "${ROOT}/demo-app/Dockerfile" "${ROOT}" ;;
     intelligence)      docker build -t rpe/intelligence:dev "${ROOT}/intelligence" ;;

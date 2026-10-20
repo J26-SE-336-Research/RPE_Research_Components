@@ -1,9 +1,7 @@
-import { useState } from "react";
+import { useContext, useState } from "react";
 import { api, useAction, useData } from "../api";
-import { Ago, Alert, Button, Empty, Field, Modal, PageHeader, Panel, Tabs, Tag, type Tone } from "../components/ui";
+import { Ago, Alert, Button, Empty, Modal, PageHeader, Panel, Tabs, Tag, UserContext, type Tone } from "../components/ui";
 import { EVENT_LABEL, eventSubject, type PoliciesData, type PolicyRow } from "../types";
-
-const SERVICES = ["gateway", "order-svc", "inventory-svc", "payment-svc", "loyalty-svc", "fraud-check-svc", "shipping-svc"];
 
 const STATUS: Record<string, [Tone, string]> = {
   "approved-pending-rollout": ["neutral", "Not rolled out"],
@@ -13,9 +11,11 @@ const STATUS: Record<string, [Tone, string]> = {
   "rollout-failed": ["red", "Rollout failed"],
 };
 
-type Created = { epoch: string; notification: { channel: string; payload: string } | null; rollout?: { metadata?: { name: string } } };
-
-function specSummary(p: PolicyRow) {
+function specSummary(p: PolicyRow): string {
+  // a joint decision: one version with a part per service
+  if (p.spec.parts?.length) {
+    return p.spec.parts.map((part) => `${part.scope.service}: ${specSummary({ ...p, scope: part.scope, spec: part.spec })}`).join(" | ");
+  }
   const parts: string[] = [];
   if (p.spec.deadlineMs) parts.push(`deadline ${p.spec.deadlineMs} ms`);
   if (p.spec.retry?.budget !== undefined) parts.push(`retry budget ${p.spec.retry.budget}`);
@@ -28,99 +28,67 @@ function specSummary(p: PolicyRow) {
   return parts.join(" · ") || "—";
 }
 
-function NewPolicy({ onClose, onCreated }: { onClose: () => void; onCreated: (c: Created) => void }) {
-  const [f, setF] = useState({ policyId: "", service: "payment-svc", route: "GET /api/orders", deadlineMs: 1000, retryBudget: 2, retryRatio: 0.1, ratePerSec: 100, rollout: "two-phase" });
-  const create = useAction(async () => {
-    const r = await api<Created>("POST", "/policies", { ...f, policyId: f.policyId || `${f.service}-resilience` });
-    onCreated(r);
-    onClose();
-    return r;
-  });
-  const num = (k: keyof typeof f) => (e: React.ChangeEvent<HTMLInputElement>) => setF({ ...f, [k]: Number(e.target.value) });
-  return (
-    <Modal
-      title="New policy"
-      onClose={onClose}
-      footer={
-        <>
-          <Button onClick={onClose}>Cancel</Button>
-          <Button variant="primary" write onClick={() => create.run()} busy={create.busy}>
-            {f.rollout ? "Approve and roll out" : "Approve"}
-          </Button>
-        </>
-      }
-    >
-      <Alert>{create.error}</Alert>
-      <div className="form-grid">
-        <Field label="Policy name" hint="Lowercase, digits and dashes">
-          <input value={f.policyId} placeholder={`${f.service}-resilience`} onChange={(e) => setF({ ...f, policyId: e.target.value.toLowerCase() })} />
-        </Field>
-        <Field label="Service">
-          <select value={f.service} onChange={(e) => setF({ ...f, service: e.target.value })}>
-            {SERVICES.map((s) => (
-              <option key={s}>{s}</option>
-            ))}
-          </select>
-        </Field>
-        <Field label="Route">
-          <input value={f.route} onChange={(e) => setF({ ...f, route: e.target.value })} />
-        </Field>
-        <Field label="Deadline (ms)">
-          <input type="number" min={1} value={f.deadlineMs} onChange={num("deadlineMs")} />
-        </Field>
-        <Field label="Retry budget">
-          <input type="number" min={0} max={255} value={f.retryBudget} onChange={num("retryBudget")} />
-        </Field>
-        <Field label="Retry ratio">
-          <input type="number" min={0} max={1} step={0.05} value={f.retryRatio} onChange={num("retryRatio")} />
-        </Field>
-        <Field label="Rate limit (req/s)">
-          <input type="number" min={1} value={f.ratePerSec} onChange={num("ratePerSec")} />
-        </Field>
-        <Field label="Rollout">
-          <select value={f.rollout} onChange={(e) => setF({ ...f, rollout: e.target.value })}>
-            <option value="two-phase">Two-phase (recommended)</option>
-            <option value="naive">Immediate</option>
-            <option value="">Don't roll out yet</option>
-          </select>
-        </Field>
-      </div>
-      <p className="muted" style={{ marginBottom: 0 }}>
-        You are recorded as the approver. Each change publishes a new immutable version.
-      </p>
-    </Modal>
-  );
-}
-
-function RolloutButton({ p, onDone }: { p: PolicyRow; onDone: (msg: string) => void }) {
+/**
+ * Undo: an admin deliberately delivers an earlier approved version again (for example when an approved
+ * recommendation turned out badly). It is not part of the normal flow, where every approved change is delivered
+ * automatically. The admin who reverts is recorded as the requester of the rollout.
+ */
+function RevertButton({ p, current, onDone }: { p: PolicyRow; current?: PolicyRow; onDone: (msg: string) => void }) {
+  const [confirming, setConfirming] = useState(false);
   const run = useAction(async () => {
     await api("POST", "/rollouts", { policyId: p.policyId, version: p.version, mode: "two-phase" });
-    onDone(`Rollout of ${p.epoch} started.`);
+    setConfirming(false);
+    onDone(`Reverting ${p.policyId} to v${p.version}: it is being delivered again.`);
   });
-  const label = p.status === "superseded" ? "Restore" : p.status === "rollout-failed" ? "Retry" : "Roll out";
   return (
-    <Button size="sm" write onClick={() => run.run()} busy={run.busy}>
-      {label}
-    </Button>
+    <>
+      <Button size="sm" write onClick={() => setConfirming(true)}>
+        Revert to this version
+      </Button>
+      {confirming && (
+        <Modal
+          title={`Revert ${p.policyId} to v${p.version}?`}
+          onClose={() => setConfirming(false)}
+          footer={
+            <>
+              <Button onClick={() => setConfirming(false)}>Cancel</Button>
+              <Button variant="primary" write onClick={() => run.run()} busy={run.busy}>
+                Revert
+              </Button>
+            </>
+          }
+        >
+          <Alert>{run.error}</Alert>
+          <p style={{ marginTop: 0 }}>
+            This delivers <strong>v{p.version}</strong> ({specSummary(p)}) again to its sidecars
+            {current ? (
+              <>
+                {" "}
+                and replaces the version in force, <strong>v{current.version}</strong> ({specSummary(current)})
+              </>
+            ) : null}
+            .
+          </p>
+          <p className="muted" style={{ marginBottom: 0 }}>
+            Use it only to undo a change that turned out badly. You are recorded as the admin who reverted.
+          </p>
+        </Modal>
+      )}
+    </>
   );
 }
 
 export function PoliciesPage() {
   const { data, error, reload } = useData<PoliciesData>("/policies", 3000);
   const [tab, setTab] = useState<"policies" | "activity">("policies");
-  const [creating, setCreating] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const isAdmin = useContext(UserContext)?.Role === "admin";
 
   return (
     <>
       <PageHeader
         title="Policies"
-        description="Approved resilience policies. Versions are immutable; changing a policy publishes a new version."
-        actions={
-          <Button variant="primary" write onClick={() => setCreating(true)}>
-            New policy
-          </Button>
-        }
+        description="Approved resilience policies. Values come from Component 4's recommendations after a human approved them in Recommendations; versions are immutable, and each change is a new version."
       />
       <Alert>{error}</Alert>
       {notice && (
@@ -184,9 +152,10 @@ export function PoliciesPage() {
                           <Tag tone={tone}>{label}</Tag>
                         </td>
                         <td style={{ textAlign: "right" }}>
-                          {p.status !== "active" && p.status !== "rolling-out" && (
-                            <RolloutButton
+                          {isAdmin && p.status === "superseded" && (
+                            <RevertButton
                               p={p}
+                              current={data.policies.find((q) => q.policyId === p.policyId && q.status === "active")}
                               onDone={(m) => {
                                 setNotice(m);
                                 reload();
@@ -201,7 +170,7 @@ export function PoliciesPage() {
               </table>
             </div>
           ) : (
-            <Empty>No policies yet. Create one to get started.</Empty>
+            <Empty>No policies yet. They appear when a Component 4 recommendation is approved in Recommendations.</Empty>
           )}
         </Panel>
       ) : (
@@ -239,15 +208,6 @@ export function PoliciesPage() {
             <Empty>No activity.</Empty>
           )}
         </Panel>
-      )}
-      {creating && (
-        <NewPolicy
-          onClose={() => setCreating(false)}
-          onCreated={(c) => {
-            setNotice(c.rollout ? `Published ${c.epoch} and started its rollout.` : `Published ${c.epoch}.`);
-            reload();
-          }}
-        />
       )}
     </>
   );

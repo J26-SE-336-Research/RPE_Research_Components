@@ -151,6 +151,23 @@ public class PolicyWorkflow {
                         && (item.lastAttempt() == null || clock.instant().isAfter(item.lastAttempt().plusSeconds(30))))
                 .limit(100).toList();
     }
+    /** Withdraws only active deadline proposals that would raise the deadline above {@code currentValue} (Case C). */
+    public synchronized void withdrawPendingIncrease(String target, Source source, double currentValue, String reason) {
+        for (var item : new ArrayList<>(history.values())) {
+            if (item.proposal().target().equals(target) && item.proposal().action() == Action.CHAIN_DEADLINE
+                    && key(target, item.proposal().source()).equals(key(target, source)) && active(item) && item.proposal().proposedValue() > currentValue) {
+                replace(item, item.decision(), item.reviewer(), item.decidedAt(), Delivery.SUPERSEDED, reason, item.attempts(), item.lastAttempt(), null);
+            }
+        }
+    }
+    /** The newest active (not yet applied, expired, superseded or rejected) recommendation for a target and action. */
+    public synchronized java.util.Optional<PolicyChange> pending(String target, Action action, Source source) {
+        expire();
+        return history.values().stream().filter(this::active)
+                .filter(item -> item.proposal().target().equals(target) && item.proposal().action() == action
+                        && key(target, item.proposal().source()).equals(key(target, source)))
+                .max(java.util.Comparator.comparing((PolicyChange c) -> c.proposal().generatedAt()));
+    }
     public synchronized PolicyChange find(UUID id) {
         var item = history.get(id); if (item == null) throw new IllegalArgumentException("Unknown proposal"); return item;
     }

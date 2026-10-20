@@ -32,6 +32,7 @@ type hub struct {
 	auth *authn
 	kube *kube
 	http *http.Client
+	demo *consistencyDemo
 }
 
 func newHub(cfg config) (*hub, error) {
@@ -40,6 +41,7 @@ func newHub(cfg config) (*hub, error) {
 		auth: newAuthn(cfg.users, cfg.sessionSecret),
 		kube: newKube(),
 		http: &http.Client{Timeout: 20 * time.Second},
+		demo: &consistencyDemo{},
 	}, nil
 }
 
@@ -68,12 +70,17 @@ func (h *hub) routes() http.Handler {
 	// C3 Enforcement
 	api.HandleFunc("GET /api/hub/fleet", h.fleet)
 	api.HandleFunc("POST /api/hub/fleet/simulate", h.simulateAdmission)
+	api.HandleFunc("GET /api/hub/fleet/audit", h.fleetAudit)
+	api.HandleFunc("POST /api/hub/fleet/reinject", h.fleetReinject)
 	api.HandleFunc("GET /api/hub/policies", h.policies)
 	api.HandleFunc("POST /api/hub/policies", h.createPolicy)
+	api.HandleFunc("GET /api/hub/policies/{id}/status", h.policyStatus)
 	api.HandleFunc("GET /api/hub/rollouts", h.rollouts)
 	api.HandleFunc("POST /api/hub/rollouts", h.createRollout)
 	api.HandleFunc("GET /api/hub/rollouts/{name}", h.rollout)
 	api.HandleFunc("GET /api/hub/effective", h.effective)
+	api.HandleFunc("GET /api/hub/demos/consistency", h.consistencyRuns)
+	api.HandleFunc("POST /api/hub/demos/consistency", h.startConsistency)
 	// C4 Intelligence
 	api.HandleFunc("GET /api/hub/intel", h.intel)
 	api.HandleFunc("POST /api/hub/intel/demo/{scenario}", h.intelDemo)

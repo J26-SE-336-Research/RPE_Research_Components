@@ -11,7 +11,8 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 
 @Configuration
 @EnableScheduling
-@EnableConfigurationProperties({AdaptiveConfig.Settings.class, AdaptiveConfig.Connections.class})
+@EnableConfigurationProperties({AdaptiveConfig.Settings.class, AdaptiveConfig.Connections.class, AdaptiveConfig.DeadlineSettings.class,
+        AdaptiveConfig.LoadSettings.class, AdaptiveConfig.LeverSettings.class})
 public class AdaptiveConfig {
     @ConfigurationProperties("rrpe.adaptive")
     public record Settings(@DefaultValue("5m") Duration window, @DefaultValue("1m") Duration cycle,
@@ -43,6 +44,64 @@ public class AdaptiveConfig {
             return new Settings(Duration.ofMinutes(5), Duration.ofMinutes(1), 30, 20, 100, 2, 3,
                     Duration.ofMinutes(3), Duration.ofMinutes(5), .25, 2, 3, .05, .001, .50, .10, 100, 10000, .50);
         }
+    }
+
+    /**
+     * Deadline recommendation v2 (guide §8.3), env {@code RRPE_ADAPTIVE_DEADLINE_<NAME>}. Values an existing property
+     * already covers are reused from {@link Settings}: N_learn = baseline-samples, minimum requests per window =
+     * minimum-chain-requests, min/max deadline, cooldown.
+     */
+    @ConfigurationProperties("rrpe.adaptive.deadline")
+    public record DeadlineSettings(@DefaultValue("10") int minLearningWindows, @DefaultValue("1000") int minLearningRequests,
+            @DefaultValue("0.99") double quantile, @DefaultValue("3") double marginK, @DefaultValue("0.10") double marginMin,
+            @DefaultValue("0.30") double marginMax, @DefaultValue("0.01") double eTarget, @DefaultValue("0.05") double eFire,
+            @DefaultValue("1.645") double z, @DefaultValue("1.0") double designEffect, @DefaultValue("30m") Duration maxWiden,
+            @DefaultValue("3") int persistenceWindows, @DefaultValue("0.05") double shareThreshold,
+            @DefaultValue("0.10") double unknownMaxShare, @DefaultValue("0.005") double cutMaxShare,
+            @DefaultValue("1.5") double stepUp, @DefaultValue("0.75") double stepDownOverload, @DefaultValue("0.80") double stepDownHealthy,
+            @DefaultValue("0.10") double deadbandOverload, @DefaultValue("0.25") double deadbandHealthy,
+            @DefaultValue("1") int settleWindows, @DefaultValue("2") int verifyWindows, @DefaultValue("4") int maxProposalsPerHour,
+            @DefaultValue("0.25") double driftThreshold, @DefaultValue("3") int driftWindows,
+            @DefaultValue("0.05") double coverageMinShare, @DefaultValue("20") int coverageMinSamples,
+            @DefaultValue("30m") Duration pauseClear) {
+        public DeadlineSettings {
+            if (minLearningWindows < 1 || minLearningRequests < 1 || persistenceWindows < 1 || settleWindows < 0 || verifyWindows < 1
+                    || maxProposalsPerHour < 1 || driftWindows < 1 || coverageMinSamples < 1 || maxWiden == null || maxWiden.isNegative()
+                    || pauseClear == null || pauseClear.isNegative() || !(quantile > .5 && quantile < 1) || marginMin <= 0 || marginMax < marginMin
+                    || marginK <= 0 || z <= 0 || designEffect < 1 || stepUp <= 1 || !(stepDownOverload > 0 && stepDownOverload < 1)
+                    || !(stepDownHealthy > 0 && stepDownHealthy < 1) || !(eTarget > 0 && eTarget < eFire && eFire < 1)) {
+                throw new IllegalArgumentException("Invalid deadline v2 settings");
+            }
+            for (double v : new double[]{shareThreshold, unknownMaxShare, cutMaxShare, deadbandOverload, deadbandHealthy, driftThreshold, coverageMinShare}) {
+                if (!(v >= 0 && v < 1)) throw new IllegalArgumentException("Invalid deadline v2 fraction");
+            }
+        }
+        public static DeadlineSettings defaults() {
+            return new DeadlineSettings(10, 1000, .99, 3, .10, .30, .01, .05, 1.645, 1.0, Duration.ofMinutes(30), 3, .05, .10, .005,
+                    1.5, .75, .80, .10, .25, 1, 2, 4, .25, 3, .05, 20, Duration.ofMinutes(30));
+        }
+        /** The demo-cluster values of guide §8.3 (min-window-requests and cooldown come from {@link Settings}). */
+        public static DeadlineSettings demo() {
+            return new DeadlineSettings(3, 150, .99, 3, .10, .30, .01, .05, 1.645, 1.0, Duration.ofMinutes(5), 2, .05, .10, .005,
+                    1.5, .75, .80, .10, .25, 1, 2, 6, .25, 2, .05, 10, Duration.ofMinutes(30));
+        }
+    }
+    /** Service load thresholds for deadline v2 (guide §6.2). Queue pressure is in percent (0–100), as the sidecar exports it. */
+    @ConfigurationProperties("rrpe.adaptive.load")
+    public record LoadSettings(@DefaultValue("50") double pressureStressed, @DefaultValue("80") double pressureOverloaded,
+            @DefaultValue("0.70") double cpuStressed, @DefaultValue("0.85") double cpuOverloaded,
+            @DefaultValue("0.25") double throttleOverloaded, @DefaultValue("0.90") double memoryOverloaded) {
+        public LoadSettings {
+            if (!(pressureStressed > 0 && pressureStressed < pressureOverloaded && pressureOverloaded <= 100) || !(cpuStressed > 0 && cpuStressed < cpuOverloaded)
+                    || throttleOverloaded <= 0 || memoryOverloaded <= 0) throw new IllegalArgumentException("Invalid load thresholds");
+        }
+        public static LoadSettings defaults() { return new LoadSettings(50, 80, .70, .85, .25, .90); }
+    }
+    /** Lever diagnosis thresholds (guide §6.4). */
+    @ConfigurationProperties("rrpe.adaptive.lever")
+    public record LeverSettings(@DefaultValue("0.5") double queueShare, @DefaultValue("0.70") double cpuLow) {
+        public LeverSettings { if (!(queueShare > 0 && queueShare <= 1) || cpuLow <= 0) throw new IllegalArgumentException("Invalid lever thresholds"); }
+        public static LeverSettings defaults() { return new LeverSettings(.5, .70); }
     }
 
     @ConfigurationProperties("rrpe.connections")

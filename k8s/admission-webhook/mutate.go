@@ -19,6 +19,7 @@ const (
 	annotationMode    = annotationPrefix + "inbound-mode" // redirect | tproxy
 	annotationService = annotationPrefix + "service"      // RPE service name (default: label app)
 	annotationBudget  = annotationPrefix + "default-deadline-ms"
+	annotationRoutes  = annotationPrefix + "route-deadlines" // gateway: "METHOD /path=ms;..." per-route budgets
 	annotationDone    = annotationPrefix + "injected"
 
 	sidecarName = "rpe-sidecar"
@@ -39,6 +40,7 @@ type config struct {
 	defaultOutboundPorts    string
 	defaultInboundMode      string
 	defaultDeadlineMs       string
+	defaultMissingContext   string // passthrough | reject: requests without an RPE context (probes, non-RPE callers)
 	policyAPIURL            string
 	hubURL                  string
 	otelEndpoint            string
@@ -132,6 +134,14 @@ func mutatePod(raw json.RawMessage, cfg config) ([]patchOperation, error) {
 	if n, err := strconv.Atoi(budget); err != nil || n < 1 || n > 600000 {
 		return nil, fmt.Errorf("%s must be an integer between 1 and 600000", annotationBudget)
 	}
+	// Validated here because the sidecar refuses to start with an invalid rule.
+	if err := validateRouteDeadlines(ann[annotationRoutes]); err != nil {
+		return nil, fmt.Errorf("%s: %w", annotationRoutes, err)
+	}
+	missingContext := orDefault(cfg.defaultMissingContext, "passthrough")
+	if missingContext != "passthrough" && missingContext != "reject" {
+		return nil, fmt.Errorf("webhook DEFAULT_MISSING_CONTEXT must be passthrough or reject")
+	}
 	serviceName := orDefault(ann[annotationService], p.Metadata.Labels["app"])
 	if serviceName == "" {
 		serviceName = orDefault(p.Metadata.Labels["app.kubernetes.io/name"], strings.TrimSuffix(p.Metadata.GenerateName, "-"))
@@ -176,6 +186,8 @@ func mutatePod(raw json.RawMessage, cfg config) ([]patchOperation, error) {
 			envVar("RPE_INBOUND_MODE", mode),
 			envVar("RPE_APP_PORT", strconv.Itoa(inbound[0].first)),
 			envVar("RPE_DEFAULT_DEADLINE_MS", budget),
+			envVar("RPE_ROUTE_DEADLINES", ann[annotationRoutes]),
+			envVar("RPE_MISSING_CONTEXT", missingContext),
 			envVar("RPE_POLICY_API_URL", cfg.policyAPIURL),
 			envVar("RPE_HUB_URL", cfg.hubURL),
 			envVar("OTEL_EXPORTER_OTLP_ENDPOINT", cfg.otelEndpoint),
@@ -260,6 +272,28 @@ func parsePorts(value string, required bool) ([]portRange, error) {
 		result = append(result, portRange{a, b})
 	}
 	return result, nil
+}
+
+// validateRouteDeadlines checks "METHOD /path=ms;METHOD /path=ms" (the sidecar's GATEWAY_DEADLINE_RULES format).
+func validateRouteDeadlines(value string) error {
+	for _, entry := range strings.Split(value, ";") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		eq := strings.LastIndex(entry, "=")
+		if eq < 0 {
+			return fmt.Errorf("entry %q must be METHOD /path=milliseconds", entry)
+		}
+		selector := strings.Fields(entry[:eq])
+		if len(selector) != 2 || !strings.HasPrefix(selector[1], "/") || strings.ContainsAny(selector[1], "?#") {
+			return fmt.Errorf("entry %q must be METHOD /path=milliseconds", entry)
+		}
+		if ms, err := strconv.Atoi(strings.TrimSpace(entry[eq+1:])); err != nil || ms < 1 || ms > 600000 {
+			return fmt.Errorf("entry %q: milliseconds must be an integer between 1 and 600000", entry)
+		}
+	}
+	return nil
 }
 
 func parsePortNumber(value string) (int, error) {

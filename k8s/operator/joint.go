@@ -1,0 +1,300 @@
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"regexp"
+	"sort"
+	"strconv"
+	"strings"
+)
+
+// Joint policies (the C3 novelty, per-request-consistent rollout): one approved decision that changes settings of
+// several services, for example a longer chain deadline at the gateway together with a lower rate at payment-svc.
+// It is one policy version with one epoch. The stored spec holds the parts:
+//
+//	{"parts": [{"scope": {"service": "gateway", "route": "GET /api/orders"}, "spec": {...}},
+//	           {"scope": {"service": "payment-svc"}, "spec": {...}}]}
+//
+// Each target proxy receives only the spec of the part for its own service (and its content hash is the hash of
+// that part), so a proxy never holds settings of another service. Because every part carries the same epoch, the
+// gateway stamps one version into every new request, and a proxy can tell a request of the old version from one of
+// the new version.
+
+// Part is the share of a joint policy one service enforces.
+type Part struct {
+	Scope Scope           `json:"scope"`
+	Spec  json.RawMessage `json:"spec"`
+}
+
+// parts returns the parts of a joint policy, or the policy's own scope and spec as its single part.
+func (p Policy) parts() []Part {
+	var j struct {
+		Parts []Part `json:"parts"`
+	}
+	if json.Unmarshal(p.Spec, &j) == nil && len(j.Parts) > 0 {
+		return j.Parts
+	}
+	return []Part{{Scope: p.Scope, Spec: p.Spec}}
+}
+
+// joint reports whether the policy spans more than one service.
+func (p Policy) joint() bool { return len(p.parts()) > 1 }
+
+// services returns the services the policy's parts are scoped to, in the order of the parts.
+func (p Policy) services() []string {
+	var out []string
+	for _, part := range p.parts() {
+		out = append(out, part.Scope.Service)
+	}
+	return out
+}
+
+// forService is the policy as one service sees it: same id, version and epoch, with the scope and spec of the part
+// for that service. ok is false when no part is scoped to the service.
+func (p Policy) forService(service string) (Policy, bool) {
+	for _, part := range p.parts() {
+		if part.Scope.Service == service {
+			q := p
+			q.Scope, q.Spec = part.Scope, part.Spec
+			if q.Scope.Namespace == "" {
+				q.Scope.Namespace = p.Scope.Namespace
+			}
+			return q, true
+		}
+	}
+	return Policy{}, false
+}
+
+// projections is the policy split into one policy per part (each as its service sees it).
+func (p Policy) projections() []Policy {
+	var out []Policy
+	for _, s := range p.services() {
+		if q, ok := p.forService(s); ok {
+			out = append(out, q)
+		}
+	}
+	return out
+}
+
+// jointSpec builds the stored spec of a joint policy from its parts.
+func jointSpec(parts []Part) json.RawMessage {
+	b, _ := json.Marshal(map[string]any{"parts": parts})
+	return b
+}
+
+// withPart returns the parts with the part for part.Scope.Service replaced (or added at the end). A change to one
+// service of a joint policy (for example one control changed in the Admin Panel or by Component 4) keeps the other
+// parts, so the new version is still delivered as one decision.
+func withPart(parts []Part, part Part) []Part {
+	out := make([]Part, 0, len(parts)+1)
+	replaced := false
+	for _, p := range parts {
+		if p.Scope.Service == part.Scope.Service {
+			out = append(out, part)
+			replaced = true
+			continue
+		}
+		out = append(out, p)
+	}
+	if !replaced {
+		out = append(out, part)
+	}
+	return out
+}
+
+// validateParts checks the parts of a joint policy: every part names a service, no service appears twice.
+func validateParts(parts []Part) error {
+	seen := map[string]bool{}
+	for i, p := range parts {
+		switch {
+		case p.Scope.Service == "":
+			return fmt.Errorf("parts[%d].scope.service is required", i)
+		case seen[p.Scope.Service]:
+			return fmt.Errorf("service %s appears in two parts; one part per service", p.Scope.Service)
+		}
+		seen[p.Scope.Service] = true
+	}
+	return nil
+}
+
+var epochVersion = regexp.MustCompile(`-v(\d+)$`)
+
+// versionOf is the version in an epoch named <policyId>-v<version> (0 when it has none).
+func versionOf(epoch string) int {
+	m := epochVersion.FindStringSubmatch(epoch)
+	if m == nil {
+		return 0
+	}
+	n, _ := strconv.Atoi(m[1])
+	return n
+}
+
+// Kinds of a part's change. A tightening makes a limit stricter (a shorter deadline, a lower rate, a lower retry
+// ratio); every other change loosens or leaves the limits alone. A part whose content is the same as in the previous
+// version is unchanged (for example the gateway's part when only a service's rate of the joint policy changes).
+const (
+	changeLoosen    = "loosen"
+	changeTighten   = "tighten"
+	changeUnchanged = "unchanged"
+)
+
+// PartPlan is how one part of a joint policy is activated: its kind, the step it belongs to (1 loosening, 2
+// tightening) and the changes, in words.
+type PartPlan struct {
+	Service string   `json:"service"`
+	Kind    string   `json:"kind"`
+	Step    int      `json:"step"`
+	Changes []string `json:"changes,omitempty"`
+}
+
+// limits are the settings a part's change is classified by: route deadlines, the rate and the retry ratio.
+type limits struct {
+	deadlines map[string]float64
+	rate      *float64
+	retry     *float64
+}
+
+func readLimits(spec json.RawMessage) limits {
+	var v struct {
+		DeadlineMs float64 `json:"deadlineMs"`
+		Routes     map[string]struct {
+			DeadlineMs float64 `json:"deadlineMs"`
+		} `json:"routes"`
+		LeakyBucket struct {
+			RatePerSec *float64 `json:"ratePerSec"`
+		} `json:"leakyBucket"`
+		Retry struct {
+			BudgetRatio *float64 `json:"budgetRatio"`
+		} `json:"retry"`
+	}
+	_ = json.Unmarshal(spec, &v)
+	l := limits{deadlines: map[string]float64{}, rate: v.LeakyBucket.RatePerSec, retry: v.Retry.BudgetRatio}
+	for route, r := range v.Routes {
+		if r.DeadlineMs > 0 {
+			l.deadlines[route] = r.DeadlineMs
+		}
+	}
+	if len(l.deadlines) == 0 && v.DeadlineMs > 0 {
+		l.deadlines["deadline"] = v.DeadlineMs
+	}
+	return l
+}
+
+func num(f float64) string { return strconv.FormatFloat(f, 'f', -1, 64) }
+
+// classify compares a part's new spec with the spec the same service had in the previous version (nil when it had
+// none) and returns the kind of the change and the changes in words. A part that tightens anything is a tightening.
+func classify(prev, next json.RawMessage) (string, []string) {
+	before, after := readLimits(prev), readLimits(next)
+	kind := changeLoosen
+	var changes []string
+	routes := make([]string, 0, len(after.deadlines))
+	for r := range after.deadlines {
+		routes = append(routes, r)
+	}
+	sort.Strings(routes)
+	for _, r := range routes {
+		was, had := before.deadlines[r]
+		now := after.deadlines[r]
+		switch {
+		case !had:
+			changes = append(changes, fmt.Sprintf("%s deadline %s ms", r, num(now)))
+		case now < was:
+			kind = changeTighten
+			changes = append(changes, fmt.Sprintf("%s deadline %s → %s ms", r, num(was), num(now)))
+		case now > was:
+			changes = append(changes, fmt.Sprintf("%s deadline %s → %s ms", r, num(was), num(now)))
+		}
+	}
+	compare := func(name, unit string, was, now *float64) {
+		switch {
+		case now == nil:
+		case was == nil:
+			changes = append(changes, fmt.Sprintf("%s %s%s", name, num(*now), unit))
+		case *now < *was:
+			kind = changeTighten
+			changes = append(changes, fmt.Sprintf("%s %s → %s%s", name, num(*was), num(*now), unit))
+		case *now > *was:
+			changes = append(changes, fmt.Sprintf("%s %s → %s%s", name, num(*was), num(*now), unit))
+		}
+	}
+	compare("rate", " requests/s", before.rate, after.rate)
+	compare("retry ratio", "", before.retry, after.retry)
+	return kind, changes
+}
+
+// planJoint orders the activation of a joint policy against its previous version (prev is nil for the first
+// version): loosening parts first, tightening parts second. Between the two steps the Operator waits until no request
+// stamped with the previous version is in flight, so that no request of the old version meets a tightened limit (for
+// example a request that still carries the old, short deadline never waits in a queue that is now released at the
+// lower rate).
+func planJoint(p Policy, prev *Policy) []PartPlan {
+	var plan []PartPlan
+	for _, part := range p.parts() {
+		var before json.RawMessage
+		if prev != nil {
+			if q, ok := prev.forService(part.Scope.Service); ok {
+				before = q.Spec
+			}
+		}
+		kind, changes := classify(before, part.Spec)
+		if before != nil && specHash(before) == specHash(part.Spec) {
+			kind, changes = changeUnchanged, nil
+		}
+		step := 1
+		if kind == changeTighten {
+			step = 2
+		}
+		plan = append(plan, PartPlan{Service: part.Scope.Service, Kind: kind, Step: step, Changes: changes})
+	}
+	return plan
+}
+
+// stepOf is the activation step of a service in a plan (1 when the service has no part in it).
+func stepOf(plan []PartPlan, service string) int {
+	for _, pp := range plan {
+		if pp.Service == service {
+			return pp.Step
+		}
+	}
+	return 1
+}
+
+// kindOf is the kind of a service's change in a plan ("" when the service has no part in it).
+func kindOf(plan []PartPlan, service string) string {
+	for _, pp := range plan {
+		if pp.Service == service {
+			return pp.Kind
+		}
+	}
+	return ""
+}
+
+// describePlan is the plan in one line, for the rollout message.
+func describePlan(plan []PartPlan) string {
+	var first, second []string
+	for _, pp := range plan {
+		s := pp.Service
+		if len(pp.Changes) > 0 {
+			s += " (" + strings.Join(pp.Changes, ", ") + ")"
+		}
+		if pp.Step == 2 {
+			second = append(second, s)
+		} else {
+			first = append(first, s)
+		}
+	}
+	out := "loosen first: " + orNone(first)
+	if len(second) > 0 {
+		out += "; then, once the previous version has drained, tighten: " + strings.Join(second, ", ")
+	}
+	return out
+}
+
+func orNone(s []string) string {
+	if len(s) == 0 {
+		return "none"
+	}
+	return strings.Join(s, ", ")
+}

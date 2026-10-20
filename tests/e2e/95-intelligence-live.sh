@@ -28,8 +28,14 @@ hub_login sre >/dev/null
 hub_login viewer >/dev/null
 
 # ---------- telemetry ----------
-client GET "${PROM}/api/v1/query?query=$(enc 'count(up{job="rpe-sidecars"} == 1)')"
-assert_eq "$(echo "${BODY}" | jq -r '.data.result[0].value[1] // 0')" 7 "Prometheus scrapes all 7 injected sidecars"
+# a pod replaced by the previous suite can stay in Prometheus's target list for a few seconds, so let the count settle
+scraped_sidecars() {
+  client GET "${PROM}/api/v1/query?query=$(enc 'count(up{job="rpe-sidecars"} == 1)')"
+  SCRAPED=$(echo "${BODY}" | jq -r '.data.result[0].value[1] // 0')
+  [[ "${SCRAPED}" == 7 ]]
+}
+wait_for 60 "Prometheus to settle on the 7 demo sidecars" scraped_sidecars
+assert_eq "${SCRAPED}" 7 "Prometheus scrapes all 7 injected sidecars"
 client GET "${PROM}/api/v1/query?query=$(enc 'sum(rpe_chain_requests_total{service="gateway",route="/api/orders"})')"
 assert_ge "$(echo "${BODY}" | jq -r '.data.result[0].value[1] // 0 | tonumber | floor')" 1 "gateway sidecar reports per-route chain counts"
 client GET "${TEMPO}/api/search?q=$(enc '{ resource.service.name = "gateway" && span.rpe.direction = "inbound" }')&limit=5"
@@ -56,7 +62,8 @@ gw_budget_is() { gateway_policy; [[ "${GW_ORDERS_BUDGET}" == "$1" ]]; }
 wait_for 90 "the gateway to enforce 100 ms" gw_budget_is 100
 sleep 3
 client GET "${GW}/api/orders"
-assert_eq "${CODE}" 504 "requests now fail on the deadline"
+assert_eq "${CODE}" 200 "requests are still served: the deadline is signalled, never enforced by rejecting"
+assert_contains "$(header X-RPE-Result)" "cs=expired" "but every chain now exceeds its deadline (cs=expired)"
 
 proposal() {
   intel_status
@@ -72,6 +79,7 @@ assert_eq "$(echo "${REC}" | jq -r '.proposal.currentValue | floor')" 100 "the r
 assert_ge "${proposed}" 101 "it proposes an increase (${proposed} ms)"
 assert_lt "${proposed}" 151 "within the bounded step of +50% per change"
 assert_contains "$(echo "${REC}" | jq -r '.proposal.evidence | join(" ")')" "censored" "the evidence explains that observed latency is cut at the deadline"
+assert_ne "$(echo "${INTEL}" | jq -r '.deadlineEvidence["GET /api/orders"].decisionCase // empty')" "" "C4 publishes its deadline v2 evidence for the chain"
 
 hub GET /api/hub/policies
 assert_eq "$(echo "${BODY}" | jq --arg id "${id}" '[.policies[] | select(.recommendationId==$id)] | length')" 0 "nothing is delivered while the recommendation awaits review"
