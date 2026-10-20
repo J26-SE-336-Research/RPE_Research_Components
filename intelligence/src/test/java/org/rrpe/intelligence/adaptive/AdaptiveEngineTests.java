@@ -108,14 +108,16 @@ class AdaptiveEngineTests {
         drop = c.engine.service(c.service(10, 1.0, 0, 0.0));
         assertNotEquals(Health.HEALTHY, drop.assessment().health(), "a real throughput collapse is still detected");
     }
+    // rate-retry v2: intended behaviour change (see RATE_RETRY_V2_MIGRATION.md) - the budget no longer follows 0.10 × effectiveness halved under stress; retries that rarely succeed (10 of 100: Wilson upper bound 0.16 < 0.20) for 2 cycles step the ratio down to 0.02 = 20 extra attempts per 1000 requests
     @Test void retryEffectivenessExampleProducesTwentyExtraAttempts() {
         var c = new Context(); c.policy(120, .05, 1000); c.learnService(false);
-        c.engine.service(c.service(100, 120, 100, 40.0)); c.clock.next(60);
-        var outcome = c.engine.service(c.service(100, 120, 100, 40.0));
+        c.engine.service(c.service(100, 120, 100, 10.0)); c.clock.next(60);
+        var outcome = c.engine.service(c.service(100, 120, 100, 10.0));
         assertEquals(Health.STRESSED, outcome.assessment().health());
         var retry = c.action(outcome, Action.RETRY_BUDGET);
         assertEquals(.02, retry.proposal().proposedValue(), 1e-10);
         assertEquals(20, retry.proposal().measurements().get("allowedRetries"));
+        assertTrue(retry.proposal().measurements().get("retrySuccessUpperBound") < .20);
         assertEquals(Decision.PENDING_APPROVAL, retry.decision());
     }
     @Test void criticalOverloadClassificationStillWaitsTwoCyclesForAutomaticPolicies() {
@@ -125,19 +127,20 @@ class AdaptiveEngineTests {
         c.clock.next(60); var second = c.engine.service(c.service(150, 80, 0, null));
         assertEquals(0, c.action(second, Action.RETRY_BUDGET).proposal().proposedValue());
     }
-    // rate-retry v2: intended behaviour change (see RATE_RETRY_V2_MIGRATION.md) - the rate rises toward demand + 25% headroom by a = 0.10 × goodRate after 3 healthy cycles (66 = 60 + 6); load signals are now part of the input
+    // rate-retry v2: intended behaviour change (see RATE_RETRY_V2_MIGRATION.md) - the rate rises toward demand + 25% headroom by a = 0.10 × goodRate after 3 healthy cycles (66 = 60 + 6); load signals are now part of the input; the retry ratio rises by +0.02 toward 0.10 (not +0.01), once per 5 min stabilisation period after the last applied change
     @Test void recoveryRequiresHealthyWindowsAndAppliedPolicyThenHonoursCooldown() {
         var c = new Context(); c.policy(60, .02, 1000); learnServiceWithLoad(c, true);
         for (int i = 0; i < 2; i++) { assertTrue(c.engine.service(c.service(100, 120, 100, 40.0), quietQueue()).changes().isEmpty()); c.clock.next(60); }
         var outcome = c.engine.service(c.service(100, 120, 100, 40.0), quietQueue());
         assertEquals(66, c.action(outcome, Action.LEAKY_BUCKET).proposal().proposedValue());
         var retry = c.action(outcome, Action.RETRY_BUDGET);
-        assertEquals(.03, retry.proposal().proposedValue(), 1e-10);
+        assertEquals(.04, retry.proposal().proposedValue(), 1e-10);
         c.workflow.decide(retry.proposal().id(), new Review("sre", true, null));
-        c.workflow.deliveryResult(retry.proposal().id(), new Acknowledgement("APPLIED", "v2", .03), null);
+        c.workflow.deliveryResult(retry.proposal().id(), new Acknowledgement("APPLIED", "v2", .04), null);
         c.clock.next(60); assertTrue(c.engine.service(c.service(100, 120, 100, 40.0), quietQueue()).changes().stream().noneMatch(p -> p.proposal().action() == Action.RETRY_BUDGET));
+        c.clock.next(120); assertTrue(c.engine.service(c.service(100, 120, 100, 40.0), quietQueue()).changes().stream().noneMatch(p -> p.proposal().action() == Action.RETRY_BUDGET), "cooldown over, stabilisation not yet");
         c.clock.next(120); var next = c.engine.service(c.service(100, 120, 100, 40.0), quietQueue());
-        assertEquals(.04, c.action(next, Action.RETRY_BUDGET).proposal().proposedValue(), 1e-10);
+        assertEquals(.06, c.action(next, Action.RETRY_BUDGET).proposal().proposedValue(), 1e-10);
     }
     /** One window of per-request traffic for the Context chain (deadline v2). */
     static Outcome chainV2(Context c, ChainSimulation.Profile profile, int window, long deadline, Map<String, Health> guards, boolean complete) {
@@ -215,6 +218,7 @@ class AdaptiveEngineTests {
                 w.successfulRetries(), w.rejections(), w.inFlight(), w.successfulThroughput(), true, true, 500.0, 100.0, List.of());
         assertEquals(Health.INSUFFICIENT_DATA, c.engine.service(low).assessment().health());
     }
+    // rate-retry v2: intended behaviour change (see RATE_RETRY_V2_MIGRATION.md) - per-request safety (retryable, safe operation, remaining deadline) is the sidecar's job; the budget holds while STRESSED, whatever those flags say, and a repeated window still changes nothing
     @Test void retrySafetyAndRepeatedWindowsPreventUnsafeChanges() {
         var c = new Context(); c.policy(120, .05, 1000); c.learnService(false);
         c.engine.service(c.service(100, 120, 100, 40.0));
@@ -222,7 +226,10 @@ class AdaptiveEngineTests {
         c.clock.next(60); var w = c.service(100, 120, 100, 40.0);
         var unsafe = new ServiceWindow(w.service(), w.start(), w.end(), w.source(), true, w.originalRequests(), w.p95Ms(), w.errorCount(),
                 w.retryAttempts(), w.successfulRetries(), w.rejections(), w.inFlight(), w.successfulThroughput(), true, false, 500.0, 100.0, List.of());
-        assertTrue(c.engine.service(unsafe).changes().stream().noneMatch(p -> p.proposal().action() == Action.RETRY_BUDGET));
+        var outcome = c.engine.service(unsafe);
+        assertEquals(Health.STRESSED, outcome.assessment().health());
+        assertTrue(outcome.changes().stream().noneMatch(p -> p.proposal().action() == Action.RETRY_BUDGET));
+        assertTrue(outcome.assessment().evidence().stream().anyMatch(e -> e.contains("hold while STRESSED")));
     }
     @Test void mediansAndMadMatchTheDocumentAndZeroMadUsesOnlyTheFloor() {
         assertEquals(new Statistic(100, 10), RobustStatistics.summarize(new double[]{80,90,100,110,120}));

@@ -22,6 +22,8 @@ public final class RateState {
     record Cut(double fromRate, double toRate, double appBefore) {}
     Cut lastCut; boolean antiRatchetHold;
     AdaptiveEngine.RateDecision lastDecision;
+    /** Retry v2: consecutive windows with a clearly low retry success rate. */
+    int retryLowStreak;
 
     /** An applied change being checked on the next disjoint windows. */
     static final class Verification {

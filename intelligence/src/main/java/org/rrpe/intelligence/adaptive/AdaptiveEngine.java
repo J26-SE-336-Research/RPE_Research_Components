@@ -111,13 +111,15 @@ public class AdaptiveEngine {
             Statistic errorBase = state.baseline.get("errorRate");
             boolean errorsHigh = errorBase != null
                     && (values.get("errorRate") - errorBase.median()) / variation(errorBase, "errorRate") >= settings.stressedMad();
+            boolean retryProposed = false;
             if (policy == null) evidence.add("Waiting for current Component 3 policy reference");
             else {
-                bucket(window, load, policy, errorsHigh, evidence, changes);
-                retry(window, state, policy, health, persistentPolicy, evidence, changes);
+                var diagnosis = bucket(window, load, policy, errorsHigh, evidence, changes);
+                retryProposed = retry(window, state, policy, health, persistentPolicy, diagnosis, evidence, changes);
             }
-            // Rate v2 withdraws its own proposals when its diagnosis changes; the retry rule still follows health persistence.
-            if (!protective && health != Health.HEALTHY) workflow.withdraw(window.service(), Action.RETRY_BUDGET, window.source(), "Condition is not yet persistent");
+            // Rate v2 withdraws its own proposals when its diagnosis changes; a retry proposal not renewed this cycle
+            // still follows health persistence.
+            if (!protective && health != Health.HEALTHY && !retryProposed) workflow.withdraw(window.service(), Action.RETRY_BUDGET, window.source(), "Condition is not yet persistent");
             if (health == Health.HEALTHY && state.healthy >= settings.recoveryWindows()) refreshBaseline(state, values);
             return save(state, window.service(), window.source(), window.end(), health, values, evidence, changes);
         }
@@ -149,9 +151,9 @@ public class AdaptiveEngine {
      * plus headroom; APP_OVERLOADED → cut once, never below the floor, and a second cut only if the previous one helped
      * (anti-ratchet); HEALTHY → move slowly toward demand plus headroom; WATCH and UNKNOWN → hold.
      */
-    private void bucket(ServiceWindow window, ServiceLoadSnapshot load, Policy policy, boolean errorsHigh, List<String> evidence, List<PolicyChange> changes) {
+    private RateDiagnosis.Diagnosis bucket(ServiceWindow window, ServiceLoadSnapshot load, Policy policy, boolean errorsHigh, List<String> evidence, List<PolicyChange> changes) {
         String service = window.service(); Source source = window.source(); Instant now = clock.instant();
-        if (!number(policy.bucketRate()) || policy.bucketRate() <= 0) { evidence.add("Leaky Bucket waits for the current rate"); return; }
+        if (!number(policy.bucketRate()) || policy.bucketRate() <= 0) { evidence.add("Leaky Bucket waits for the current rate"); return null; }
         RateState rs = rateState(service, source);
         double current = policy.bucketRate();
         if (rs.healthyRate == null) rs.healthyRate = number(policy.healthyBucketTarget()) && policy.healthyBucketTarget() > 0 ? policy.healthyBucketTarget() : current;
@@ -256,45 +258,83 @@ public class AdaptiveEngine {
         }
         rs.lastDecision = new RateDecision(result, current, proposed, kind, rule, Map.copyOf(inputs));
         rs.lastAppMs = result.appMs(); rs.lastShed = shed;
+        return result.diagnosis();
     }
     private static String fmt(double v) { return v == Math.rint(v) ? String.valueOf((long) v) : String.format(Locale.ROOT, "%.1f", v); }
 
-    private void retry(ServiceWindow window, State state, Policy policy, Health health, boolean persistent,
-                       List<String> evidence, List<PolicyChange> changes) {
-        if (!number(policy.retryRatio()) || policy.retryRatio() > settings.maximumRetryRatio()) { evidence.add("Retry budget waits for valid current ratio"); return; }
-        // Overload permits a protective zero budget without assuming absent effectiveness or retry eligibility.
-        if (health == Health.OVERLOADED && persistent && cooldown(window.service(), Action.RETRY_BUDGET, window.source())) {
-            if (policy.retryRatio() > 0) changes.add(offer(window.service(), Action.RETRY_BUDGET, window.source(), policy,
-                    policy.retryRatio(), 0, "extra attempts/original request", window.end(), Map.of("originalRequests", window.originalRequests(), "allowedRetries", 0.0),
-                    "Overloaded: disable additional retries; original requests remain allowed", evidence));
-            return;
+    /**
+     * Retry budget v2 (guide §5), rows in order: a persistently overloaded app → 0 (also when the rate diagnosis is UNKNOWN
+     * but health is persistently OVERLOADED, R2); the bucket sheds (RATE_TOO_LOW) → hold, retries into a full queue only
+     * become 503s; a clearly low retry success rate (≥ 30 attempts, Wilson upper bound < 0.20, 2 cycles) → 0.02, then 0;
+     * STRESSED → hold; healthy for 3 cycles with a quiet queue → +0.02 toward the base ratio once per stabilisation period.
+     * Without retry data an increase is only reported (advisory, R3). Per-request checks (retryable, safe operation, remaining
+     * deadline, cancelled chain) belong to the sidecar's retry logic, not to this budget. Returns whether a change was proposed.
+     */
+    private boolean retry(ServiceWindow window, State state, Policy policy, Health health, boolean persistent, RateDiagnosis.Diagnosis rateDiagnosis,
+                          List<String> evidence, List<PolicyChange> changes) {
+        String service = window.service(); Source source = window.source();
+        if (!number(policy.retryRatio()) || policy.retryRatio() > settings.maximumRetryRatio()) { evidence.add("Retry budget waits for valid current ratio"); return false; }
+        double current = policy.retryRatio();
+        RateState rs = rateState(service, source);
+        boolean rateKnown = rateDiagnosis != null && rateDiagnosis != RateDiagnosis.Diagnosis.UNKNOWN;
+        boolean appOverloaded = rateDiagnosis == RateDiagnosis.Diagnosis.APP_OVERLOADED && rs.diagnosisStreak >= settings.persistence();
+        boolean healthOverloaded = !rateKnown && health == Health.OVERLOADED && persistent;
+        // Retry success with enough attempts for a decision (simulated today; real once Component 2 counts retries).
+        Double attempts = window.retryAttempts(), successes = window.successfulRetries();
+        boolean counted = number(attempts) && number(successes) && successes <= attempts;
+        boolean enough = counted && attempts >= retrySettings.minAttempts();
+        Proportion success = enough ? RobustStatistics.wilsonOneSided((int) Math.round(successes), (int) Math.round(attempts), 1.645, 1) : null;
+        boolean low = success != null && success.upper() < retrySettings.minSuccess();
+        rs.retryLowStreak = low ? rs.retryLowStreak + 1 : 0;
+        var inputs = new LinkedHashMap<String, Double>();
+        put(inputs, "originalRequests", window.originalRequests()); put(inputs, "retryAttempts", attempts); put(inputs, "successfulRetries", successes);
+        if (success != null) { inputs.put("retrySuccessRate", success.p()); inputs.put("retrySuccessUpperBound", success.upper()); }
+        boolean cooldownOk = cooldown(service, Action.RETRY_BUDGET, source);
+
+        if (appOverloaded || healthOverloaded) {
+            if (current > 0 && cooldownOk) {
+                inputs.put("allowedRetries", 0.0);
+                changes.add(offer(service, Action.RETRY_BUDGET, source, policy, current, 0, "extra attempts/original request", window.end(), inputs,
+                        appOverloaded ? "APP_OVERLOADED: disable additional retries; original requests remain allowed"
+                                : "Overloaded: disable additional retries; original requests remain allowed", evidence));
+                return true;
+            }
+            return false;
         }
-        if (!number(window.successfulRetries()) || window.successfulRetries() > window.retryAttempts()
-                || window.successfulRetries() > window.originalRequests() || window.retryAttempts() == 0) {
-            evidence.add("Retry effectiveness unavailable: need retry attempts and successful retries; no division by zero");
-            workflow.withdraw(window.service(), Action.RETRY_BUDGET, window.source(), "Retry-effectiveness evidence unavailable"); return;
+        if (rateDiagnosis == RateDiagnosis.Diagnosis.RATE_TOO_LOW) {
+            evidence.add("Retry v2: hold while the bucket sheds (retries into a full queue only become 503s)");
+            workflow.withdraw(service, Action.RETRY_BUDGET, source, "Retry v2: hold while the bucket sheds");
+            return false;
         }
-        double effectiveness = window.successfulRetries() / window.retryAttempts();
-        double healthyTarget = settings.maximumRetryRatio() * effectiveness;
-        double candidate = health == Health.STRESSED ? healthyTarget * .5 : healthyTarget;
-        String rule = "retry effectiveness=" + effectiveness + "; maximum ratio=" + settings.maximumRetryRatio();
-        boolean ready = health == Health.STRESSED && persistent || health == Health.HEALTHY && state.healthy >= settings.recoveryWindows();
-        if (!ready || !cooldown(window.service(), Action.RETRY_BUDGET, window.source())) return;
-        if (health == Health.HEALTHY && candidate > policy.retryRatio()) candidate = Math.min(candidate, policy.retryRatio() + .01);
-        // Never increase retries during stress, and never enable attempts without operation/deadline evidence.
-        if (health == Health.STRESSED) candidate = Math.min(candidate, policy.retryRatio());
-        if (candidate > 0 && (!Boolean.TRUE.equals(window.retryableFailure()) || !Boolean.TRUE.equals(window.safeOperation())
-                || !number(window.remainingDeadlineMs()) || !number(window.retryDurationMs())
-                || window.remainingDeadlineMs() <= window.retryDurationMs() || window.retryDurationMs() == 0)) {
-            evidence.add("Nonzero retry budget blocked: safe retryable operation and sufficient remaining deadline required");
-            workflow.withdraw(window.service(), Action.RETRY_BUDGET, window.source(), "Retry safety evidence unavailable"); return;
+        if (rs.retryLowStreak >= settings.persistence() && current > 0) {
+            if (!cooldownOk) return false;
+            double next = current > retrySettings.step() ? retrySettings.step() : 0;
+            inputs.put("allowedRetries", Math.floor(window.originalRequests() * next));
+            changes.add(offer(service, Action.RETRY_BUDGET, source, policy, current, next, "extra attempts/original request", window.end(), inputs,
+                    String.format(Locale.ROOT, "Retries rarely succeed: %.0f of %.0f (upper bound %.2f < %.2f) for %d cycles; step down to %s, then 0",
+                            successes, attempts, success.upper(), retrySettings.minSuccess(), rs.retryLowStreak, fmtRatio(retrySettings.step())), evidence));
+            return true;
         }
-        if (candidate != policy.retryRatio()) {
-            changes.add(offer(window.service(), Action.RETRY_BUDGET, window.source(), policy, policy.retryRatio(), candidate,
-                    "extra attempts/original request", window.end(), Map.of("effectiveness", effectiveness, "originalRequests", window.originalRequests(),
-                            "allowedRetries", Math.floor(window.originalRequests() * candidate)), rule + "; retry executor must enforce aggregate budget, exponential backoff and jitter", evidence));
+        if (health == Health.STRESSED) { evidence.add("Retry v2: hold while STRESSED"); return false; }
+        double target = Math.min(retrySettings.baseRatio(), settings.maximumRetryRatio());
+        if (health != Health.HEALTHY || state.healthy < settings.recoveryWindows() || rateDiagnosis != RateDiagnosis.Diagnosis.HEALTHY
+                || current >= target || !cooldownOk) return false;
+        Instant lastApplied = workflow.lastApplied(service, Action.RETRY_BUDGET, source);
+        if (lastApplied != null && Duration.between(lastApplied, clock.instant()).compareTo(rate.stabilisation()) < 0) return false;
+        double next = Math.round(Math.min(target, current + retrySettings.step()) * 1000) / 1000.0;
+        if (!enough) {
+            evidence.add("Advisory: retry " + fmtRatio(current) + " → " + fmtRatio(next) + " not proposed ("
+                    + (counted && attempts > 0 ? "too few retry attempts: " + Math.round(attempts) + " < " + retrySettings.minAttempts() : "retry-data-unavailable") + ")");
+            return false;
         }
+        if (low) return false;
+        inputs.put("allowedRetries", Math.floor(window.originalRequests() * next));
+        changes.add(offer(service, Action.RETRY_BUDGET, source, policy, current, next, "extra attempts/original request", window.end(), inputs,
+                String.format(Locale.ROOT, "Healthy for %d cycles with a quiet queue and retries that succeed (%.0f of %.0f); +%s toward %s",
+                        state.healthy, successes, attempts, fmtRatio(retrySettings.step()), fmtRatio(target)), evidence));
+        return true;
     }
+    private static String fmtRatio(double v) { return String.format(Locale.ROOT, "%.2f", v); }
 
     /** Aggregate-only chain window (no per-request samples): checked and reported, but v2 cannot decide on it. */
     public Outcome chain(ChainWindow window) {

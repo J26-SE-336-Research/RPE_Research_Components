@@ -103,3 +103,16 @@ Approved as proposed below, with these notes:
   upwards while the bucket sheds. Every probe that slows the app lowers the `brokeAt` ceiling to 0.9 × that rate, so the
   probes get smaller and the rate settles between the floor (50) and about 1.1 × the app capacity (60). It never ratchets
   below the floor. In automatic mode the flip limit (Step 5) pauses this probing.
+- **Retry v2 (Step 4).** The rows of guide §5 are checked in order: overload → 0 (APP_OVERLOADED for 2 cycles, or rate
+  UNKNOWN with persistent OVERLOADED health, R2), RATE_TOO_LOW → hold (a pending retry proposal is withdrawn), low
+  success → 0.02 then 0, STRESSED → hold, healthy → +0.02. Details:
+  - Low success needs ≥ 30 attempts and a one-sided 95% Wilson upper bound (z = 1.645, the existing
+    `RobustStatistics.wilsonOneSided`) below 0.20 for 2 consecutive windows. A decrease below STRESSED is allowed (it is the
+    safe direction); the table rows are applied in the guide's order.
+  - An increase also needs a quiet queue (rate diagnosis HEALTHY), and comes at most once per stabilisation period
+    (`rate.stabilisation`, 5 min) after the last applied retry change. The target is `min(retry.base-ratio 0.10,
+    maximum-retry-ratio)`, so the guide's "max 0.20" is not reachable while the workflow caps the ratio at 0.10.
+  - The per-request safety fields of `ServiceWindow` (`retryableFailure`, `safeOperation`, `remainingDeadlineMs`,
+    `retryDurationMs`) are kept in the API but no longer used by the budget rule: these checks belong to the sidecar's
+    retry logic (guide §5).
+  - The protective step down goes straight from the current ratio to 0.02 (for example 0.05 → 0.02), as in the guide's table.
