@@ -24,14 +24,17 @@ public final class RateState {
     AdaptiveEngine.RateDecision lastDecision;
     /** Retry v2: consecutive windows with a clearly low retry success rate. */
     int retryLowStreak;
+    /** The latest automatically approved (or reverted) rate change, followed until it is applied or dropped. */
+    UUID autoProposalId, lastAutoAudited;
 
     /** An applied change being checked on the next disjoint windows. */
     static final class Verification {
-        final UUID proposalId; final String kind; final double fromRate, toRate, appBefore, shedBefore; int windows; double appSum, shedSum;
+        final UUID proposalId; final String kind; final double fromRate, toRate, appBefore, shedBefore; int windows, appWindows; double appSum, shedSum;
+        Instant startAt, lastEnd;
         Verification(UUID proposalId, String kind, double fromRate, double toRate, double appBefore, double shedBefore) {
             this.proposalId = proposalId; this.kind = kind; this.fromRate = fromRate; this.toRate = toRate; this.appBefore = appBefore; this.shedBefore = shedBefore;
         }
-        double appAfter() { return windows == 0 ? Double.NaN : appSum / windows; }
+        double appAfter() { return appWindows == 0 ? Double.NaN : appSum / appWindows; }
         double shedAfter() { return windows == 0 ? Double.NaN : shedSum / windows; }
     }
 

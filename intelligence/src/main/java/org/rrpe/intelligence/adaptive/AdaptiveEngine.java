@@ -143,6 +143,135 @@ public class AdaptiveEngine {
     }
     RateState rateState(String service, Source source) { return rates.computeIfAbsent(key(service, source), ignored -> new RateState()); }
 
+    private AdaptiveConfig.AutoApproval autoApproval = AdaptiveConfig.AutoApproval.none();
+    /** {@code rrpe.adaptive.auto-approve-actions}; empty (the default) keeps every recommendation waiting for a reviewer. */
+    @Autowired(required = false)
+    public void configureAutoApproval(AdaptiveConfig.AutoApproval autoApproval) { if (autoApproval != null) this.autoApproval = autoApproval; }
+    /** The services each analysed chain passes through, for the cross-lever lock. */
+    private record ChainPath(String chain, Source source, List<String> services) {}
+    private final Map<String, ChainPath> chainPaths = new ConcurrentHashMap<>();
+
+    /** A deadline change is pending, or was applied within the stabilisation period, on a chain through this service. */
+    private boolean crossLeverLocked(String service, Source source) {
+        Instant now = clock.instant();
+        for (var path : chainPaths.values()) {
+            if ((path.source() == Source.MOCK) != (source == Source.MOCK) || !path.services().contains(service)) continue;
+            if (workflow.pending(path.chain(), Action.CHAIN_DEADLINE, path.source()).isPresent()) return true;
+            Instant applied = workflow.lastApplied(path.chain(), Action.CHAIN_DEADLINE, path.source());
+            if (applied != null && Duration.between(applied, now).compareTo(rate.stabilisation()) < 0) return true;
+        }
+        return false;
+    }
+
+    /** Automatic approval is possible now for this kind and service (allowed, live, not paused, no cross-lever lock). */
+    private boolean automaticAllowed(AdaptiveConfig.AutoKind kind, String service, Source source, RateState rs) {
+        return autoApproval.kinds().contains(kind) && source != Source.MOCK && !rs.autoPaused(clock.instant()) && !crossLeverLocked(service, source);
+    }
+
+    /** Offers a rate or retry recommendation; the guard may approve it automatically (reviewer {@code c4-auto}). */
+    private PolicyChange offerAuto(String service, Action action, Source source, Policy policy, double current, double proposed, String unit,
+            Instant windowEnd, Map<String, Double> measurements, String rule, List<String> evidence, String kind, Double floor, Double ceiling,
+            boolean persistent, boolean undo) {
+        RateState rs = rateState(service, source);
+        Review auto = null; String guard = null;
+        if (kind != null && !autoApproval.kinds().isEmpty()) {
+            var autoKind = AdaptiveConfig.AutoKind.valueOf(kind);
+            var check = AutoApprovalGuard.check(new AutoApprovalGuard.Request(autoKind, source, current, proposed, floor, ceiling, persistent, undo,
+                    crossLeverLocked(service, source), rs.autoPaused(clock.instant())), autoApproval.kinds(), rate, retrySettings);
+            guard = check.reason();
+            if (check.approve()) auto = new Review("c4-auto", true, "Approved automatically by policy: " + check.reason());
+            else if (autoApproval.kinds().contains(autoKind)) evidence.add("Automatic approval not used: " + check.reason() + "; a reviewer decides");
+        }
+        var change = offer(service, action, source, policy, current, proposed, unit, windowEnd, measurements, rule, evidence, auto);
+        if (auto != null && change.decision() == Decision.APPROVED && "c4-auto".equals(change.reviewer()) && !change.proposal().id().equals(rs.lastAutoAudited)) {
+            rs.lastAutoAudited = change.proposal().id();
+            if (action == Action.LEAKY_BUCKET) rs.autoProposalId = change.proposal().id();
+            audit.rate(AuditLog.RATE_AUTO_APPROVED, change, Map.of("kind", kind, "guard", guard, "rule", rule, "inputs", measurements));
+        }
+        return change;
+    }
+
+    /**
+     * Follows the latest automatic rate change (guide §6.4–6.5). Once applied, its direction is recorded (flips) and it is
+     * checked on the next {@code verify-windows} disjoint windows: a raise passes when shedding falls (or is zero) and the
+     * app time stays ≤ 1.5 × P0; a cut passes when the app time improves by ≥ 20% or returns to ≤ 1.5 × P0. A failed check
+     * is undone automatically (reviewer {@code c4-auto-revert}). Too many undos or flips pause automatic approval. Returns
+     * true while the rate holds (an automatic change waits to be applied or is being checked).
+     */
+    private boolean followAutomaticChange(ServiceWindow window, Policy policy, RateState rs, RateDiagnosis.Result result, Double shed, Double p0,
+            double current, List<String> evidence, List<PolicyChange> changes) {
+        String service = window.service(); Source source = window.source(); Instant now = clock.instant();
+        if (rs.autoProposalId != null) {
+            PolicyChange c;
+            try { c = workflow.find(rs.autoProposalId); } catch (IllegalArgumentException gone) { c = null; }
+            if (c == null || c.decision() != Decision.APPROVED || c.delivery() == Delivery.SUPERSEDED || c.delivery() == Delivery.EXPIRED) rs.autoProposalId = null;
+            else if (c.delivery() != Delivery.APPLIED) {
+                evidence.add("Rate v2: waiting for Component 3 to apply the automatic change " + fmt(c.proposal().currentValue()) + " → " + fmt(c.proposal().proposedValue()));
+                return true;
+            } else if (!c.proposal().id().equals(rs.trackedApplied)) {
+                rs.trackedApplied = c.proposal().id(); rs.autoProposalId = null;
+                double from = c.proposal().currentValue(), to = c.proposal().proposedValue();
+                rs.recordDirection(Double.compare(to, from), now, autoSettings.period());
+                if ("c4-auto-revert".equals(c.reviewer())) rs.recordUndo(now, autoSettings.period());
+                else {
+                    var m = c.proposal().measurements();
+                    rs.verification = new RateState.Verification(c.proposal().id(), to > from ? AdaptiveConfig.AutoKind.BUCKET_RAISE.name() : AdaptiveConfig.AutoKind.BUCKET_CUT.name(),
+                            from, to, m.getOrDefault("appMs", Double.NaN), m.getOrDefault("shedPerSecond", 0.0));
+                    rs.verification.startAt = c.lastAttempt() == null ? now : c.lastAttempt();
+                }
+                pauseIfUnstable(service, source, current, rs, now, evidence);
+            }
+        }
+        var v = rs.verification;
+        if (v == null) return false;
+        if (Math.abs(current - v.toRate) > 1e-9) { rs.verification = null; rs.lastVerification = "not checked: the rate changed again"; return false; }
+        if (!window.start().isBefore(v.startAt) && (v.lastEnd == null || !window.start().isBefore(v.lastEnd))) {
+            v.windows++; v.lastEnd = window.end(); v.shedSum += shed == null ? 0 : shed;
+            if (result.appMs() != null && Double.isFinite(result.appMs())) { v.appSum += result.appMs(); v.appWindows++; }
+        }
+        if (v.windows < autoSettings.verifyWindows()) {
+            evidence.add(String.format(Locale.ROOT, "Rate v2: checking the automatic change %s → %s (%d of %d windows)", fmt(v.fromRate), fmt(v.toRate), v.windows, autoSettings.verifyWindows()));
+            return true;
+        }
+        rs.verification = null;
+        double app = v.appAfter(), shedAfter = v.shedAfter();
+        if (v.appWindows == 0) { rs.lastVerification = "inconclusive: no app time measured"; evidence.add("Rate v2: check of the automatic change inconclusive (no app time); kept"); return false; }
+        double normal = rate.appTolerance() * (p0 != null ? p0 : v.appBefore);
+        boolean raise = AdaptiveConfig.AutoKind.BUCKET_RAISE.name().equals(v.kind);
+        // A raise is undone only when it slowed the app. Shedding that did not fall (demand grew) is no reason to lower the
+        // rate again, which would shed even more; the next raise may follow (see RATE_RETRY_V2_MIGRATION.md §6).
+        boolean pass = raise ? app <= normal : app <= (1 - rate.minImprovement()) * v.appBefore || app <= normal;
+        String detail = String.format(Locale.ROOT, "%s %s → %s: app time %.0f → %.0f ms (normal ≤ %.0f), shed %.1f → %.1f req/s",
+                raise ? "raise" : "cut", fmt(v.fromRate), fmt(v.toRate), v.appBefore, app, normal, v.shedBefore, shedAfter);
+        if (pass) {
+            boolean shedFell = shedAfter < v.shedBefore || shedAfter == 0;
+            rs.lastVerification = "passed: " + detail + (raise && !shedFell ? " (shedding did not fall: demand grew)" : "");
+            evidence.add("Rate v2: automatic change checked and kept (" + detail + (raise && !shedFell ? "; shedding did not fall, a further raise may follow" : "") + ")");
+            return false;
+        }
+        rs.lastVerification = "failed: " + detail;
+        if (raise) rs.rememberBrokeAt(v.toRate, now, rate.brokeAtMemory()); else { rs.lastCut = null; rs.antiRatchetHold = true; }
+        var measurements = new HashMap<String, Double>();
+        put(measurements, "appMs", app); put(measurements, "appBeforeMs", v.appBefore); put(measurements, "shedPerSecond", shedAfter);
+        put(measurements, "shedBeforePerSecond", v.shedBefore); put(measurements, "p0Ms", p0);
+        String rule = "Automatic undo: the automatic " + detail + " did not pass its check";
+        var undo = offer(service, Action.LEAKY_BUCKET, source, policy, current, v.fromRate, "requests/second", window.end(), measurements, rule, evidence,
+                new Review("c4-auto-revert", true, rule));
+        changes.add(undo);
+        rs.autoProposalId = undo.proposal().id(); rs.lastProposalId = undo.proposal().id();
+        audit.rate(AuditLog.RATE_AUTO_REVERTED, undo, Map.of("check", detail, "inputs", measurements));
+        return true;
+    }
+    /** Pauses automatic approval for the service after {@code max-reverts} undos or {@code max-flips} direction changes within {@code period}. */
+    private void pauseIfUnstable(String service, Source source, double current, RateState rs, Instant now, List<String> evidence) {
+        rs.undos.removeIf(t -> Duration.between(t, now).compareTo(autoSettings.period()) >= 0);
+        if (rs.autoPaused(now) || rs.undos.size() < autoSettings.maxReverts() && rs.flips.size() < autoSettings.maxFlips()) return;
+        rs.autoPausedUntil = now.plus(autoSettings.pause());
+        String reason = rs.undos.size() + " undos and " + rs.flips.size() + " direction changes in " + autoSettings.period().toMinutes() + " min";
+        evidence.add("Rate v2: automatic approval paused until " + rs.autoPausedUntil + " (" + reason + "); a reviewer decides");
+        audit.ratePaused(service, source, current, Map.of("reason", reason, "until", rs.autoPausedUntil.toString()));
+    }
+
     /** Latest rate decision per service, for the evidence. */
     record RateDecision(RateDiagnosis.Result result, Double rate, Double proposed, String kind, String rule, Map<String, Double> inputs) {}
 
@@ -187,10 +316,13 @@ public class AdaptiveEngine {
         inputs.put("errorsHigh", errorsHigh ? 1.0 : 0.0); inputs.put("persistentCycles", (double) streak);
         evidence.add("Rate v2: " + result.diagnosis() + " (" + result.reason() + ")");
 
-        Double proposed = null; String kind = null, rule = null;
+        Double proposed = null; String kind = null, rule = null; boolean undo = false;
         boolean persistent = streak >= settings.persistence();
         boolean cooldownOk = cooldown(service, Action.LEAKY_BUCKET, source);
-        if (!cooldownOk) {
+        boolean following = followAutomaticChange(window, policy, rs, result, shed, p0, current, evidence, changes);
+        if (following) {
+            // An automatic change waits to be applied, is being checked, or was just undone: decide nothing else now.
+        } else if (!cooldownOk) {
             // Decide nothing (and change no state) until the cooldown after the last applied rate change has passed.
             evidence.add("Rate v2: waiting for the cooldown after the last applied rate change");
         } else switch (result.diagnosis()) {
@@ -201,7 +333,7 @@ public class AdaptiveEngine {
                     // Anti-ratchet: a second cut only if the previous cut made the app time fall by ≥ 20% or back to normal.
                     boolean helped = result.appMs() <= (1 - rate.minImprovement()) * last.appBefore() || result.appMs() <= rate.appTolerance() * p0;
                     if (!helped) {
-                        proposed = last.fromRate(); kind = AdaptiveConfig.AutoKind.BUCKET_RAISE.name();
+                        proposed = last.fromRate(); kind = AdaptiveConfig.AutoKind.BUCKET_RAISE.name(); undo = true;
                         rule = String.format(Locale.ROOT, "Anti-ratchet: the previous cut %s → %s did not help the app (%.0f → %.0f ms); undo it and hold, the rate was not the problem",
                                 fmt(last.fromRate()), fmt(last.toRate()), last.appBefore(), result.appMs());
                         rs.lastCut = null; rs.antiRatchetHold = true;
@@ -210,9 +342,13 @@ public class AdaptiveEngine {
                 }
                 if (rs.antiRatchetHold) { evidence.add("Rate v2: holding after an anti-ratchet undo (the rate was not the problem)"); break; }
                 double cut = Math.max(RateDiagnosis.cut(current, accepted, floor, rate), RateDiagnosis.round(current * (1 - settings.maximumRateChange())));
+                // In automatic mode a cut goes in checked steps of at most −20% (the guard's step limit); a reviewer gets the full cut.
+                double step = RateDiagnosis.round(current * rate.cutFactor());
+                boolean stepwise = cut < step && automaticAllowed(AdaptiveConfig.AutoKind.BUCKET_CUT, service, source, rs);
                 if (cut < current) {
-                    proposed = cut; kind = AdaptiveConfig.AutoKind.BUCKET_CUT.name();
-                    rule = String.format(Locale.ROOT, "APP_OVERLOADED: cut max(floor %s, %.1f × min(rate %s, accepted %.1f req/s))", fmt(floor), rate.cutFactor(), fmt(current), accepted);
+                    proposed = stepwise ? step : cut; kind = AdaptiveConfig.AutoKind.BUCKET_CUT.name();
+                    rule = String.format(Locale.ROOT, "APP_OVERLOADED: cut max(floor %s, %.1f × min(rate %s, accepted %.1f req/s))", fmt(floor), rate.cutFactor(), fmt(current), accepted)
+                            + (stepwise ? "; automatic mode: a checked step to " + fmt(step) + " (at most −" + Math.round(100 * (1 - rate.cutFactor())) + "%) toward " + fmt(cut) : "");
                 }
             }
             case RATE_TOO_LOW -> {
@@ -246,14 +382,16 @@ public class AdaptiveEngine {
         }
         if (proposed != null) {
             var measurements = new HashMap<String, Double>(inputs);
-            var change = offer(service, Action.LEAKY_BUCKET, source, policy, current, proposed, "requests/second", window.end(), measurements, rule, evidence);
+            // HEALTHY proposes only after recovery-windows healthy cycles, so it is persistent too.
+            var change = offerAuto(service, Action.LEAKY_BUCKET, source, policy, current, proposed, "requests/second", window.end(), measurements, rule, evidence,
+                    kind, floor, ceiling, persistent || result.diagnosis() == RateDiagnosis.Diagnosis.HEALTHY, undo);
             changes.add(change);
             if (AdaptiveConfig.AutoKind.BUCKET_CUT.name().equals(kind) && !change.proposal().id().equals(rs.lastProposalId)) {
                 rs.rememberBrokeAt(current, now, rate.brokeAtMemory());
                 rs.lastCut = new RateState.Cut(current, proposed, result.appMs() == null ? Double.NaN : result.appMs());
             }
             rs.lastProposalId = change.proposal().id(); rs.lastKind = kind;
-        } else if (result.diagnosis() == RateDiagnosis.Diagnosis.HEALTHY || result.diagnosis() == RateDiagnosis.Diagnosis.WATCH) {
+        } else if (!following && (result.diagnosis() == RateDiagnosis.Diagnosis.HEALTHY || result.diagnosis() == RateDiagnosis.Diagnosis.WATCH)) {
             workflow.withdraw(service, Action.LEAKY_BUCKET, source, "Rate v2: " + result.diagnosis() + ", no rate change supported");
         }
         rs.lastDecision = new RateDecision(result, current, proposed, kind, rule, Map.copyOf(inputs));
@@ -294,9 +432,10 @@ public class AdaptiveEngine {
         if (appOverloaded || healthOverloaded) {
             if (current > 0 && cooldownOk) {
                 inputs.put("allowedRetries", 0.0);
-                changes.add(offer(service, Action.RETRY_BUDGET, source, policy, current, 0, "extra attempts/original request", window.end(), inputs,
+                changes.add(offerAuto(service, Action.RETRY_BUDGET, source, policy, current, 0, "extra attempts/original request", window.end(), inputs,
                         appOverloaded ? "APP_OVERLOADED: disable additional retries; original requests remain allowed"
-                                : "Overloaded: disable additional retries; original requests remain allowed", evidence));
+                                : "Overloaded: disable additional retries; original requests remain allowed", evidence,
+                        AdaptiveConfig.AutoKind.RETRY_DECREASE.name(), null, null, true, false));
                 return true;
             }
             return false;
@@ -310,9 +449,10 @@ public class AdaptiveEngine {
             if (!cooldownOk) return false;
             double next = current > retrySettings.step() ? retrySettings.step() : 0;
             inputs.put("allowedRetries", Math.floor(window.originalRequests() * next));
-            changes.add(offer(service, Action.RETRY_BUDGET, source, policy, current, next, "extra attempts/original request", window.end(), inputs,
+            changes.add(offerAuto(service, Action.RETRY_BUDGET, source, policy, current, next, "extra attempts/original request", window.end(), inputs,
                     String.format(Locale.ROOT, "Retries rarely succeed: %.0f of %.0f (upper bound %.2f < %.2f) for %d cycles; step down to %s, then 0",
-                            successes, attempts, success.upper(), retrySettings.minSuccess(), rs.retryLowStreak, fmtRatio(retrySettings.step())), evidence));
+                            successes, attempts, success.upper(), retrySettings.minSuccess(), rs.retryLowStreak, fmtRatio(retrySettings.step())), evidence,
+                    AdaptiveConfig.AutoKind.RETRY_DECREASE.name(), null, null, true, false));
             return true;
         }
         if (health == Health.STRESSED) { evidence.add("Retry v2: hold while STRESSED"); return false; }
@@ -329,9 +469,10 @@ public class AdaptiveEngine {
         }
         if (low) return false;
         inputs.put("allowedRetries", Math.floor(window.originalRequests() * next));
-        changes.add(offer(service, Action.RETRY_BUDGET, source, policy, current, next, "extra attempts/original request", window.end(), inputs,
+        changes.add(offerAuto(service, Action.RETRY_BUDGET, source, policy, current, next, "extra attempts/original request", window.end(), inputs,
                 String.format(Locale.ROOT, "Healthy for %d cycles with a quiet queue and retries that succeed (%.0f of %.0f); +%s toward %s",
-                        state.healthy, successes, attempts, fmtRatio(retrySettings.step()), fmtRatio(target)), evidence));
+                        state.healthy, successes, attempts, fmtRatio(retrySettings.step()), fmtRatio(target)), evidence,
+                AdaptiveConfig.AutoKind.RETRY_INCREASE.name(), null, null, true, false));
         return true;
     }
     private static String fmtRatio(double v) { return String.format(Locale.ROOT, "%.2f", v); }
@@ -351,6 +492,8 @@ public class AdaptiveEngine {
     public Outcome chain(ChainWindow window, ChainEvidence evidence, Map<String, Double> supportingMeasurements, List<String> supportingEvidence) {
         if (window == null || window.chain() == null || window.chain().isBlank() || window.source() == null) throw new IllegalArgumentException("Chain and source are required");
         State state = chains.computeIfAbsent(key(window.chain(), window.source()), ignored -> new State());
+        if (window.services() != null && !window.services().isEmpty())
+            chainPaths.put(key(window.chain(), window.source()), new ChainPath(window.chain(), window.source(), List.copyOf(window.services())));
         synchronized (state) {
             if (window.end() != null && window.end().isAfter(clock.instant())) {
                 reset(state); workflow.withdraw(window.chain(), Action.CHAIN_DEADLINE, window.source(), "Future-dated chain evidence");
@@ -799,10 +942,14 @@ public class AdaptiveEngine {
     }
     private PolicyChange offer(String target, Action action, Source source, Policy policy, double current, double proposed,
             String unit, Instant windowEnd, Map<String, Double> measurements, String rule, List<String> evidence) {
+        return offer(target, action, source, policy, current, proposed, unit, windowEnd, measurements, rule, evidence, null);
+    }
+    private PolicyChange offer(String target, Action action, Source source, Policy policy, double current, double proposed,
+            String unit, Instant windowEnd, Map<String, Double> measurements, String rule, List<String> evidence, Review auto) {
         Instant now = clock.instant(); Instant expiry = now.plus(settings.ttl()); if (policy.validUntil().isBefore(expiry)) expiry = policy.validUntil();
         var data = new HashMap<>(measurements); data.put("windowEndEpochSeconds", (double) windowEnd.getEpochSecond());
         var reasons = new ArrayList<>(evidence); reasons.add(rule);
-        return workflow.offer(new Proposal(UUID.randomUUID(), target, action, source, policy.version(), current, proposed, unit, now, expiry, Map.copyOf(data), List.copyOf(reasons)));
+        return workflow.offer(new Proposal(UUID.randomUUID(), target, action, source, policy.version(), current, proposed, unit, now, expiry, Map.copyOf(data), List.copyOf(reasons)), auto);
     }
     private Outcome previousOrWaiting(State state, String target, Source source, Instant end) {
         return state.outcome == null ? new Outcome(new Assessment(target, Health.INSUFFICIENT_DATA, source, end, 0, Map.of(), Map.of(), List.of("Waiting for a distinct analysis cycle")), List.of()) : state.outcome;

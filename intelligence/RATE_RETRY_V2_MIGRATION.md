@@ -116,3 +116,26 @@ Approved as proposed below, with these notes:
     `retryDurationMs`) are kept in the API but no longer used by the budget rule: these checks belong to the sidecar's
     retry logic (guide §5).
   - The protective step down goes straight from the current ratio to 0.02 (for example 0.05 → 0.02), as in the guide's table.
+- **Automatic approval (Step 5).** `PolicyWorkflow.offer(Proposal)` is unchanged; a new `offer(Proposal, Review auto)`
+  creates the change APPROVED (reviewer `c4-auto` or `c4-auto-revert`) and calls `audit.decided`. It refuses chain
+  deadlines and MOCK recommendations. A human rejection of the identical recommendation still holds (30 min) and is
+  never overridden. New audit kinds `RATE_AUTO_APPROVED`, `RATE_AUTO_REVERTED`, `RATE_AUTO_PAUSED` use the same table and
+  columns (detail = JSON with kind, guard reason, rule and inputs, or the check result).
+- **Cross-lever lock is a little stricter than the guide.** Besides a *pending* deadline proposal on a chain through the
+  service, a deadline change *applied* on such a chain within the stabilisation period (5 min, demo 1 min) also blocks
+  automatic rate/retry approval. Chains are matched by the service list of the analysed chain windows. This only makes
+  automatic approval rarer (for e2e `95`, see below).
+- **A raise is undone only when it slowed the app (deviation from guide §6.4).** The guide says a raise passes "if
+  rejections fall and Papp ≤ 1.5 × P0". In the simulation a raise was undone because demand grew afterwards (shedding
+  rose), and the undo made shedding worse. Now a raise fails only when the app time is above 1.5 × P0; if shedding did
+  not fall, the raise is kept, the evidence says so, and a further raise may follow. A cut passes as in the guide.
+- **Automatic cuts go in checked steps (interpretation).** The cut formula can propose more than −20% (example 2:
+  100 → 50), but the guard allows at most −20% per automatic step, so a real overload would wait for a reviewer the whole
+  time. When an automatic cut is possible for the service (allowed, live, not paused, not locked), the proposal is
+  `max(full cut, 0.8 × rate)`, and the evidence names the full cut. Each step is checked before the next. A reviewer
+  (human mode, or when automatic approval is not possible) still gets the full cut. In the simulation (example 2,
+  automatic): 100 → 80 → 64 → 51.2, a probe to 57.6, then it settles below the app capacity 60, never below the floor,
+  with no pause needed.
+- **While an automatic change waits to be applied or is being checked** (2 disjoint windows), the rate rule decides
+  nothing else for that service. A check without any app-time measurement is inconclusive and keeps the change.
+- **Retry changes are not checked after they are applied** (the guide's check covers rate raises and cuts only).

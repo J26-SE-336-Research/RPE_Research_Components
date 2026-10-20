@@ -76,7 +76,15 @@ public class PolicyWorkflow {
                 && key(target, item.proposal().source()).equals(key(target, source)) && item.delivery() == Delivery.APPLIED)
                 .map(PolicyChange::lastAttempt).filter(Objects::nonNull).max(Instant::compareTo).orElse(null);
     }
-    public synchronized PolicyChange offer(Proposal proposal) {
+    public synchronized PolicyChange offer(Proposal proposal) { return offer(proposal, null); }
+    /**
+     * Rate v2 automatic approval: with {@code auto} (reviewer {@code c4-auto} or {@code c4-auto-revert}, chosen by the engine's
+     * guard) a rate or retry recommendation is created APPROVED and audited as decided. Never for a chain deadline or a
+     * synthetic (MOCK) recommendation; without {@code auto} every recommendation waits for a human exactly as before.
+     */
+    public synchronized PolicyChange offer(Proposal proposal, Review auto) {
+        if (auto != null && (proposal.action() == Action.CHAIN_DEADLINE || proposal.source() == Source.MOCK || auto.reviewer() == null
+                || !auto.reviewer().startsWith("c4-auto") || !auto.approve())) throw new IllegalArgumentException("Automatic approval is only for live rate and retry recommendations");
         expire();
         Policy policy = current(proposal.target(), proposal.source());
         if (policy == null || !policy.version().equals(proposal.baseVersion()) || !proposal.expiresAt().isAfter(clock.instant())
@@ -98,22 +106,30 @@ public class PolicyWorkflow {
                     var p = proposal;
                     var refreshed = new Proposal(previous.proposal().id(), p.target(), p.action(), p.source(), p.baseVersion(), p.currentValue(),
                             p.proposedValue(), p.unit(), p.generatedAt(), p.expiresAt(), p.measurements(), p.evidence());
-                    var updated = new PolicyChange(refreshed, previous.decision(), previous.reviewer(), previous.decidedAt(), previous.delivery(),
+                    PolicyChange updated = new PolicyChange(refreshed, previous.decision(), previous.reviewer(), previous.decidedAt(), previous.delivery(),
                             previous.detail(), previous.attempts(), previous.lastAttempt(), previous.appliedVersion());
                     history.put(refreshed.id(), updated);
+                    if (auto != null && updated.decision() == Decision.PENDING_APPROVAL) {
+                        updated = replace(updated, Decision.APPROVED, auto.reviewer(), clock.instant(), updated.delivery(), auto.comment(), updated.attempts(), updated.lastAttempt(), null);
+                        audit.decided(updated);
+                    }
                     return updated;
                 }
                 replace(previous, previous.decision(), previous.reviewer(), previous.decidedAt(), Delivery.SUPERSEDED,
                         "Superseded by newer evidence", previous.attempts(), previous.lastAttempt(), null);
             }
         }
-        // Every recommendation (rate, retry budget and deadline) requires human approval before delivery.
+        // Every recommendation requires human approval before delivery, unless the engine's guard approved a rate or retry change.
         Delivery delivery = proposal.source() == Source.MOCK || connections.component3Url().isBlank()
                 ? Delivery.WAITING_FOR_COMPONENT_3 : Delivery.READY;
         var change = new PolicyChange(proposal, Decision.PENDING_APPROVAL, null, null, delivery,
                 proposal.source() == Source.MOCK ? "Synthetic example; never sent to Component 3" : "Awaiting human approval", 0, null, null);
         history.put(proposal.id(), change);
         audit.proposed(change);
+        if (auto != null) {
+            change = replace(change, Decision.APPROVED, auto.reviewer(), clock.instant(), delivery, auto.comment(), 0, null, null);
+            audit.decided(change);
+        }
         if (history.size() > 2000) history.entrySet().removeIf(entry -> !active(entry.getValue()) && history.size() > 1000);
         return change;
     }
