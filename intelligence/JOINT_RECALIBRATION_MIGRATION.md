@@ -191,3 +191,10 @@ Panel cannot start them. Please add (this work does not change the hub):
   it idempotent), then one two-phase rollout; every part becomes ACCEPTED, then APPLIED with the same epoch. A joint is
   sent only when all its parts are approved and all its services are free (one change per service per cycle); it is
   never sent in halves. Single proposals keep the existing payload (no `parts`). Live test: waits for C3's fix (D5).
+- **Step 4.** After APPLIED, deadline v2 registers the joint's deadline part as the chain's applied change with
+  `DeadlineCase.RECALIBRATE` (additive enum value): SETTLING, verification and `DeadlineSafety.applied` run as for any
+  change; `DeadlineVerifier` is unchanged (RECALIBRATE is checked with the `A_RAISE` rule when the deadline went up and the
+  `D_TIGHTEN` rule when it went down). The chain's healthy-time model and calibration rates restart at the switch.
+  - **Fix found by the test:** yesterday's rule "a reviewer's rate/retry approval during settling → INCONCLUSIVE" counted
+    the joint's own rate part (approved in the same decision) as a separate change. The parts of the same joint are now
+    left out (`reviewerApprovedSince(…, exceptJoint)`); changes of other recommendations still make it INCONCLUSIVE.

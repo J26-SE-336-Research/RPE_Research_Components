@@ -306,6 +306,16 @@ public class PolicyWorkflow {
         }
         cascadeJoints();
     }
+    /** The latest applied deadline part of a joint recommendation for this chain, or null. */
+    public synchronized PolicyChange appliedJointDeadline(String chain, Source source) {
+        PolicyChange latest = null;
+        for (UUID id : jointOf.keySet()) {
+            var c = history.get(id);
+            if (c != null && c.delivery() == Delivery.APPLIED && c.proposal().action() == Action.CHAIN_DEADLINE && c.proposal().target().equals(chain)
+                    && key(chain, c.proposal().source()).equals(key(chain, source)) && (latest == null || c.lastAttempt().isAfter(latest.lastAttempt()))) latest = c;
+        }
+        return latest;
+    }
     /** Withdraws every part of the active joint recommendations that touch {@code target}. */
     public synchronized void withdrawJoint(String target, Source source, String reason) {
         for (var joint : new ArrayList<>(joints.entrySet())) {
@@ -343,10 +353,13 @@ public class PolicyWorkflow {
     }
 
     /** Rate and retry changes approved by a reviewer (not automatically) for a target at or after {@code since}. */
-    public synchronized boolean reviewerApprovedSince(String target, Source source, Instant since) {
+    public synchronized boolean reviewerApprovedSince(String target, Source source, Instant since) { return reviewerApprovedSince(target, source, since, null); }
+    /** As above, leaving out the parts of joint recommendation {@code exceptJoint} (one decision with the change being verified). */
+    public synchronized boolean reviewerApprovedSince(String target, Source source, Instant since, UUID exceptJoint) {
         return history.values().stream().anyMatch(item -> item.proposal().target().equals(target) && item.proposal().action() != Action.CHAIN_DEADLINE
                 && key(target, item.proposal().source()).equals(key(target, source)) && item.decision() == Decision.APPROVED
-                && item.reviewer() != null && !item.reviewer().startsWith("c4-auto") && item.decidedAt() != null && !item.decidedAt().isBefore(since));
+                && item.reviewer() != null && !item.reviewer().startsWith("c4-auto") && item.decidedAt() != null && !item.decidedAt().isBefore(since)
+                && (exceptJoint == null || !exceptJoint.equals(jointOf.get(item.proposal().id()))));
     }
     private boolean sameControl(Proposal a, Proposal b) { return a.action() == b.action() && key(a.target(), a.source()).equals(key(b.target(), b.source())); }
     private boolean active(PolicyChange item) { return item.delivery() != Delivery.APPLIED && item.delivery() != Delivery.EXPIRED && item.delivery() != Delivery.SUPERSEDED && item.decision() != Decision.REJECTED; }

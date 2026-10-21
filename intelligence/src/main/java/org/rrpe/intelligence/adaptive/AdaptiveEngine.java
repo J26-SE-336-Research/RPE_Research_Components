@@ -755,6 +755,8 @@ public class AdaptiveEngine {
     private static class Settling {
         final DeadlineCase applied; final long fromMs, toMs; final Proportion hBefore; int settleLeft, verified;
         Instant startedAt;
+        /** The joint recommendation this applied change belongs to (null for a deadline v2 change). */
+        UUID jointId;
         final List<LabelledSample> pool = new ArrayList<>();
         Settling(DeadlineCase applied, long fromMs, long toMs, Proportion hBefore, int settleLeft) {
             this.applied = applied; this.fromMs = fromMs; this.toMs = toMs; this.hBefore = hBefore; this.settleLeft = settleLeft;
@@ -883,6 +885,15 @@ public class AdaptiveEngine {
             String reason = v.safety.rejectingMiddleware(now);
             if (reason != null) pause(v, reason, now, chain, source);
         }
+        // Joint recalibration (flag on only, C3 J5): an applied joint deadline part is registered like an applied deadline proposal
+        // (case RECALIBRATE: settling, verification, safety), and the chain's healthy time is learned again from the new epoch.
+        if (joint.enabled()) {
+            var part = workflow.appliedJointDeadline(chain, source);
+            if (part != null && !part.proposal().id().equals(v.trackedApplied) && !part.proposal().id().equals(v.lastProposalId)) {
+                v.lastProposalId = part.proposal().id(); v.lastProposalCase = DeadlineCase.RECALIBRATE;
+                healthy.reset(key); v.calibrationRates.clear();
+            }
+        }
         if (v.lastProposalId != null && !v.lastProposalId.equals(v.trackedApplied) && v.state != ChainDeadlineState.PAUSED) {
             PolicyChange applied = null;
             try { applied = workflow.find(v.lastProposalId); } catch (IllegalArgumentException ignored) { /* trimmed history */ }
@@ -891,6 +902,7 @@ public class AdaptiveEngine {
                 long from = Math.round(applied.proposal().currentValue()), to = Math.round(applied.proposal().proposedValue());
                 DeadlineCase appliedCase = v.lastProposalCase != null ? v.lastProposalCase : to > from ? DeadlineCase.A_RAISE : DeadlineCase.D_TIGHTEN;
                 v.settling = new Settling(appliedCase, from, to, v.lastH, deadline.settleWindows()); v.settling.startedAt = now;
+                v.settling.jointId = workflow.jointOf(applied.proposal().id());
                 v.state = ChainDeadlineState.SETTLING; v.verification = null;
                 String reason = v.safety.applied(from, to, now);
                 if (reason != null) pause(v, reason, now, chain, source);
@@ -905,12 +917,13 @@ public class AdaptiveEngine {
                 if (++s.verified >= deadline.verifyWindows()) {
                     var hAfter = proportionOf(s.pool, RequestLabel.H); var oAfter = proportionOf(s.pool, RequestLabel.O);
                     boolean cleared = share(s.pool, l -> l.label() == RequestLabel.O) < deadline.shareThreshold();
-                    var result = DeadlineVerifier.verify(s.applied, s.hBefore, hAfter, oAfter, cleared, deadline, settings.minimumChainRequests());
+                    DeadlineCase checked = s.applied == DeadlineCase.RECALIBRATE ? (s.toMs > s.fromMs ? DeadlineCase.A_RAISE : DeadlineCase.D_TIGHTEN) : s.applied;
+                    var result = DeadlineVerifier.verify(checked, s.hBefore, hAfter, oAfter, cleared, deadline, settings.minimumChainRequests());
                     // A reviewer changed a rate or retry budget on this path while the deadline was settling: the windows mix
                     // two changes, so the deadline check proves nothing (and never causes a revert).
                     Source serviceSource = source == Source.MOCK ? Source.MOCK : Source.PROMETHEUS;
                     String confounded = s.startedAt == null ? null
-                            : services.stream().filter(svc -> workflow.reviewerApprovedSince(svc, serviceSource, s.startedAt)).findFirst().orElse(null);
+                            : services.stream().filter(svc -> workflow.reviewerApprovedSince(svc, serviceSource, s.startedAt, s.jointId)).findFirst().orElse(null);
                     if (confounded != null) result = new DeadlineVerifier.Verification(DeadlineVerifier.Result.INCONCLUSIVE,
                             "a reviewer approved a rate or retry change for " + confounded + " while the deadline was settling");
                     v.verification = result.result() + " after " + s.applied + " " + s.fromMs + " → " + s.toMs + " ms: " + result.detail();
@@ -1098,6 +1111,7 @@ public class AdaptiveEngine {
                     now, d.proposedMs(), pctText(o.p()));
             case D_TIGHTEN -> String.format(Locale.ROOT, "Tighten the deadline %d → %d ms: the chain is healthy and the deadline is longer than 1.25 × D*", now, d.proposedMs());
             case C_KEEP_FIRING -> String.format(Locale.ROOT, "Keep the deadline %d ms: the overload signal fires (%s of overloaded requests are signalled)", now, pctText(o.p()));
+            case RECALIBRATE -> String.format(Locale.ROOT, "Recalibrate the deadline %d → %d ms with the healthy rate change (joint recommendation)", now, d.proposedMs());
             case HOLD -> "Hold the deadline at " + now + " ms (" + d.holdReason() + "): " + d.rule().substring(d.rule().indexOf(':') + 2);
         };
     }
