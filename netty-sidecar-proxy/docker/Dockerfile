@@ -6,12 +6,14 @@ FROM maven:3.9.9-eclipse-temurin-21 AS build
 WORKDIR /workspace
 # Component 1 protocol library (X-RPE-Context codec)
 COPY libs/rpe-java ./libs/rpe-java
-RUN --mount=type=cache,target=/root/.m2 \
-    mvn --batch-mode --no-transfer-progress -q -f libs/rpe-java/pom.xml -DskipTests install
 COPY netty-sidecar-proxy/pom.xml ./netty-sidecar-proxy/pom.xml
 COPY netty-sidecar-proxy/src ./netty-sidecar-proxy/src
+# One step on purpose: rpe-java is installed into /root/.m2, a cache mount that is not part of the image layer. In CI
+# the layer cache (type=gha) can reuse a separate install step while the runner's cache mount is empty, and the proxy
+# build then cannot find rpe-java. Installing and packaging in the same step avoids that.
 RUN --mount=type=cache,target=/root/.m2 \
-    mvn --batch-mode --no-transfer-progress -q -f netty-sidecar-proxy/pom.xml -DskipTests package
+    mvn --batch-mode --no-transfer-progress -q -f libs/rpe-java/pom.xml -DskipTests install \
+    && mvn --batch-mode --no-transfer-progress -q -f netty-sidecar-proxy/pom.xml -DskipTests package
 
 # The same image runs the rpe-init container (iptables / ip) and the proxy container.
 FROM eclipse-temurin:21-jre
