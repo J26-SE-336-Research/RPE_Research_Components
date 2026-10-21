@@ -147,6 +147,24 @@ public class AdaptiveEngine {
     /** {@code rrpe.adaptive.auto-approve-actions}; empty (the default) keeps every recommendation waiting for a reviewer. */
     @Autowired(required = false)
     public void configureAutoApproval(AdaptiveConfig.AutoApproval autoApproval) { if (autoApproval != null) this.autoApproval = autoApproval; }
+
+    // ---------------------------------------------------------------- joint healthy recalibration ----------------------------------------------------------------
+
+    private AdaptiveConfig.JointSettings joint = AdaptiveConfig.JointSettings.defaults();
+    /** {@code rrpe.adaptive.joint.*}; disabled by default: every joint hook then does nothing. */
+    @Autowired(required = false)
+    public void configureJoint(AdaptiveConfig.JointSettings joint) { if (joint != null) this.joint = joint; }
+    private void recordCalibrationRates(ChainV2 v, Collection<String> services, Source chainSource) {
+        Source serviceSource = chainSource == Source.MOCK ? Source.MOCK : Source.PROMETHEUS;
+        var rates = new HashMap<String, Double>();
+        for (String s : services) { Policy p = workflow.current(s, serviceSource); if (p != null && number(p.bucketRate()) && p.bucketRate() > 0) rates.put(s, p.bucketRate()); }
+        v.calibrationRates.addLast(Map.copyOf(rates)); while (v.calibrationRates.size() > settings.baselineSamples()) v.calibrationRates.removeFirst();
+    }
+    /** The median rate of {@code service} in the chain's calibration windows (D1), or null when unknown. */
+    static Double calibrationRate(Deque<Map<String, Double>> windows, String service) {
+        double[] r = windows.stream().map(w -> w.get(service)).filter(Objects::nonNull).mapToDouble(Double::doubleValue).toArray();
+        return r.length == 0 ? null : RobustStatistics.median(r);
+    }
     /** The services each analysed chain passes through, for the cross-lever lock. */
     private record ChainPath(String chain, Source source, List<String> services) {}
     private final Map<String, ChainPath> chainPaths = new ConcurrentHashMap<>();
@@ -357,6 +375,10 @@ public class AdaptiveEngine {
         rs.learnApp(result.appMs(), clean, shed != null && shed > 0, !errorsHigh, baselineSettings.allowShedWindows(),
                 queuePct != null && queuePct >= rate.queueHighPercent(), settings.baselineSamples());
         int streak = rs.observe(result.diagnosis());
+        // Joint recalibration (flag on only): the healthy queue depth Q of this service.
+        if (joint.enabled() && result.diagnosis() == RateDiagnosis.Diagnosis.HEALTHY && depth != null && Double.isFinite(depth)) {
+            rs.healthyDepth.addLast(depth); while (rs.healthyDepth.size() > settings.baselineSamples()) rs.healthyDepth.removeFirst();
+        }
         double retryRatio = number(policy.retryRatio()) ? policy.retryRatio() : 0;
         double demand = (accepted + (shed == null ? 0 : shed)) * (1 + retryRatio);
         double maxDemand = rs.maxDemand(demand, 3);
@@ -611,6 +633,8 @@ public class AdaptiveEngine {
         Proportion lastH; String lastAuditedDecision; Instant conflictSince;
         /** Healthy requests persistently exceed the deadline (Case A streak): the deadline is not settled (cross-lever lock). */
         boolean raiseBuilding;
+        /** Joint recalibration: the rate of each service on the path in the counted windows T_h is learned from (flag on only). */
+        final Deque<Map<String, Double>> calibrationRates = new ArrayDeque<>();
     }
     /** An applied change being verified: skip {@code settleLeft} counted windows, then collect {@code verify-windows} at the new budget. */
     private static class Settling {
@@ -696,6 +720,8 @@ public class AdaptiveEngine {
         HealthyModel model = counted
                 ? healthy.update(key, end, labelled, windowBudget, eligible, deadline, settings.baselineSamples(), settings.minimumDeadlineMs(), settings.maximumDeadlineMs())
                 : healthy.model(key, deadline, settings.minimumDeadlineMs(), settings.maximumDeadlineMs());
+        // Joint recalibration (flag on only): the rates of the path's services in the windows the healthy time is learned from.
+        if (joint.enabled() && counted && eligible) recordCalibrationRates(v, services, source);
         if (counted && !mixed) {
             v.recent.addLast(new CountedWindow(end, windowBudget, labelled));
             long keep = Math.max(1, deadline.maxWiden().toSeconds() / Math.max(1, settings.window().toSeconds())) + 1;

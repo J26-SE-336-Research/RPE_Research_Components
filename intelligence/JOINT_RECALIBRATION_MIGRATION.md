@@ -109,3 +109,61 @@ Each card's evidence starts with "Joint recommendation <id>". Approving or rejec
 parts. Later the Recommendations page can show one combined card: `GET /api/v2/intelligence` will have an optional
 `joints` field (`jointId`, part proposal ids, service, chains, decision) to group them. Nothing in the console has to
 change for the feature to work.
+
+## 8. Owner decisions (21 Oct 2026)
+
+- **D1:** `r_old` = the service's rate in the windows from which the chain's current `T_h` was learned (median over
+  those windows). The evidence records both that rate (`jointRateOld`) and the last step's rate (`jointRateLastStep`).
+- **D2:** the three extra hooks are allowed; each does nothing when `rrpe.adaptive.joint.enabled` is false (proved by the
+  unchanged full suite with the flag off).
+- **D3:** one rate card plus one deadline card per chain through the service.
+- **D4:** retry holds while a joint waits, subject to the priority rules below.
+- **D5:** the joint delivery is built and unit-tested now. **The live test waits for C3 (Kalhara) to confirm his fix**
+  for a joint version that takes over services which had separate policies before.
+- **D6:** the flag stays on for e2e 95; the "deadline not settled" guard blocks any joint card while 95 changes the
+  deadline (test added).
+
+### Priority: the normal recommendations come first, joint cards second
+
+1. Rate v2, retry v2 and deadline v2 recommendations always have priority. A joint card never blocks, delays or replaces
+   any of them, except the single healthy rate step it came from.
+2. A joint card is created only when no normal recommendation is needed or pending for that service or chain: no
+   overload cut, no RATE_TOO_LOW raise, no retry change, no deadline case A/B/C/D (the chain's last counted deadline
+   decision is HOLD `IN_BAND` with no persistence streak), no pending normal proposal.
+3. If, while a joint card waits, a normal recommendation becomes needed for that service or chain (OVERLOADED,
+   STRESSED, RATE_TOO_LOW, retry → 0, deadline case A/B/C/D), the joint card is withdrawn immediately and the normal
+   recommendation is offered in the same cycle.
+4. If both could be made in the same cycle, the normal one is made and the joint card is skipped.
+5. Joint cards have the normal recommendation lifetime.
+
+This changes design point "Lock (J3)" of section 4: while a joint waits, the rate, retry and deadline rules still run
+every cycle for its service and chains. When none of them needs a change, they hold (so they do not replace the joint's
+parts). When one of them needs a change, the joint is withdrawn first and that change is offered.
+
+### Showing joint cards
+
+- `RRPE_ADAPTIVE_JOINT_ENABLED=true` in `deploy/k8s/platform/intelligence.yaml`.
+- `POST /api/v2/intelligence/demo/joint-recovery` and `/demo/joint-capacity-drop` always produce a joint card with C3's
+  example numbers (payment 50 → 100/s with the deadline 875 → 780 ms; 100 → 60/s with 780 → 850 ms).
+
+## 9. Note for the hub owner
+
+The hub's intelligence scenario list (`hub/features.go`) does not yet contain the newer C4 scenario names, so the Admin
+Panel cannot start them. Please add (this work does not change the hub):
+- deadline v2 examples: `deadline-too-long-under-overload`, `deadline-too-short-day-one`, `services-slowing`,
+  `queue-rate-not-deadline`, `mixed-paths`, `rejecting-middleware-504`;
+- rate and retry v2: `rate-too-low`, `rate-too-low-day-one`, `rate-real-overload`, `rate-recovery`, `rate-short-burst`,
+  `rate-bursts`, `retry-storm-rate`;
+- joint recalibration: `joint-recovery`, `joint-capacity-drop`.
+
+## 10. Implementation notes (per step)
+
+- **Step 1.** `JointSettings` (`rrpe.adaptive.joint.enabled` false, `min-change-fraction` 0.05, `min-change-ms` 10),
+  `HealthyRecalibration` (pure), and two recording hooks that only run with the flag on: the HEALTHY windows' maximum
+  queue depth per service (`RateState.healthyDepth`, `Q` = median) and the path services' rates in each counted
+  eligible chain window (`ChainV2.calibrationRates`, `r_old` = median, D1).
+  - **Threshold on the rate's own effect (addition).** A joint also needs `|D*' − D*| ≥ threshold`, the change of the
+    target caused by the rate. Otherwise a chain whose deadline sits elsewhere in its healthy band would get a joint card
+    with an empty queue (C3 example 3), although that correction is deadline v2's own job.
+  - C3's example 1 uses `D` = 875 ms, while `ceil10(700 × 1.25)` = 880 ms; the results (780 ms, 850 ms, rate alone for
+    `Q ≈ 0`) are the same.
