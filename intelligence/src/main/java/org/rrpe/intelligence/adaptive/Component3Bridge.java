@@ -55,7 +55,20 @@ public class Component3Bridge {
             // rolling out: each new version is built from the effective spec, so two at once would undo each other.
             var busy = new java.util.HashSet<String>();
             for (var change : workflow.sent()) busy.add(policyService(change.proposal()));
-            for (var change : workflow.deliverable()) if (busy.add(policyService(change.proposal()))) deliver(change, effective);
+            var joints = new java.util.HashSet<UUID>();
+            for (var change : workflow.deliverable()) {
+                UUID joint = workflow.jointOf(change.proposal().id());
+                if (joint == null) { if (busy.add(policyService(change.proposal()))) deliver(change, effective); continue; }
+                // A joint recommendation (C3 J4): all its parts in one policy version and one rollout, once every service is free.
+                if (!joints.add(joint)) continue;
+                var parts = workflow.jointParts(joint);
+                var services = parts.stream().map(p -> policyService(p.proposal())).collect(java.util.stream.Collectors.toSet());
+                boolean ready = parts.stream().allMatch(p -> p.decision() == Decision.APPROVED && p.delivery() != Delivery.SENT && p.delivery() != Delivery.APPLIED
+                        && p.delivery() != Delivery.SUPERSEDED && p.delivery() != Delivery.EXPIRED);
+                if (!ready || services.stream().anyMatch(busy::contains)) continue;
+                busy.addAll(services);
+                deliverJoint(joint, parts, effective);
+            }
             sync(effective());
         } catch (RuntimeException e) {
             LOG.log(Level.WARNING, "Component 3 bridge: " + e.getMessage());
@@ -98,6 +111,56 @@ public class Component3Bridge {
             workflow.deliveryResult(p.id(), new Acknowledgement("ACCEPTED", epoch, null), null);
         } catch (RuntimeException e) {
             workflow.deliveryResult(p.id(), null, e.getMessage());
+        }
+    }
+
+    /**
+     * Sends a joint recommendation as ONE policy with {@code parts} (C3 request 6.3): the gateway part carries every changed
+     * route deadline, each service part its new rate, each built from that service's effective spec. {@code policyId} is the
+     * gateway's effective policy, {@code recommendationId} the joint id; then one two-phase rollout. All parts share the epoch.
+     */
+    private void deliverJoint(UUID joint, java.util.List<PolicyChange> parts, Map<String, JsonNode> effective) {
+        String gateway = connections.gatewayService();
+        var specs = new LinkedHashMap<String, ObjectNode>(); var routes = new LinkedHashMap<String, String>();
+        for (var change : parts) {
+            var p = change.proposal(); String service = policyService(p);
+            JsonNode current = effective.get(service);
+            ObjectNode spec = specs.computeIfAbsent(service, s -> current != null ? (ObjectNode) json.readTree(current.path("spec").asString("{}")) : json.createObjectNode());
+            String route = current != null ? current.path("route").asString("") : "";
+            routes.putIfAbsent(service, route);
+            switch (p.action()) {
+                case LEAKY_BUCKET -> object(spec, "leakyBucket").put("ratePerSec", p.proposedValue());
+                case RETRY_BUDGET -> object(spec, "retry").put("budgetRatio", p.proposedValue());
+                case CHAIN_DEADLINE -> {
+                    long deadline = (long) Math.ceil(p.proposedValue());
+                    object(object(spec, "routes"), p.target()).put("deadlineMs", deadline);
+                    if (p.target().equals(route)) spec.put("deadlineMs", deadline);
+                    if (route.isBlank()) routes.put(service, p.target());
+                }
+            }
+        }
+        var bodyParts = new java.util.ArrayList<Map<String, Object>>();
+        specs.forEach((service, spec) -> bodyParts.add(Map.of("scope", Map.of("service", service, "route", routes.getOrDefault(service, "")), "spec", spec)));
+        JsonNode gw = effective.get(gateway);
+        String policyId = gw != null ? gw.path("policyId").asString() : "c4-" + slug(gateway);
+        String reviewer = parts.get(0).reviewer();
+        var body = new LinkedHashMap<String, Object>();
+        body.put("policyId", policyId);
+        body.put("source", "c4-recommendation");
+        body.put("recommendationId", joint.toString());
+        body.put("approval", Map.of("approvedBy", reviewer, "decision", "approved"));
+        body.put("parts", bodyParts);
+        try {
+            JsonNode created = post("/api/k8s/policies", body).path("policy");
+            String epoch = created.path("epoch").asString();
+            JsonNode rollout = post("/api/k8s/rollouts", Map.of("policyId", policyId, "version", created.path("version").asInt(),
+                    "mode", "two-phase", "requestedBy", reviewer));
+            for (var change : parts) {
+                pending.put(change.proposal().id(), new Pending(rollout.path("metadata").path("name").asString(), epoch));
+                workflow.deliveryResult(change.proposal().id(), new Acknowledgement("ACCEPTED", epoch, null), null);
+            }
+        } catch (RuntimeException e) {
+            for (var change : parts) workflow.deliveryResult(change.proposal().id(), null, e.getMessage());
         }
     }
 

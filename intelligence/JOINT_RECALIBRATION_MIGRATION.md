@@ -185,3 +185,9 @@ Panel cannot start them. Please add (this work does not change the hub):
     supported") skips joint parts when the flag is on (`withdrawExceptJoint`).
   - `JointSimulation` (main): an isolated bed with the chain and payment; C3's examples reproduce exactly
     (T_h 700 ms, m 0.254 → 875 → 780 ms; T_h 620 ms, m 0.251 → 780 → 850 ms).
+- **Step 3.** `Component3Bridge` sends an approved joint as one `POST /api/k8s/policies` with `parts` (gateway part:
+  the gateway's effective spec with every changed `routes[route].deadlineMs`; service part: its effective spec with the
+  new `leakyBucket.ratePerSec`), `policyId` = the gateway's effective policy, `recommendationId` = the joint id (C3 makes
+  it idempotent), then one two-phase rollout; every part becomes ACCEPTED, then APPLIED with the same epoch. A joint is
+  sent only when all its parts are approved and all its services are free (one change per service per cycle); it is
+  never sent in halves. Single proposals keep the existing payload (no `parts`). Live test: waits for C3's fix (D5).
