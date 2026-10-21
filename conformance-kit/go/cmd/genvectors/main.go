@@ -47,6 +47,9 @@ func main() {
 	write(dir, "result.json", "X-RPE-Result decoding (defaults v=1, out=unknown, rsn=none) and canonical encoding.", resultCases())
 	write(dir, "hop.json", "X-RPE-Hop decoding and canonical encoding.", hopCases())
 	write(dir, "traceparent.json", "Trace binding: the trace-id of a W3C traceparent, or empty when invalid.", traceparentCases())
+	write(dir, "retry-gate.json", "Retry gate R-R02: whether one more attempt may be sent, and the reason when it may not. Checks run in a fixed order: cs, terminal, replay safety, deadline, time for backoff plus one attempt, retry budget, attempt limit.", retryCases())
+	write(dir, "trail.json", "X-RPE-Trail decoding (verbose v1: svcId:parent:elapsedMicros:decision:consumedMs) and canonical encoding.", trailCases())
+	write(dir, "trail-merge.json", "Response-side trail merge: a callee's subtree appended under its caller's entry, re-indexed and bounded (R-P02, R-P03).", trailMergeCases())
 }
 
 func decodeCases() []conformance.DecodeCase {
@@ -256,4 +259,87 @@ func write[T any](dir, file, description string, cases []T) {
 		panic(err)
 	}
 	fmt.Printf("%s: %d cases\n", file, len(cases))
+}
+
+func retryCases() []conformance.RetryCase {
+	ok := conformance.RetryInput{Attempt: 1, MaxAttempts: 3, CS: "none", ReplaySafe: true, RemainingMs: 600, BackoffMs: 50, AttemptCostMs: 300, RB: 2}
+	mk := func(name string, mut func(i *conformance.RetryInput)) conformance.RetryCase {
+		in := ok
+		if mut != nil {
+			mut(&in)
+		}
+		return conformance.RetryCase{Name: name, Input: in, Expect: conformance.Retry(in)}
+	}
+	return []conformance.RetryCase{
+		mk("retry allowed: time, budget and attempts left", nil),
+		mk("exactly enough time for backoff plus one attempt", func(i *conformance.RetryInput) { i.RemainingMs = 350 }),
+		mk("one millisecond short (insufficient-time)", func(i *conformance.RetryInput) { i.RemainingMs = 349 }),
+		mk("expired chain (cs=expired)", func(i *conformance.RetryInput) { i.CS = "expired" }),
+		mk("cancelled chain (cs=cancel)", func(i *conformance.RetryInput) { i.CS = "cancel" }),
+		mk("expired chain wins over every other reason", func(i *conformance.RetryInput) {
+			i.CS, i.Terminal, i.ReplaySafe, i.RemainingMs, i.RB = "expired", true, false, -5, 0
+		}),
+		mk("terminal response (term=?1)", func(i *conformance.RetryInput) { i.Terminal = true }),
+		mk("not replay-safe", func(i *conformance.RetryInput) { i.ReplaySafe = false }),
+		mk("no time left (ttl reached 0)", func(i *conformance.RetryInput) { i.RemainingMs = 0 }),
+		mk("negative time left", func(i *conformance.RetryInput) { i.RemainingMs = -120 }),
+		mk("retry budget used up", func(i *conformance.RetryInput) { i.RB = 0 }),
+		mk("attempt limit reached", func(i *conformance.RetryInput) { i.Attempt = 3 }),
+		mk("no attempt limit", func(i *conformance.RetryInput) { i.MaxAttempts, i.Attempt = 0, 7 }),
+		mk("last unit of budget", func(i *conformance.RetryInput) { i.RB = 1 }),
+		mk("zero backoff and cost", func(i *conformance.RetryInput) { i.BackoffMs, i.AttemptCostMs, i.RemainingMs = 0, 0, 1 }),
+		mk("attempt 0 counts as the first", func(i *conformance.RetryInput) { i.Attempt = 0 }),
+	}
+}
+
+func trailCases() []conformance.TrailCase {
+	in := [][2]string{
+		{"request side: path of active entries", `rv=1, inc=?0, h="1:0:-1:A:0;2:1:-1:A:3"`},
+		{"response side: a finished subtree", `rv=7, inc=?0, h="2:0:41250:F:3;3:1:8100:F:5;4:1:38110:X:6;5:1:900:C:6"`},
+		{"unknown hop marks the trail incomplete", `rv=1, inc=?1, h="2:0:5000:F:3;6:1:1200:U:4"`},
+		{"every decision code", `rv=1, inc=?0, h="1:0:9:F:0;2:1:8:E:1;3:1:7:X:2;4:1:6:C:3;5:1:5:R:4;6:1:4:P:5;7:1:3:O:6;8:1:2:U:7;9:1:-1:A:8"`},
+		{"no entries", "rv=3, inc=?1"},
+		{"members in any order, unknown ignored", `h="1:0:5:F:0", zz=1, inc=?0, rv=2`},
+		{"service id 0 (not registered)", `rv=1, inc=?1, h="0:0:5:U:0"`},
+		{"late hop consumed more than the budget", `rv=1, inc=?0, h="1:0:5:X:1300"`},
+		{"rv missing", `inc=?0, h="1:0:5:F:0"`},
+		{"inc missing", `rv=1, h="1:0:5:F:0"`},
+		{"rv zero", "rv=0, inc=?0"},
+		{"inc not a boolean", "rv=1, inc=1"},
+		{"h not a string", "rv=1, inc=?0, h=abc"},
+		{"parent refers to itself", `rv=1, inc=?0, h="1:1:5:F:0"`},
+		{"parent refers to a later entry", `rv=1, inc=?0, h="1:0:5:F:0;2:3:5:F:0;3:1:5:F:0"`},
+		{"service id above 65535", `rv=1, inc=?0, h="65536:0:5:F:0"`},
+		{"unknown decision code", `rv=1, inc=?0, h="1:0:5:Z:0"`},
+		{"finished entry with elapsed -1", `rv=1, inc=?0, h="1:0:-1:F:0"`},
+		{"active entry with an elapsed time", `rv=1, inc=?0, h="1:0:5:A:0"`},
+		{"negative consumed time", `rv=1, inc=?0, h="1:0:5:F:-1"`},
+		{"four fields", `rv=1, inc=?0, h="1:0:5:F"`},
+		{"leading zero (noncanonical)", `rv=1, inc=?0, h="1:0:05:F:0"`},
+		{"empty entry", `rv=1, inc=?0, h="1:0:5:F:0;"`},
+		{"seventeen entries", `rv=1, inc=?0, h="` + strings.TrimSuffix(strings.Repeat("1:0:5:F:0;", 17), ";") + `"`},
+		{"duplicate member", "rv=1, inc=?0, rv=2"},
+	}
+	out := []conformance.TrailCase{}
+	for _, c := range in {
+		f, canonical, fail := conformance.DecodeTrail(c[1])
+		out = append(out, conformance.TrailCase{Name: c[0], Input: c[1], Expect: f, Canonical: canonical, Error: fail})
+	}
+	return out
+}
+
+func trailMergeCases() []conformance.TrailMergeCase {
+	sixteen := `rv=1, inc=?0, h="` + strings.TrimSuffix(strings.Repeat("1:0:5:F:0;", 16), ";") + `"`
+	in := []conformance.TrailMergeCase{
+		{Name: "callee subtree under the caller", Base: `rv=1, inc=?0, h="2:0:900:F:3"`, Sub: `rv=1, inc=?0, h="3:0:400:F:5;4:1:100:F:6"`, Parent: 1},
+		{Name: "second callee after the first", Base: `rv=1, inc=?0, h="2:0:900:F:3;3:1:400:F:5"`, Sub: `rv=1, inc=?0, h="4:0:300:F:5"`, Parent: 1},
+		{Name: "incomplete subtree makes the result incomplete", Base: `rv=1, inc=?0, h="2:0:900:F:3"`, Sub: `rv=1, inc=?1, h="6:0:1200:U:4"`, Parent: 1},
+		{Name: "another registry version is not merged", Base: `rv=1, inc=?0, h="2:0:900:F:3"`, Sub: `rv=2, inc=?0, h="3:0:400:F:5"`, Parent: 1},
+		{Name: "entries beyond 16 are dropped with their descendants", Base: sixteen, Sub: `rv=1, inc=?0, h="3:0:400:F:5;4:1:100:F:6"`, Parent: 1},
+		{Name: "appended as a new root", Base: `rv=1, inc=?0, h="2:0:900:F:3"`, Sub: `rv=1, inc=?0, h="3:0:400:F:5"`, Parent: 0},
+	}
+	for i := range in {
+		in[i].Expect = conformance.MergeTrail(in[i].Base, in[i].Sub, in[i].Parent)
+	}
+	return in
 }

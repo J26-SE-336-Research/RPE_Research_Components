@@ -1,0 +1,351 @@
+{
+  "description": "X-RPE-Trail decoding (verbose v1: svcId:parent:elapsedMicros:decision:consumedMs) and canonical encoding.",
+  "cases": [
+    {
+      "name": "request side: path of active entries",
+      "input": "rv=1, inc=?0, h=\"1:0:-1:A:0;2:1:-1:A:3\"",
+      "expect": {
+        "rv": 1,
+        "inc": false,
+        "entries": [
+          {
+            "svc": 1,
+            "parent": 0,
+            "elapsedMicros": -1,
+            "decision": "A",
+            "consumedMs": 0
+          },
+          {
+            "svc": 2,
+            "parent": 1,
+            "elapsedMicros": -1,
+            "decision": "A",
+            "consumedMs": 3
+          }
+        ]
+      },
+      "canonical": "rv=1, inc=?0, h=\"1:0:-1:A:0;2:1:-1:A:3\""
+    },
+    {
+      "name": "response side: a finished subtree",
+      "input": "rv=7, inc=?0, h=\"2:0:41250:F:3;3:1:8100:F:5;4:1:38110:X:6;5:1:900:C:6\"",
+      "expect": {
+        "rv": 7,
+        "inc": false,
+        "entries": [
+          {
+            "svc": 2,
+            "parent": 0,
+            "elapsedMicros": 41250,
+            "decision": "F",
+            "consumedMs": 3
+          },
+          {
+            "svc": 3,
+            "parent": 1,
+            "elapsedMicros": 8100,
+            "decision": "F",
+            "consumedMs": 5
+          },
+          {
+            "svc": 4,
+            "parent": 1,
+            "elapsedMicros": 38110,
+            "decision": "X",
+            "consumedMs": 6
+          },
+          {
+            "svc": 5,
+            "parent": 1,
+            "elapsedMicros": 900,
+            "decision": "C",
+            "consumedMs": 6
+          }
+        ]
+      },
+      "canonical": "rv=7, inc=?0, h=\"2:0:41250:F:3;3:1:8100:F:5;4:1:38110:X:6;5:1:900:C:6\""
+    },
+    {
+      "name": "unknown hop marks the trail incomplete",
+      "input": "rv=1, inc=?1, h=\"2:0:5000:F:3;6:1:1200:U:4\"",
+      "expect": {
+        "rv": 1,
+        "inc": true,
+        "entries": [
+          {
+            "svc": 2,
+            "parent": 0,
+            "elapsedMicros": 5000,
+            "decision": "F",
+            "consumedMs": 3
+          },
+          {
+            "svc": 6,
+            "parent": 1,
+            "elapsedMicros": 1200,
+            "decision": "U",
+            "consumedMs": 4
+          }
+        ]
+      },
+      "canonical": "rv=1, inc=?1, h=\"2:0:5000:F:3;6:1:1200:U:4\""
+    },
+    {
+      "name": "every decision code",
+      "input": "rv=1, inc=?0, h=\"1:0:9:F:0;2:1:8:E:1;3:1:7:X:2;4:1:6:C:3;5:1:5:R:4;6:1:4:P:5;7:1:3:O:6;8:1:2:U:7;9:1:-1:A:8\"",
+      "expect": {
+        "rv": 1,
+        "inc": false,
+        "entries": [
+          {
+            "svc": 1,
+            "parent": 0,
+            "elapsedMicros": 9,
+            "decision": "F",
+            "consumedMs": 0
+          },
+          {
+            "svc": 2,
+            "parent": 1,
+            "elapsedMicros": 8,
+            "decision": "E",
+            "consumedMs": 1
+          },
+          {
+            "svc": 3,
+            "parent": 1,
+            "elapsedMicros": 7,
+            "decision": "X",
+            "consumedMs": 2
+          },
+          {
+            "svc": 4,
+            "parent": 1,
+            "elapsedMicros": 6,
+            "decision": "C",
+            "consumedMs": 3
+          },
+          {
+            "svc": 5,
+            "parent": 1,
+            "elapsedMicros": 5,
+            "decision": "R",
+            "consumedMs": 4
+          },
+          {
+            "svc": 6,
+            "parent": 1,
+            "elapsedMicros": 4,
+            "decision": "P",
+            "consumedMs": 5
+          },
+          {
+            "svc": 7,
+            "parent": 1,
+            "elapsedMicros": 3,
+            "decision": "O",
+            "consumedMs": 6
+          },
+          {
+            "svc": 8,
+            "parent": 1,
+            "elapsedMicros": 2,
+            "decision": "U",
+            "consumedMs": 7
+          },
+          {
+            "svc": 9,
+            "parent": 1,
+            "elapsedMicros": -1,
+            "decision": "A",
+            "consumedMs": 8
+          }
+        ]
+      },
+      "canonical": "rv=1, inc=?0, h=\"1:0:9:F:0;2:1:8:E:1;3:1:7:X:2;4:1:6:C:3;5:1:5:R:4;6:1:4:P:5;7:1:3:O:6;8:1:2:U:7;9:1:-1:A:8\""
+    },
+    {
+      "name": "no entries",
+      "input": "rv=3, inc=?1",
+      "expect": {
+        "rv": 3,
+        "inc": true,
+        "entries": []
+      },
+      "canonical": "rv=3, inc=?1"
+    },
+    {
+      "name": "members in any order, unknown ignored",
+      "input": "h=\"1:0:5:F:0\", zz=1, inc=?0, rv=2",
+      "expect": {
+        "rv": 2,
+        "inc": false,
+        "entries": [
+          {
+            "svc": 1,
+            "parent": 0,
+            "elapsedMicros": 5,
+            "decision": "F",
+            "consumedMs": 0
+          }
+        ]
+      },
+      "canonical": "rv=2, inc=?0, h=\"1:0:5:F:0\""
+    },
+    {
+      "name": "service id 0 (not registered)",
+      "input": "rv=1, inc=?1, h=\"0:0:5:U:0\"",
+      "expect": {
+        "rv": 1,
+        "inc": true,
+        "entries": [
+          {
+            "svc": 0,
+            "parent": 0,
+            "elapsedMicros": 5,
+            "decision": "U",
+            "consumedMs": 0
+          }
+        ]
+      },
+      "canonical": "rv=1, inc=?1, h=\"0:0:5:U:0\""
+    },
+    {
+      "name": "late hop consumed more than the budget",
+      "input": "rv=1, inc=?0, h=\"1:0:5:X:1300\"",
+      "expect": {
+        "rv": 1,
+        "inc": false,
+        "entries": [
+          {
+            "svc": 1,
+            "parent": 0,
+            "elapsedMicros": 5,
+            "decision": "X",
+            "consumedMs": 1300
+          }
+        ]
+      },
+      "canonical": "rv=1, inc=?0, h=\"1:0:5:X:1300\""
+    },
+    {
+      "name": "rv missing",
+      "input": "inc=?0, h=\"1:0:5:F:0\"",
+      "error": {
+        "code": "MISSING_HEADER"
+      }
+    },
+    {
+      "name": "inc missing",
+      "input": "rv=1, h=\"1:0:5:F:0\"",
+      "error": {
+        "code": "MISSING_HEADER"
+      }
+    },
+    {
+      "name": "rv zero",
+      "input": "rv=0, inc=?0",
+      "error": {
+        "code": "OUT_OF_RANGE"
+      }
+    },
+    {
+      "name": "inc not a boolean",
+      "input": "rv=1, inc=1",
+      "error": {
+        "code": "INVALID_SYNTAX"
+      }
+    },
+    {
+      "name": "h not a string",
+      "input": "rv=1, inc=?0, h=abc",
+      "error": {
+        "code": "INVALID_SYNTAX"
+      }
+    },
+    {
+      "name": "parent refers to itself",
+      "input": "rv=1, inc=?0, h=\"1:1:5:F:0\"",
+      "error": {
+        "code": "OUT_OF_RANGE"
+      }
+    },
+    {
+      "name": "parent refers to a later entry",
+      "input": "rv=1, inc=?0, h=\"1:0:5:F:0;2:3:5:F:0;3:1:5:F:0\"",
+      "error": {
+        "code": "OUT_OF_RANGE"
+      }
+    },
+    {
+      "name": "service id above 65535",
+      "input": "rv=1, inc=?0, h=\"65536:0:5:F:0\"",
+      "error": {
+        "code": "OUT_OF_RANGE"
+      }
+    },
+    {
+      "name": "unknown decision code",
+      "input": "rv=1, inc=?0, h=\"1:0:5:Z:0\"",
+      "error": {
+        "code": "INVALID_SYNTAX"
+      }
+    },
+    {
+      "name": "finished entry with elapsed -1",
+      "input": "rv=1, inc=?0, h=\"1:0:-1:F:0\"",
+      "error": {
+        "code": "INVALID_SYNTAX"
+      }
+    },
+    {
+      "name": "active entry with an elapsed time",
+      "input": "rv=1, inc=?0, h=\"1:0:5:A:0\"",
+      "error": {
+        "code": "INVALID_SYNTAX"
+      }
+    },
+    {
+      "name": "negative consumed time",
+      "input": "rv=1, inc=?0, h=\"1:0:5:F:-1\"",
+      "error": {
+        "code": "OUT_OF_RANGE"
+      }
+    },
+    {
+      "name": "four fields",
+      "input": "rv=1, inc=?0, h=\"1:0:5:F\"",
+      "error": {
+        "code": "INVALID_SYNTAX"
+      }
+    },
+    {
+      "name": "leading zero (noncanonical)",
+      "input": "rv=1, inc=?0, h=\"1:0:05:F:0\"",
+      "error": {
+        "code": "INVALID_SYNTAX"
+      }
+    },
+    {
+      "name": "empty entry",
+      "input": "rv=1, inc=?0, h=\"1:0:5:F:0;\"",
+      "error": {
+        "code": "INVALID_SYNTAX"
+      }
+    },
+    {
+      "name": "seventeen entries",
+      "input": "rv=1, inc=?0, h=\"1:0:5:F:0;1:0:5:F:0;1:0:5:F:0;1:0:5:F:0;1:0:5:F:0;1:0:5:F:0;1:0:5:F:0;1:0:5:F:0;1:0:5:F:0;1:0:5:F:0;1:0:5:F:0;1:0:5:F:0;1:0:5:F:0;1:0:5:F:0;1:0:5:F:0;1:0:5:F:0;1:0:5:F:0\"",
+      "error": {
+        "code": "OUT_OF_RANGE"
+      }
+    },
+    {
+      "name": "duplicate member",
+      "input": "rv=1, inc=?0, rv=2",
+      "error": {
+        "code": "DUPLICATE_HEADER"
+      }
+    }
+  ]
+}

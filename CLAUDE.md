@@ -55,8 +55,9 @@ changed to match this section.
   work (payment) completes. e2e `30`, `35`, `95` assert the signal (`cs=expired`) instead of 504.
 - Done (17 Oct 2026): `rpe-go` has signal-only developer helpers (`libs/rpe-go/signal.go`): `SignalMiddleware`,
   `SignalTransport`, `Cancelled`, `NonCritical`, `CallIfNotCancelled` (a skipped call is information, never an error).
-- Still open: the older `rpe-go` `Middleware` / `Transport` keep the rejecting behaviour for existing users (C1 owner);
-  the C1/C2 docs and rules (R-D05 and related) still describe it.
+- Done (20 Oct 2026, C1 owner): the older `rpe-go` `Middleware` / `Transport` and `rpe-java` `Admission` /
+  `RpeHttpClient` follow signal mode too (an expired original is served with `cs=expired`; only a retry of a cancelled
+  or expired chain is refused, rule R-R02). The C1 spec (`spec/RPE-v1.md` v0.9) and guide describe signal mode.
 
 ### Analogy
 This mirrors how gRPC deadlines and context cancellation work for HTTP: the framework delivers the signal and the

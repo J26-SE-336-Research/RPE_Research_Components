@@ -8,5 +8,6 @@ resources:
   - observability.yaml
   - intelligence.yaml
   - hub.yaml
+  - protocol.yaml
   - redis.yaml
   - operator.yaml

@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import { api, useAction } from "../api";
-import { Alert, Button, Field, KV, PageHeader, Panel, Status, Tabs, Tag } from "../components/ui";
+import { Alert, Button, Empty, Field, KV, Kpi, PageHeader, Panel, Status, Tabs, Tag } from "../components/ui";
+import type { CompareResult, Matrix, Verdict } from "../types";
 
 type ProtoErr = { code: string; rule?: string; detail: string };
 type Decoded = { valid: boolean; fields?: Record<string, string>; unknown?: Record<string, string>; canonical?: string; error?: ProtoErr };
@@ -23,6 +24,20 @@ const LABELS: Record<string, string> = {
   cs: "Cancellation",
   pe: "Policy epoch",
   rt: "Route",
+  out: "Outcome",
+  rsn: "Reason",
+  term: "Terminal (never retried)",
+  bp: "Backpressure level",
+  bpu: "Queue utilisation %",
+  rbu: "Retry budget used",
+  pv: "Policy applied",
+  late: "Completed late",
+  kids: "Children",
+  cb: "Caller token",
+  att: "Attempt",
+  rv: "Registry version",
+  inc: "Incomplete",
+  entries: "Entries",
 };
 
 function Decode() {
@@ -183,23 +198,205 @@ function BudgetSplit() {
   );
 }
 
+const SAMPLES: Record<string, string> = {
+  context: EXAMPLE,
+  result: 'v=1, out=partial, rsn=deadline, term=?1, bp=2, bpu=78, rbu=1, pv="e42", late=?0, kids="inv:ok:80;loy:expired:90"',
+  hop: 'cb="k3f9a2", att=2',
+  trail: 'rv=1, inc=?1, h="1:0:41250:F:0;2:1:39870:F:2;3:2:8100:F:6;4:2:38110:X:6;7:2:900:U:6"',
+};
+
+function VerdictView({ v, other }: { v?: Verdict; other?: Verdict }) {
+  if (!v) return null;
+  if (v.failure) return <Alert>{`rpe-${v.impl} unavailable: ${v.failure}`}</Alert>;
+  const keys = [...new Set([...Object.keys(v.fields ?? {}), ...Object.keys(other?.fields ?? {})])].sort();
+  return (
+    <div>
+      <div className="row" style={{ marginBottom: 12 }}>
+        {v.valid ? <Status tone="green">Valid</Status> : <Status tone="red">Invalid</Status>}
+        {v.error?.rule && <Tag tone="red">{v.error.rule}</Tag>}
+        {v.error && <Tag>{v.error.code}</Tag>}
+      </div>
+      {v.error?.detail && <p style={{ marginTop: 0 }}>{v.error.detail}</p>}
+      {v.valid && (
+        <table>
+          <tbody>
+            {keys.map((k) => (
+              <tr key={k} className={other && other.fields?.[k] !== v.fields?.[k] ? "diff" : ""}>
+                <td className="muted">{LABELS[k] ?? k}</td>
+                <td className="mono">{v.fields?.[k] ?? "—"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      {v.canonical && (
+        <>
+          <div className="section-title">Canonical encoding</div>
+          <pre className={`code ${other && other.canonical !== v.canonical ? "diff" : ""}`}>{v.canonical}</pre>
+        </>
+      )}
+    </div>
+  );
+}
+
+function CompareImpls() {
+  const [kind, setKind] = useState("context");
+  const [value, setValue] = useState(SAMPLES.context);
+  const run = useAction(() => api<CompareResult>("POST", "/protocol/compare", { kind, value }));
+  const r = run.result;
+  return (
+    <div className="stack">
+      <Panel
+        title="Java and Go, side by side"
+        subtitle="The same header value decoded by rpe-go and by rpe-java, each running in its own process. Any difference is highlighted."
+      >
+        <div className="row" style={{ marginBottom: 10 }}>
+          <Field label="Header">
+            <select
+              value={kind}
+              onChange={(e) => {
+                setKind(e.target.value);
+                setValue(SAMPLES[e.target.value]);
+              }}
+            >
+              <option value="context">X-RPE-Context</option>
+              <option value="result">X-RPE-Result</option>
+              <option value="hop">X-RPE-Hop</option>
+              <option value="trail">X-RPE-Trail</option>
+            </select>
+          </Field>
+        </div>
+        <textarea value={value} onChange={(e) => setValue(e.target.value)} aria-label="Header value" />
+        <div className="row" style={{ marginTop: 10 }}>
+          <Button variant="primary" onClick={() => run.run()} busy={run.busy}>
+            Decode with both
+          </Button>
+          <Button variant="ghost" onClick={() => setValue(SAMPLES[kind])}>
+            Reset example
+          </Button>
+          {r && (r.agree ? <Status tone="green">Both libraries agree</Status> : <Status tone="red">The libraries disagree</Status>)}
+        </div>
+        <Alert>{run.error}</Alert>
+      </Panel>
+      {r && (
+        <div className="cmp">
+          <Panel title="rpe-go">
+            <VerdictView v={r.go} other={r.java} />
+          </Panel>
+          <Panel title="rpe-java">
+            <VerdictView v={r.java} other={r.go} />
+          </Panel>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ConformanceMatrix() {
+  const run = useAction(() => api<Matrix>("GET", "/protocol/conformance"));
+  const m = run.result;
+  const [failedOnly, setFailedOnly] = useState(false);
+  const mark = (pass: boolean | null, detail?: string) =>
+    pass === null ? <span className="muted">—</span> : pass ? <Status tone="green">pass</Status> : <span title={detail}><Status tone="red">fail</Status></span>;
+  return (
+    <div className="stack">
+      <Panel
+        title="Conformance matrix"
+        subtitle="Every shared test case of the conformance kit, run now by rpe-go and rpe-java. An implementation conforms when it passes all of them."
+        actions={
+          <Button variant="primary" onClick={() => run.run()} busy={run.busy}>
+            Run all cases
+          </Button>
+        }
+      >
+        <Alert>{run.error ?? (m?.javaError ? `rpe-java unavailable: ${m.javaError}` : undefined)}</Alert>
+        {m ? (
+          <div className="kpis">
+            <Kpi label="Test cases" value={m.total} foot={`${m.files.length} files`} />
+            <Kpi label="rpe-go" value={`${m.goPassed} / ${m.total}`} foot={m.goPassed === m.total ? "all pass" : "failures"} />
+            <Kpi label="rpe-java" value={`${m.javaPassed} / ${m.total}`} foot={m.javaPassed === m.total ? "all pass" : "failures"} />
+            <Kpi label="Agreement" value={m.goPassed === m.total && m.javaPassed === m.total ? "100%" : `${Math.round((100 * Math.min(m.goPassed, m.javaPassed)) / m.total)}%`} />
+          </div>
+        ) : (
+          <Empty>Run the cases to fill the matrix.</Empty>
+        )}
+      </Panel>
+      {m && (
+        <Panel
+          title="Cases"
+          flush
+          actions={
+            <label className="check">
+              <input type="checkbox" checked={failedOnly} onChange={(e) => setFailedOnly(e.target.checked)} /> Failures only
+            </label>
+          }
+        >
+          <table className="matrix">
+            <thead>
+              <tr>
+                <th>Case</th>
+                <th className="cell">Go</th>
+                <th className="cell">Java</th>
+              </tr>
+            </thead>
+            <tbody>
+              {m.files.map((f) => {
+                const cases = failedOnly ? f.cases.filter((c) => !c.go || c.java === false) : f.cases;
+                if (failedOnly && cases.length === 0) return null;
+                const goOk = f.cases.filter((c) => c.go).length;
+                const javaOk = f.cases.filter((c) => c.java).length;
+                return (
+                  <Fragment key={f.file}>
+                    <tr className="file">
+                      <td title={f.description}>
+                        {f.file} <span className="muted" style={{ fontWeight: 400 }}>· {f.description}</span>
+                      </td>
+                      <td className="cell">
+                        {goOk}/{f.cases.length}
+                      </td>
+                      <td className="cell">
+                        {javaOk}/{f.cases.length}
+                      </td>
+                    </tr>
+                    {cases.map((c) => (
+                      <tr key={c.name}>
+                        <td style={{ paddingLeft: 28 }}>{c.name}</td>
+                        <td className="cell">{mark(c.go, c.goDetail)}</td>
+                        <td className="cell">{mark(c.java, c.javaDetail)}</td>
+                      </tr>
+                    ))}
+                  </Fragment>
+                );
+              })}
+            </tbody>
+          </table>
+        </Panel>
+      )}
+    </div>
+  );
+}
+
 export function ProtocolToolsPage() {
-  const [tab, setTab] = useState<"decode" | "transition" | "split">("decode");
+  const [tab, setTab] = useState<"decode" | "compare" | "transition" | "split" | "conformance">("decode");
   return (
     <>
       <PageHeader title="Protocol Tools" description="Utilities for working with the RPE resilience context headers." />
       <Tabs
         tabs={[
           { id: "decode", label: "Decode header" },
+          { id: "compare", label: "Java vs Go" },
           { id: "transition", label: "Validate transition" },
           { id: "split", label: "Budget allocation" },
+          { id: "conformance", label: "Conformance" },
         ]}
         active={tab}
         onChange={setTab}
       />
       {tab === "decode" && <Decode />}
+      {tab === "compare" && <CompareImpls />}
       {tab === "transition" && <TransitionCheck />}
       {tab === "split" && <BudgetSplit />}
+      {tab === "conformance" && <ConformanceMatrix />}
     </>
   );
 }

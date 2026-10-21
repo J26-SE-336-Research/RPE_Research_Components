@@ -147,4 +147,46 @@ class ConformanceTest {
         return cases("traceparent.json").map(c -> DynamicTest.dynamicTest(c.get("name").asText(),
                 () -> assertEquals(c.get("expect").asText(), Ids.traceIdFromTraceparent(c.get("input").asText()))));
     }
+
+    @TestFactory
+    Stream<DynamicTest> retryGate() throws IOException {
+        return cases("retry-gate.json").map(c -> DynamicTest.dynamicTest(c.get("name").asText(), () -> {
+            JsonNode i = c.get("input");
+            CancelState cs = switch (i.get("cs").asText()) {
+                case "cancel" -> CancelState.CANCEL;
+                case "expired" -> CancelState.EXPIRED;
+                default -> CancelState.NONE;
+            };
+            RetryGate.Verdict v = RetryGate.decide(new RetryGate.Check(i.get("attempt").asLong(), i.get("maxAttempts").asLong(), cs,
+                    i.get("terminal").asBoolean(), i.get("replaySafe").asBoolean(), i.get("remainingMs").asLong(), i.get("backoffMs").asLong(),
+                    i.get("attemptCostMs").asLong(), i.get("rb").asLong()));
+            JsonNode e = c.get("expect");
+            assertEquals(new RetryGate.Verdict(e.get("retry").asBoolean(), e.get("reason").asText(), e.get("rule").asText(),
+                    e.get("nextAttempt").asLong(), e.get("budgetLeft").asLong()), v);
+        }));
+    }
+
+    @TestFactory
+    Stream<DynamicTest> trail() throws IOException {
+        return cases("trail.json").map(c -> DynamicTest.dynamicTest(c.get("name").asText(), () -> {
+            String name = c.get("name").asText();
+            if (c.has("error")) {
+                assertFailure(c.get("error"), assertThrows(ProtocolException.class, () -> Trail.decode(c.get("input").asText())), name);
+                return;
+            }
+            Trail t = Trail.decode(c.get("input").asText());
+            JsonNode e = c.get("expect");
+            List<Trail.Entry> entries = new ArrayList<>();
+            e.get("entries").forEach(x -> entries.add(new Trail.Entry(x.get("svc").asLong(), x.get("parent").asInt(),
+                    x.get("elapsedMicros").asLong(), x.get("decision").asText().charAt(0), x.get("consumedMs").asLong())));
+            assertEquals(new Trail(e.get("rv").asLong(), e.get("inc").asBoolean(), entries), t, name);
+            assertEquals(c.get("canonical").asText(), t.encode(), name + ": canonical encoding");
+        }));
+    }
+
+    @TestFactory
+    Stream<DynamicTest> trailMerge() throws IOException {
+        return cases("trail-merge.json").map(c -> DynamicTest.dynamicTest(c.get("name").asText(), () -> assertEquals(c.get("expect").asText(),
+                Trail.decode(c.get("base").asText()).append(Trail.decode(c.get("sub").asText()), c.get("parent").asInt()).encode())));
+    }
 }

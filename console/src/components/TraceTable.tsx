@@ -29,6 +29,12 @@ export function TraceTable({ result }: { result: ChainResult }) {
                   <span className="hop-cell" style={{ paddingLeft: Math.max(0, h.depth - 1) * 18 }}>
                     {h.depth > 0 && <span className="hop-branch">└</span>}
                     <strong>{h.service || h.name}</strong>
+                    {(h.attempts ?? 0) > 1 && <Tag tone="amber">{h.attempts} attempts</Tag>}
+                    {h.retryRefused && (
+                      <Tag tone="green" title="The RPE retry gate refused one more attempt (R-R02)">
+                        retry refused: {h.retryRefused}
+                      </Tag>
+                    )}
                   </span>
                 </td>
                 <td>

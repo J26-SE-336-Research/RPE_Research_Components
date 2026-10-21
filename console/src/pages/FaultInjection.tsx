@@ -176,8 +176,99 @@ function LoadTab() {
   );
 }
 
-type DeadlineRun = { latencyMs: number; chain: ChainResult; payment: Record<string, number>; inventory: Record<string, number> };
+type DeadlineRun = {
+  latencyMs: number;
+  chain: ChainResult;
+  payment: Record<string, number>;
+  inventory: Record<string, number>;
+  rid?: string;
+  request?: Record<string, Record<string, number>>;
+  signal?: { cs: string; terminal: boolean; retryable: boolean; rule: string };
+};
 type FanoutRun = { failing: string; chain: ChainResult };
+type RetryRun = {
+  mode: "plain" | "rpe";
+  latencyMs: number;
+  attemptTimeoutMs: number;
+  chain: ChainResult;
+  rid: string;
+  cardsCharged?: number;
+  attempts: number;
+  retryRefused: string;
+  rule: string;
+};
+
+/** Retry safety (C1 rule R-R02): the same retry policy without and with the RPE retry gate. */
+function RetrySafety() {
+  const [latency, setLatency] = useState(1200);
+  const [timeout, setTimeoutMs] = useState(600);
+  const [runs, setRuns] = useState<Partial<Record<"plain" | "rpe", RetryRun>>>({});
+  const run = useAction(async () => {
+    setRuns({});
+    const plain = await api<RetryRun>("POST", "/demos/retry", { mode: "plain", latencyMs: latency, attemptTimeoutMs: timeout });
+    setRuns({ plain });
+    const rpe = await api<RetryRun>("POST", "/demos/retry", { mode: "rpe", latencyMs: latency, attemptTimeoutMs: timeout });
+    setRuns({ plain, rpe });
+    return rpe;
+  });
+  const col = (mode: "plain" | "rpe", title: string, sub: string) => {
+    const r = runs[mode];
+    return (
+      <Panel title={title} subtitle={sub}>
+        {r ? (
+          <div className="kpis">
+            <Kpi
+              label="Cards charged"
+              value={<span style={{ color: (r.cardsCharged ?? 0) > 1 ? "var(--red)" : "var(--green)" }}>{r.cardsCharged ?? 0}×</span>}
+              foot="for this one order (by request id)"
+            />
+            <Kpi label="Payment attempts sent" value={r.attempts || 1} />
+            <Kpi
+              label="Retry"
+              value={r.retryRefused ? "Refused" : "Sent"}
+              foot={r.retryRefused ? `${r.rule}: ${r.retryRefused === "insufficient-time" ? "not enough time left for another attempt" : r.retryRefused}` : "no deadline check"}
+            />
+            <Kpi label="Client response" value={<Status tone={httpTone(r.chain.status)}>{r.chain.status}</Status>} foot={`after ${r.chain.ms} ms`} />
+          </div>
+        ) : (
+          <Empty>{run.busy ? "Running…" : "Not run yet."}</Empty>
+        )}
+      </Panel>
+    );
+  };
+  return (
+    <>
+      <Panel
+        title="Retry safety"
+        subtitle="payment-svc is made slower than the chain deadline; order-svc gives up on an attempt after a timeout and retries once. The abandoned attempt still completes on the payment side, so a blind retry charges the card again. The RPE retry gate refuses a retry the chain can no longer finish in time (R-R02)."
+        actions={
+          <div className="row" style={{ alignItems: "flex-end" }}>
+            <Field label="Payment delay (ms)">
+              <input type="number" min={100} step={100} value={latency} style={{ width: 110 }} onChange={(e) => setLatency(Number(e.target.value))} />
+            </Field>
+            <Field label="Attempt timeout (ms)">
+              <input type="number" min={50} step={50} value={timeout} style={{ width: 110 }} onChange={(e) => setTimeoutMs(Number(e.target.value))} />
+            </Field>
+            <Button variant="primary" write onClick={() => run.run()} busy={run.busy}>
+              Run both
+            </Button>
+          </div>
+        }
+      >
+        <Alert>{run.error}</Alert>
+        <div className="cmp">
+          {col("plain", "Plain retry", "Timeout, then try again (a typical HTTP client)")}
+          {col("rpe", "RPE retry gate", "Same policy through rpe.DoWithRetry")}
+        </div>
+      </Panel>
+      {runs.rpe && (
+        <Panel title="Trace: RPE retry gate" flush>
+          <TraceTable result={runs.rpe.chain} />
+        </Panel>
+      )}
+    </>
+  );
+}
 
 function ExperimentsTab() {
   const [latency, setLatency] = useState(1500);
@@ -205,12 +296,37 @@ function ExperimentsTab() {
       >
         <Alert>{slow.error}</Alert>
         {d ? (
-          <div className="kpis">
-            <Kpi label="Client response" value={<Status tone={httpTone(d.chain.status)}>{d.chain.status}</Status>} foot={`after ${d.chain.ms} ms`} />
-            <Kpi label="Cancellation signal" value={d.chain.result?.cs ?? "none"} foot="set by the sidecars when the deadline passed" />
-            <Kpi label="Payments charged" value={d.payment.cards_charged ?? 0} foot="critical work completes even when late" />
-            <Kpi label="Stock reserved" value={d.inventory.stock_reserved ?? 0} />
-          </div>
+          <>
+            <div className="kpis">
+              <Kpi label="Client response" value={<Status tone={httpTone(d.chain.status)}>{d.chain.status}</Status>} foot={`after ${d.chain.ms} ms`} />
+              <Kpi label="Cancellation signal" value={d.chain.result?.cs ?? "none"} foot="set by the sidecars when the deadline passed" />
+              <Kpi
+                label="Retryable"
+                value={d.signal ? (d.signal.retryable ? "Yes" : "No") : "—"}
+                foot={d.signal && !d.signal.retryable ? "an expired chain is never retried (R-R02)" : undefined}
+              />
+              <Kpi
+                label="Payment work abandoned"
+                value={d.request ? (d.request["payment-svc"]?.cards_charged ? "No" : "—") : "—"}
+                foot="RPE only signals; payment is critical and completed (the application decides)"
+              />
+              <Kpi
+                label="Payments charged"
+                value={d.request?.["payment-svc"]?.cards_charged ?? d.payment.cards_charged ?? 0}
+                foot={d.request ? "for this request" : "critical work completes even when late"}
+              />
+              <Kpi
+                label="Loyalty work skipped"
+                value={d.request?.["loyalty-svc"]?.work_skipped ?? 0}
+                foot="non-critical work reacts to the signal"
+              />
+              <Kpi label="Stock reserved" value={d.request?.["inventory-svc"]?.stock_reserved ?? d.inventory.stock_reserved ?? 0} />
+            </div>
+            <p className="muted" style={{ marginBottom: 0 }}>
+              The late request was served, not rejected: the sidecars marked the chain <span className="mono">cs=expired</span>. Nothing stops an expired
+              original request unless the application reads the signal, as loyalty-svc does.
+            </p>
+          </>
         ) : (
           <Empty>Not run yet.</Empty>
         )}
@@ -220,6 +336,8 @@ function ExperimentsTab() {
           <TraceTable result={d.chain} />
         </Panel>
       )}
+
+      <RetrySafety />
 
       <Panel
         title="Partial failure"
