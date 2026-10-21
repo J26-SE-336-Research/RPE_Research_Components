@@ -198,3 +198,8 @@ Panel cannot start them. Please add (this work does not change the hub):
   - **Fix found by the test:** yesterday's rule "a reviewer's rate/retry approval during settling → INCONCLUSIVE" counted
     the joint's own rate part (approved in the same decision) as a separate change. The parts of the same joint are now
     left out (`reviewerApprovedSince(…, exceptJoint)`); changes of other recommendations still make it INCONCLUSIVE.
+- **Step 5.** Evidence (J6) is in each part's measurements (`jointQ`, `jointRateOld` = calibration rate, `jointRateLastStep`,
+  `jointRateNew`, `jointWaitOldMs`, `jointWaitNewMs`, `thMs`, `thNewMs`, `margin`, `currentMs`, `targetMs`, `targetNewMs`,
+  `proposedMs`, `thresholdMs`, `jointPasses`) and in the first evidence lines ("Joint recommendation …", "Joint healthy
+  recalibration for …"). `GET /api/v2/intelligence` has the optional field `joints` (joint id, parts with proposal id,
+  action, target, current and proposed value, decision, delivery).

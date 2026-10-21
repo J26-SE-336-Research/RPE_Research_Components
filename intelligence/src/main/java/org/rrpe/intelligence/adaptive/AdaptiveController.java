@@ -32,10 +32,13 @@ public class AdaptiveController {
         this.connectionChecks = connectionChecks;
         this.audit = audit;
     }
-    /** {@code deadlineEvidence} (deadline v2, per live chain) and {@code rateEvidence} (rate v2, per live service) are additive; the other fields are unchanged. */
+    /**
+     * {@code deadlineEvidence} (deadline v2, per live chain), {@code rateEvidence} (rate v2, per live service) and {@code joints}
+     * (joint recalibration cards: id, parts, decision) are additive; the other fields are unchanged.
+     */
     @GetMapping public Map<String, Object> status() {
         return Map.of("collection", collector.status(), "assessments", engine.assessments(), "changes", workflow.list(), "mockEnabled", mockEnabled,
-                "deadlineEvidence", engine.deadlineEvidence(), "rateEvidence", engine.rateEvidence());
+                "deadlineEvidence", engine.deadlineEvidence(), "rateEvidence", engine.rateEvidence(), "joints", workflow.joints());
     }
     /** The service-window PromQL, plus the deadline v2 and rate v2 load queries (keys starting with {@code load}). */
     @GetMapping("/queries") public Map<String, String> queries(@RequestParam String service) {
