@@ -41,11 +41,14 @@ public class MockScenarios {
     static final List<String> EXAMPLE_SCENARIOS = DeadlineExamples.all().stream().map(DeadlineExamples.Example::scenario).toList();
     /** Rate/retry v2 examples (guide §4.4) on the service model, run with a simulated reviewer that approves every proposal. */
     static final List<String> RATE_SCENARIOS = ServiceSimulation.scenarios().stream().map(ServiceSimulation.Scenario::id).toList();
+    /** Joint healthy recalibration (C3 request, examples 1 and 2): one joint card with C3's numbers. */
+    static final List<String> JOINT_SCENARIOS = JointSimulation.examples().stream().map(JointSimulation.Example::id).toList();
     public Map<String, Object> run(String scenario) {
         if (scenario.equals("multiple-chains")) return multipleChains();
         if (List.of("deadline-increase", "deadline-recovery").contains(scenario)) return deadlineScenario(scenario);
         if (EXAMPLE_SCENARIOS.contains(scenario)) return example(scenario);
         if (RATE_SCENARIOS.contains(scenario)) return rateScenario(scenario);
+        if (JOINT_SCENARIOS.contains(scenario)) return jointScenario(scenario);
         if (!SERVICE_SCENARIOS.contains(scenario)) throw new IllegalArgumentException("Unknown scenario");
         var response = new LinkedHashMap<>(serviceScenario(scenario));
         var chainPart = chainPartOf(scenario);
@@ -109,6 +112,31 @@ public class MockScenarios {
     }
     private static ServiceLoadSnapshot queue(String service, double percent, double depth) {
         return new ServiceLoadSnapshot(service, percent, 0.0, 0.0, 0.0, null, null, null, null, List.of(), depth);
+    }
+    /**
+     * A joint healthy recalibration (C3 request, examples 1 and 2) in an isolated engine with joint recalibration on: payment and
+     * the chain are learned, the operator changes payment's healthy target, and C4 offers ONE joint card (rate + deadline),
+     * waiting for a reviewer. Never sent to Component 3.
+     */
+    private Map<String, Object> jointScenario(String id) {
+        var e = JointSimulation.examples().stream().filter(x -> x.id().equals(id)).findFirst().orElseThrow();
+        int cycles = JointSimulation.learningCycles(settings, deadline) + 2;
+        var bed = JointSimulation.learned(e, settings, deadline, AdaptiveConfig.JointSettings.on(), Source.MOCK, Instant.now().minus(settings.cycle().multipliedBy(cycles + 10L)));
+        bed.healthyTarget(e.newTarget());
+        var parts = bed.cycle(new JointSimulation.Bed.Traffic(e.healthy(), e.demand(), e.depth())).stream().filter(c -> bed.workflow.isJointPart(c.proposal().id())).toList();
+        var evidence = new LinkedHashMap<String, Object>();
+        evidence.put("service", JointSimulation.SERVICE); evidence.put("chain", JointSimulation.CHAIN); evidence.put("title", e.title()); evidence.put("expectation", e.expectation());
+        for (var p : parts) {
+            if (p.proposal().action() == Action.LEAKY_BUCKET) { evidence.put("rateFrom", p.proposal().currentValue()); evidence.put("rateTo", p.proposal().proposedValue()); }
+            else { evidence.put("deadlineFromMs", p.proposal().currentValue()); evidence.put("deadlineToMs", p.proposal().proposedValue()); evidence.put("calculation", p.proposal().measurements()); }
+        }
+        if (!parts.isEmpty()) evidence.put("jointId", String.valueOf(bed.workflow.jointOf(parts.get(0).proposal().id())));
+        var response = new LinkedHashMap<String, Object>();
+        response.put("scenario", id); response.put("source", "MOCK"); response.put("virtualTime", true); response.put("simulatedApprovals", false);
+        response.put("message", "Isolated synthetic simulation of " + e.title() + ". The joint card waits for a reviewer; nothing is sent to Component 3. Expected: " + e.expectation());
+        response.put("outcomes", List.of(bed.lastService)); response.put("changes", bed.workflow.list()); response.put("joints", bed.workflow.joints());
+        response.put("jointEvidence", List.of(evidence));
+        return response;
     }
     /** A rate/retry v2 example on the service model (guide §4.4), with a simulated reviewer; nothing is sent to Component 3. */
     private Map<String, Object> rateScenario(String id) {

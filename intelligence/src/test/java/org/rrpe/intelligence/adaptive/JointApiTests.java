@@ -34,4 +34,12 @@ class JointApiTests {
         assertTrue(status.get("joints").isArray());
         assertEquals(0, status.get("joints").size(), "no live joint card");
     }
+    @Test void theDemoEndpointShowsTheJointCard() throws Exception {
+        var r = request("/api/v2/intelligence/demo/joint-recovery", "POST");
+        var e = r.get("jointEvidence").get(0);
+        assertEquals(50, e.get("rateFrom").asDouble()); assertEquals(100, e.get("rateTo").asDouble());
+        assertEquals(875, e.get("deadlineFromMs").asDouble()); assertEquals(780, e.get("deadlineToMs").asDouble());
+        assertEquals(2, r.get("joints").get(0).get("parts").size());
+        assertEquals(0, request("/api/v2/intelligence/outbox", "GET").size(), "simulations never reach the delivery outbox");
+    }
 }

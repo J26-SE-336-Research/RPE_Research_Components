@@ -203,3 +203,8 @@ Panel cannot start them. Please add (this work does not change the hub):
   `proposedMs`, `thresholdMs`, `jointPasses`) and in the first evidence lines ("Joint recommendation …", "Joint healthy
   recalibration for …"). `GET /api/v2/intelligence` has the optional field `joints` (joint id, parts with proposal id,
   action, target, current and proposed value, decision, delivery).
+- **Step 6.** Demo scenarios `joint-recovery` and `joint-capacity-drop` (`MockScenarios`, isolated engine with joint
+  recalibration on, the operator's healthy-target change; one joint card with C3's numbers waiting for a reviewer; tested
+  with the code defaults and the cluster's values). E8 as a simulation (`JointSimulation.e8`, `JointE8Tests`), results in
+  `evaluation/joint-e8-simulation.md`; an extra case 1b with bursty healthy traffic (Q = 24) shows the false signals that
+  C3 section 2 describes, which do not occur with Q = 8.
