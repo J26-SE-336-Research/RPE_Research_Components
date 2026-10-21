@@ -81,13 +81,103 @@ type SidecarStats struct {
 	P95Ms         map[string]float64            `json:"p95Ms"`
 	OverheadAvgMs float64                       `json:"overheadAvgMs"`
 	Inflight      float64                       `json:"inflight"`
+	Backpressure  Backpressure                  `json:"backpressure"`
+}
+
+// Backpressure is the sidecar's backpressure state (C2): its inbound leaky bucket, the pressure signals it sent and
+// received, and per destination the adaptive concurrency limit and the circuit breaker.
+type Backpressure struct {
+	InboundRatePerSec     float64 `json:"inboundRatePerSec"`
+	QueueCapacity         float64 `json:"queueCapacity"`
+	QueueDepth            float64 `json:"queueDepth"`
+	QueueUtilization      float64 `json:"queueUtilizationPercent"`
+	PressureActive        bool    `json:"pressureActive"`
+	InboundRejected       float64 `json:"inboundRejected"`  // 503: inbound queue full
+	OutboundRejected      float64 `json:"outboundRejected"` // fast-failed: breaker open
+	SignalsReceived       float64 `json:"signalsReceived"`
+	NotificationsSent     float64 `json:"notificationsSent"`
+	NotificationsFailed   float64 `json:"notificationsFailed"`
+	NotificationsRejected float64 `json:"notificationsRejected"`
+	OutboundInFlight      float64 `json:"outboundInFlight"`
+	OutboundQueued        float64 `json:"outboundQueued"`
+	OpenBreakers          float64 `json:"openBreakers"`
+	Peers                 []Peer  `json:"peers"`
+}
+
+// Peer is one destination this sidecar calls (host:port).
+type Peer struct {
+	Peer                string  `json:"peer"`
+	ConcurrencyLimit    float64 `json:"concurrencyLimit"`
+	HealthyLimit        float64 `json:"healthyLimit"`
+	InFlight            float64 `json:"inFlight"`
+	Queued              float64 `json:"queued"`
+	PressureActive      bool    `json:"pressureActive"`
+	ReportedUtilization float64 `json:"reportedUtilizationPercent"` // -1 when no pressure is reported
+	Breaker             string  `json:"breaker"`                    // closed | open | half-open
+}
+
+// backpressureGauges maps the sidecar's aggregate backpressure metrics to their fields.
+var backpressureGauges = map[string]func(*Backpressure, float64){
+	"rpe_backpressure_inbound_rate_per_second":                func(b *Backpressure, v float64) { b.InboundRatePerSec = v },
+	"rpe_backpressure_inbound_queue_capacity":                 func(b *Backpressure, v float64) { b.QueueCapacity = v },
+	"rpe_backpressure_inbound_queue_depth":                    func(b *Backpressure, v float64) { b.QueueDepth = v },
+	"rpe_backpressure_inbound_queue_utilization_percent":      func(b *Backpressure, v float64) { b.QueueUtilization = v },
+	"rpe_backpressure_inbound_pressure_active":                func(b *Backpressure, v float64) { b.PressureActive = v > 0 },
+	"rpe_backpressure_inbound_rejected_total":                 func(b *Backpressure, v float64) { b.InboundRejected = v },
+	"rpe_backpressure_outbound_rejected_total":                func(b *Backpressure, v float64) { b.OutboundRejected = v },
+	"rpe_backpressure_peer_pressure_signals_total":            func(b *Backpressure, v float64) { b.SignalsReceived = v },
+	"rpe_backpressure_peer_pressure_notifications_sent_total": func(b *Backpressure, v float64) { b.NotificationsSent = v },
+	"rpe_backpressure_peer_pressure_notifications_failed_total": func(b *Backpressure, v float64) {
+		b.NotificationsFailed = v
+	},
+	"rpe_backpressure_peer_pressure_notifications_rejected_total": func(b *Backpressure, v float64) {
+		b.NotificationsRejected = v
+	},
+	"rpe_backpressure_outbound_in_flight": func(b *Backpressure, v float64) { b.OutboundInFlight = v },
+	"rpe_backpressure_outbound_queued":    func(b *Backpressure, v float64) { b.OutboundQueued = v },
+	"rpe_circuit_breaker_open_peers":      func(b *Backpressure, v float64) { b.OpenBreakers = v },
+}
+
+// peerGauges maps the sidecar's per-destination metrics (label peer) to their fields.
+var peerGauges = map[string]func(*Peer, float64){
+	"rpe_backpressure_peer_concurrency_limit":            func(p *Peer, v float64) { p.ConcurrencyLimit = v },
+	"rpe_backpressure_peer_healthy_concurrency_limit":    func(p *Peer, v float64) { p.HealthyLimit = v },
+	"rpe_backpressure_peer_in_flight":                    func(p *Peer, v float64) { p.InFlight = v },
+	"rpe_backpressure_peer_queued":                       func(p *Peer, v float64) { p.Queued = v },
+	"rpe_backpressure_peer_pressure_active":              func(p *Peer, v float64) { p.PressureActive = v > 0 },
+	"rpe_backpressure_peer_reported_utilization_percent": func(p *Peer, v float64) { p.ReportedUtilization = v },
+	"rpe_circuit_breaker_peer_state":                     func(p *Peer, v float64) { p.Breaker = breakerState(v) },
+}
+
+func breakerState(v float64) string {
+	switch v {
+	case 1:
+		return "open"
+	case 2:
+		return "half-open"
+	}
+	return "closed"
 }
 
 func summarize(samples []sample) SidecarStats {
 	st := SidecarStats{Requests: map[string]map[string]float64{}, P50Ms: map[string]float64{}, P95Ms: map[string]float64{}}
 	buckets := map[string][][2]float64{}
 	var ohSum, ohCount float64
+	peers := map[string]*Peer{}
 	for _, s := range samples {
+		if set, ok := backpressureGauges[s.name]; ok {
+			set(&st.Backpressure, s.value)
+			continue
+		}
+		if set, ok := peerGauges[s.name]; ok && s.labels["peer"] != "" {
+			p := peers[s.labels["peer"]]
+			if p == nil {
+				p = &Peer{Peer: s.labels["peer"], ReportedUtilization: -1, Breaker: "closed"}
+				peers[p.Peer] = p
+			}
+			set(p, s.value)
+			continue
+		}
 		switch s.name {
 		case "rpe_requests_total":
 			d := s.labels["direction"]
@@ -117,6 +207,11 @@ func summarize(samples []sample) SidecarStats {
 	if ohCount > 0 {
 		st.OverheadAvgMs = ohSum / ohCount * 1000
 	}
+	st.Backpressure.Peers = make([]Peer, 0, len(peers))
+	for _, p := range peers {
+		st.Backpressure.Peers = append(st.Backpressure.Peers, *p)
+	}
+	sort.Slice(st.Backpressure.Peers, func(i, j int) bool { return st.Backpressure.Peers[i].Peer < st.Backpressure.Peers[j].Peer })
 	return st
 }
 

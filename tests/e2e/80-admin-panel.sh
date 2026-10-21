@@ -45,8 +45,12 @@ hub POST /api/hub/demos/fanout '{"failing":"loyalty-svc"}'
 assert_eq "$(echo "${BODY}" | jq -r '.chain.hops[] | select(.service=="order-svc") | .outcome')" partial "C1 fan-out demo: optional failure gives partial"
 
 hub GET /api/hub/sidecars
-assert_eq "$(echo "${BODY}" | jq '[.[] | select(.health.status=="ok")] | length')" 7 "C2: all 7 sidecars report healthy"
+assert_eq "$(echo "${BODY}" | jq '[.[] | select(.health.status=="ok")] | length')" 8 "C2: all 8 sidecars report healthy"
+assert_eq "$(echo "${BODY}" | jq -r '[.[] | select(.service=="payment-svc")][0].stats.backpressure.queueCapacity')" 200 "C2 backpressure: the panel reads payment-svc's leaky bucket (queue capacity 200)"
+assert_ge "$(echo "${BODY}" | jq '[.[] | select(.service=="order-svc")][0].stats.backpressure.peers | length')" 1 "C2 backpressure: order-svc reports its destinations (adaptive concurrency per peer)"
 pay=$(echo "${BODY}" | jq -r '.[] | select(.service=="payment-svc") | .pod')
+hub GET /api/hub/demos/backpressure
+assert_eq "$(echo "${BODY}" | jq -r .defaults.lowRate)" 50 "C2 backpressure experiment is available (default low rate 50 requests/s)"
 hub PUT "/api/hub/sidecars/${pay}/policy" '{"epoch":"e2e-panel","version":1,"hash":"h","state":"staged"}'
 hub POST "/api/hub/sidecars/${pay}/activate" '{"epoch":"e2e-panel"}'
 assert_eq "$(echo "${BODY}" | jq -r .activeEpoch)" e2e-panel "C2: policy epoch staged and activated through the panel"

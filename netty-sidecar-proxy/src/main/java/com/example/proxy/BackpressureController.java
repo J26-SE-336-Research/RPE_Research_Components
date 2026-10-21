@@ -391,7 +391,55 @@ final class BackpressureController {
                 + "# HELP rpe_backpressure_outbound_queued Current outbound calls waiting for peer capacity.\n"
                 + "# TYPE rpe_backpressure_outbound_queued gauge\nrpe_backpressure_outbound_queued " + outboundQueued() + "\n"
                 + "# HELP rpe_circuit_breaker_open_peers Current number of peers with an open circuit breaker.\n"
-                + "# TYPE rpe_circuit_breaker_open_peers gauge\nrpe_circuit_breaker_open_peers " + breakerOpened.get() + "\n";
+                + "# TYPE rpe_circuit_breaker_open_peers gauge\nrpe_circuit_breaker_open_peers " + breakerOpened.get() + "\n"
+                + peerMetricsText();
+    }
+
+    /** A copy of one destination's adaptive concurrency and breaker state, for the metrics only. */
+    private record PeerSnapshot(String peer, int limit, int healthyLimit, int inFlight, int queued,
+                                boolean pressureActive, int reportedUtilization, int breakerState) {}
+
+    /**
+     * Per-destination view of the adaptive concurrency and the circuit breaker. Read only: each peer's state is copied
+     * under its lock and nothing is changed. Breaker state: 0 closed, 1 open, 2 half-open (open period over, the next
+     * call is the probe).
+     */
+    private String peerMetricsText() {
+        List<PeerSnapshot> snapshots = new ArrayList<>();
+        long now = System.nanoTime();
+        new java.util.TreeMap<>(peers).forEach((peer, state) -> {
+            synchronized (state) {
+                int breaker = state.openUntilNanos == 0 ? 0 : state.openUntilNanos > now ? 1 : 2;
+                snapshots.add(new PeerSnapshot(peer, state.concurrencyLimit, state.healthyConcurrencyLimit, state.inFlight,
+                        state.waiting.size(), state.pressureActive, state.lastPressureUtilizationPercent, breaker));
+            }
+        });
+        StringBuilder out = new StringBuilder();
+        peerGauge(out, snapshots, "rpe_backpressure_peer_concurrency_limit",
+                "Current outbound concurrency limit per destination.", PeerSnapshot::limit);
+        peerGauge(out, snapshots, "rpe_backpressure_peer_healthy_concurrency_limit",
+                "Learned healthy outbound concurrency limit per destination.", PeerSnapshot::healthyLimit);
+        peerGauge(out, snapshots, "rpe_backpressure_peer_in_flight",
+                "Outbound calls in flight per destination.", PeerSnapshot::inFlight);
+        peerGauge(out, snapshots, "rpe_backpressure_peer_queued",
+                "Outbound calls waiting for capacity per destination.", PeerSnapshot::queued);
+        peerGauge(out, snapshots, "rpe_backpressure_peer_pressure_active",
+                "Whether the destination currently reports pressure (1) or not (0).", s -> s.pressureActive() ? 1 : 0);
+        peerGauge(out, snapshots, "rpe_backpressure_peer_reported_utilization_percent",
+                "Queue utilization last reported by the destination (-1 when none is active).", PeerSnapshot::reportedUtilization);
+        peerGauge(out, snapshots, "rpe_circuit_breaker_peer_state",
+                "Circuit breaker state per destination: 0 closed, 1 open, 2 half-open.", PeerSnapshot::breakerState);
+        return out.toString();
+    }
+
+    private static void peerGauge(StringBuilder out, List<PeerSnapshot> snapshots, String name, String help,
+                                  java.util.function.ToIntFunction<PeerSnapshot> value) {
+        out.append("# HELP ").append(name).append(' ').append(help).append('\n')
+                .append("# TYPE ").append(name).append(" gauge\n");
+        // peer keys are validated host:port values ([A-Za-z0-9._:-]), so they need no label escaping
+        for (PeerSnapshot s : snapshots) {
+            out.append(name).append("{peer=\"").append(s.peer()).append("\"} ").append(value.applyAsInt(s)).append('\n');
+        }
     }
 
     boolean updateRate(String token, double rate, int queueCapacity) {

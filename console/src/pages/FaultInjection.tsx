@@ -135,7 +135,7 @@ function LoadTab() {
             <input type="number" min={1} max={500} value={count} onChange={(e) => setCount(Number(e.target.value))} />
           </Field>
           <Field label="Concurrency">
-            <input type="number" min={1} max={25} value={concurrency} onChange={(e) => setConcurrency(Number(e.target.value))} />
+            <input type="number" min={1} max={200} value={concurrency} onChange={(e) => setConcurrency(Number(e.target.value))} />
           </Field>
           <Button variant="primary" write onClick={() => run.run()} busy={run.busy}>
             Start

@@ -274,6 +274,7 @@ It is organised like any operations console: by task, not by student.
 | Monitor | **Overview** | Service health, proxy coverage, request volume, error rate, edge p95, service map, control-plane status, recent policy activity |
 | Monitor | **Services** | Every workload with proxy status and traffic (requests, errors, p50/p95, policy epoch); a row opens a detail drawer |
 | Monitor | **Request Inspector** | Send a request through the gateway and trace the `X-RPE-Context` at every hop (deadline left, retry budget, cancellation, epoch, protocol checks) |
+| Monitor | **Backpressure** | Per service: inbound leaky-bucket fill against the 50/65/80/95 % signal levels and the 30 % clear, release rate, 503s and signals sent; per caller → destination: adaptive concurrency limit, waiting calls, reported pressure and breaker state; 2-minute charts; an experiment that overloads payment-svc and restores it 
 | Configuration | **Policies** | Approved policy versions with their status (not rolled out, rolling out, active, superseded) and the activity log from the Redis event stream; *New policy* publishes an immutable version with you as the approver and can start its rollout; *Roll out* / *Restore* on any version |
 | Configuration | **Rollouts** | Every rollout with its strategy (two-phase or immediate), phase, proxies converged and duration; a drawer shows the state of each proxy |
 | Configuration | **Recommendations** | **Approval queue** of live recommendations; a review drawer shows evidence and measurements with *Approve* / *Reject* (a reason is required). **Health** of every service and request chain from live telemetry, with *Re-learn baselines*. **Reviewed** changes with delivery status (rolling out → applied, with the policy version). **Audit trail** (PostgreSQL). **Simulation** of synthetic telemetry profiles, isolated from delivery |
@@ -287,7 +288,7 @@ It is organised like any operations console: by task, not by student.
 | Component | Pages |
 |---|---|
 | C1 Protocol | Request Inspector, Protocol Tools, Fault Injection → Experiments (deadline, terminal results, fan-out) |
-| C2 Interceptor | Proxies, Services (traffic), Overview (request and latency figures) |
+| C2 Interceptor | Backpressure (leaky bucket, pressure signals, adaptive concurrency, circuit breaker), Request Inspector and Fault Injection (deadline and cancellation propagation), Proxies, Services (traffic), Overview |
 | C3 Enforcement | Workloads (injection, admission preview), Policies (approval, versions, activity), Rollouts (two-phase vs immediate, per-proxy convergence), Proxies (epochs held) |
 | C4 Intelligence | Recommendations (approval queue, health, reviewed, audit trail, simulation); Policies (versions marked *Recommendation*) |
 

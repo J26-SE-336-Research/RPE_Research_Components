@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ComponentType } from "react";
 import { api, type User } from "./api";
 import { Icons } from "./components/icons";
 import { UserContext } from "./components/ui";
+import { BackpressurePage } from "./pages/Backpressure";
 import { FaultInjectionPage } from "./pages/FaultInjection";
 import { InspectorPage } from "./pages/Inspector";
 import { Login } from "./pages/Login";
@@ -20,6 +21,7 @@ const ROUTES: Route[] = [
   { id: "overview", label: "Overview", section: "Monitor", icon: Icons.overview, page: OverviewPage },
   { id: "services", label: "Services", section: "Monitor", icon: Icons.services, page: ServicesPage },
   { id: "inspector", label: "Request Inspector", section: "Monitor", icon: Icons.inspector, page: InspectorPage },
+  { id: "backpressure", label: "Backpressure", section: "Monitor", icon: Icons.backpressure, page: BackpressurePage },
   { id: "policies", label: "Policies", section: "Configuration", icon: Icons.policies, page: PoliciesPage },
   { id: "rollouts", label: "Rollouts", section: "Configuration", icon: Icons.rollouts, page: RolloutsPage },
   { id: "recommendations", label: "Recommendations", section: "Configuration", icon: Icons.recommendations, page: RecommendationsPage },

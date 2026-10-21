@@ -78,6 +78,41 @@ rpe_inflight_requests{service="pay",pod="p"} 1
 	}
 }
 
+func TestSummarizeBackpressure(t *testing.T) {
+	text := `rpe_backpressure_inbound_rate_per_second 5.0
+rpe_backpressure_inbound_queue_capacity 200
+rpe_backpressure_inbound_queue_depth 130
+rpe_backpressure_inbound_queue_utilization_percent 65
+rpe_backpressure_inbound_pressure_active 1
+rpe_backpressure_inbound_rejected_total 4
+rpe_backpressure_peer_pressure_notifications_sent_total 3
+rpe_circuit_breaker_open_peers 1
+rpe_backpressure_peer_concurrency_limit{peer="payment-svc:8080"} 11
+rpe_backpressure_peer_healthy_concurrency_limit{peer="payment-svc:8080"} 32
+rpe_backpressure_peer_pressure_active{peer="payment-svc:8080"} 1
+rpe_backpressure_peer_reported_utilization_percent{peer="payment-svc:8080"} 65
+rpe_circuit_breaker_peer_state{peer="payment-svc:8080"} 1
+rpe_backpressure_peer_concurrency_limit{peer="inventory-svc:8080"} 32
+`
+	b := summarize(parseProm(text)).Backpressure
+	if b.InboundRatePerSec != 5 || b.QueueCapacity != 200 || b.QueueDepth != 130 || b.QueueUtilization != 65 || !b.PressureActive {
+		t.Fatalf("bad inbound bucket: %+v", b)
+	}
+	if b.InboundRejected != 4 || b.NotificationsSent != 3 || b.OpenBreakers != 1 {
+		t.Fatalf("bad counters: %+v", b)
+	}
+	if len(b.Peers) != 2 || b.Peers[0].Peer != "inventory-svc:8080" || b.Peers[1].Peer != "payment-svc:8080" {
+		t.Fatalf("peers = %+v", b.Peers)
+	}
+	if inv := b.Peers[0]; inv.ConcurrencyLimit != 32 || inv.Breaker != "closed" || inv.ReportedUtilization != -1 || inv.PressureActive {
+		t.Fatalf("a destination without pressure: %+v", inv)
+	}
+	if pay := b.Peers[1]; pay.ConcurrencyLimit != 11 || pay.HealthyLimit != 32 || !pay.PressureActive ||
+		pay.ReportedUtilization != 65 || pay.Breaker != "open" {
+		t.Fatalf("the pressured destination: %+v", pay)
+	}
+}
+
 func ctxString(t *testing.T, mutate func(*rpe.Context)) (rpe.Context, string) {
 	t.Helper()
 	c, err := rpe.NewRoot("GET /api/orders", time.Second, 3, "e0", "")

@@ -135,7 +135,16 @@ The sidecar exposes backpressure metrics at `/metrics` on port `9090`. Current m
 - `rpe_backpressure_outbound_queued`
 - `rpe_circuit_breaker_open_peers`
 
-These metrics help show queue pressure, rejected work, notification delivery, and whether breakers are open. The current metrics are mainly aggregate for a sidecar; they do not expose every destination's live concurrency limit as a separate Prometheus series.
+These metrics help show queue pressure, rejected work, notification delivery, and whether breakers are open.
+
+Per destination (label `peer`, the host-and-port key), read-only copies of the adaptive concurrency and breaker state:
+
+- `rpe_backpressure_peer_concurrency_limit` and `rpe_backpressure_peer_healthy_concurrency_limit`
+- `rpe_backpressure_peer_in_flight` and `rpe_backpressure_peer_queued`
+- `rpe_backpressure_peer_pressure_active` and `rpe_backpressure_peer_reported_utilization_percent` (-1 when no pressure is reported)
+- `rpe_circuit_breaker_peer_state` (0 closed, 1 open, 2 half-open)
+
+Reading them changes nothing. The Admin Panel's **Backpressure** page shows all of these live and has an experiment that overloads payment-svc (a lower rate through a C3 rate-limit policy, plus heavy load) and restores it.
 
 ## Scope and operational notes
 

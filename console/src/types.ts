@@ -14,7 +14,59 @@ export type ProxyStats = {
   p95Ms: Record<string, number>;
   overheadAvgMs: number;
   inflight: number;
+  backpressure?: Backpressure;
 };
+
+/** One destination a sidecar calls: its adaptive concurrency limit and circuit breaker (C2). */
+export type BackpressurePeer = {
+  peer: string;
+  concurrencyLimit: number;
+  healthyLimit: number;
+  inFlight: number;
+  queued: number;
+  pressureActive: boolean;
+  reportedUtilizationPercent: number;
+  breaker: "closed" | "open" | "half-open";
+};
+
+/** A sidecar's backpressure state (C2): inbound leaky bucket, pressure signals, outbound limits and breakers. */
+export type Backpressure = {
+  inboundRatePerSec: number;
+  queueCapacity: number;
+  queueDepth: number;
+  queueUtilizationPercent: number;
+  pressureActive: boolean;
+  inboundRejected: number;
+  outboundRejected: number;
+  signalsReceived: number;
+  notificationsSent: number;
+  notificationsFailed: number;
+  notificationsRejected: number;
+  outboundInFlight: number;
+  outboundQueued: number;
+  openBreakers: number;
+  peers: BackpressurePeer[];
+};
+
+export type BackpressureConfig = { lowRate: number; concurrency: number; loadSeconds: number; recoverySeconds: number };
+export type BackpressureRun = {
+  id: string;
+  config: BackpressureConfig;
+  baseRate: number;
+  state: "running" | "done" | "failed";
+  stage: string;
+  error?: string;
+  requestedBy: string;
+  startedAt: string;
+  loadFrom?: string;
+  loadUntil?: string;
+  restoredAt?: string;
+  finishedAt?: string;
+  sent: number;
+  statuses: Record<string, number>;
+  cancelled: number;
+};
+export type BackpressureRuns = { busy: boolean; defaults: BackpressureConfig; runs: BackpressureRun[] };
 
 export type ProxyPolicy = { epochs: { epoch: string; version: number; hash: string; state: string }[]; activeEpoch: string };
 

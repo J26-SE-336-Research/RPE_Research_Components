@@ -33,6 +33,7 @@ type hub struct {
 	kube *kube
 	http *http.Client
 	demo *consistencyDemo
+	bp   *backpressureDemo
 }
 
 func newHub(cfg config) (*hub, error) {
@@ -42,6 +43,7 @@ func newHub(cfg config) (*hub, error) {
 		kube: newKube(),
 		http: &http.Client{Timeout: 20 * time.Second},
 		demo: &consistencyDemo{},
+		bp:   &backpressureDemo{},
 	}, nil
 }
 
@@ -81,6 +83,8 @@ func (h *hub) routes() http.Handler {
 	api.HandleFunc("GET /api/hub/effective", h.effective)
 	api.HandleFunc("GET /api/hub/demos/consistency", h.consistencyRuns)
 	api.HandleFunc("POST /api/hub/demos/consistency", h.startConsistency)
+	api.HandleFunc("GET /api/hub/demos/backpressure", h.backpressureRuns)
+	api.HandleFunc("POST /api/hub/demos/backpressure", h.startBackpressure)
 	// C4 Intelligence
 	api.HandleFunc("GET /api/hub/intel", h.intel)
 	api.HandleFunc("POST /api/hub/intel/demo/{scenario}", h.intelDemo)
@@ -373,7 +377,7 @@ func (h *hub) load(w http.ResponseWriter, r *http.Request) {
 	var in struct{ Count, Concurrency int }
 	_ = decode(r, &in)
 	in.Count = clamp(in.Count, 1, 500, 50)
-	in.Concurrency = clamp(in.Concurrency, 1, 25, 5)
+	in.Concurrency = clamp(in.Concurrency, 1, 200, 5)
 	type one struct {
 		code int
 		ms   int64
