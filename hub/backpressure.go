@@ -363,8 +363,14 @@ func (h *hub) backpressureLoad(ctx context.Context, run *backpressureRun, c back
 		}
 	}()
 
-	// no client timeout: a request may wait long in the queues and is waited for, also after the load ended
-	client := &http.Client{}
+	// no client timeout: a request may wait long in the queues and is waited for, also after the load ended. One kept-
+	// alive connection per worker: with Go's default (2 idle connections per host) the load would open and close
+	// hundreds of connections a second and fail on the kernel's connection limits instead of measuring RPE.
+	pooled := http.DefaultTransport.(*http.Transport).Clone()
+	pooled.MaxIdleConns = c.Concurrency
+	pooled.MaxIdleConnsPerHost = c.Concurrency
+	defer pooled.CloseIdleConnections()
+	client := &http.Client{Transport: pooled}
 	var wg sync.WaitGroup
 	for i := 0; i < c.Concurrency; i++ {
 		wg.Add(1)

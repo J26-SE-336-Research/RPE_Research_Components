@@ -137,9 +137,15 @@ func newService() *service {
 		baseJitter:  time.Duration(envInt("BASE_JITTER_MS", 0)) * time.Millisecond,
 	}
 	s.children = parseChildren(env("CHILDREN", ""))
-	var transport http.RoundTripper = http.DefaultTransport
+	// Keep connections to the next services open and reuse them: Go's default keeps only 2 idle connections per
+	// destination, so under heavy load it opens and closes hundreds of connections a second and runs into the kernel's
+	// connection limits (accept backlog, TIME_WAIT ports) before RPE ever sees the request.
+	pooled := http.DefaultTransport.(*http.Transport).Clone()
+	pooled.MaxIdleConns = envInt("MAX_IDLE_CONNS", 1000)
+	pooled.MaxIdleConnsPerHost = envInt("MAX_IDLE_CONNS_PER_HOST", 1000)
+	var transport http.RoundTripper = pooled
 	if s.rpeEnabled {
-		transport = &rpe.SignalTransport{Reserve: time.Duration(envInt("RESERVE_MS", 5)) * time.Millisecond, Now: s.now}
+		transport = &rpe.SignalTransport{Base: pooled, Reserve: time.Duration(envInt("RESERVE_MS", 5)) * time.Millisecond, Now: s.now}
 	}
 	// No client timeout: a slow downstream call is waited for, so a call that waits in a sidecar's queue is not turned
 	// into a failure by the application (the backpressure comparison counts only RPE's own rejections).
