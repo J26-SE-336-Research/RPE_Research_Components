@@ -132,3 +132,22 @@ To click the new scenarios and see who approved and the joint card in the Admin 
 decision and reviewer of each change ("approved by …" / "waiting for a person"); group the parts of a joint card using the
 response's `joints` field (`jointId`, `parts[].proposalId`). The live status (`GET /api/hub/intel` → `status.joints`) has the
 same shape, so the Queue can later show one combined card.
+
+## 7. Review note for the hub and console owners (Kalhara, Hiruni): commit 2c6ec4b
+
+One separate, additive commit "hub, console: show new C4 scenarios, approval and joint cards (additive)" changes only three
+files, so it can be reviewed alone:
+
+- `hub/features.go`: the 15 new C4 scenario names are added to `intelScenarios` (the 8 existing names unchanged). No other
+  hub code, route, auth or behaviour changed; the hub still forwards no query string (`?mode=auto` is only used by the C4
+  demo script, which calls C4 directly).
+- `hub/hub_test.go`: one new test, `TestIntelDemoAllowsTheC4ScenariosAndRejectsUnknownNames` (new names → 200 and forwarded to
+  C4, an unknown name → 404). `go test ./...` passes; the existing tests are unchanged.
+- `console/src/pages/Recommendations.tsx` (Simulation tab only): the same 15 names in `SCENARIOS`; two optional `Run` fields
+  (`simulatedApprovals`, `joints`); an "Approved by" column (c4-auto / a reviewer / "waiting for a person"), shown only when
+  the response has `simulatedApprovals` (the new deadline examples, rate and joint scenarios); a blue "joint" tag and the
+  parts of one joint card shown together, only when the response has `joints`. The 8 old scenarios return neither field, so
+  they look exactly as before. `npm run typecheck` and `npm run build` pass with no new errors or warnings.
+
+Why: so the new C4 recommendations (rate v2, retry v2, deadline v2 examples) and the joint card requested by C3 can be shown
+in the Admin Panel, with who approved each change.
