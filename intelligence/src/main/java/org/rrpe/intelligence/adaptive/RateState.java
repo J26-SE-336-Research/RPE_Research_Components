@@ -32,6 +32,8 @@ public final class RateState {
     }
     /** The latest automatically approved (or reverted) rate change, followed until it is applied or dropped. */
     UUID autoProposalId, lastAutoAudited;
+    /** Joint recalibration: the last healthy target seen in the policy, and a changed target not yet reached (flag on only). */
+    Double seenHealthyTarget, healthyTargetChange;
 
     /** An applied change being checked on the next disjoint windows. */
     static final class Verification {

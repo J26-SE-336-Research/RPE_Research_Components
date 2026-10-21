@@ -167,3 +167,21 @@ Panel cannot start them. Please add (this work does not change the hub):
     with an empty queue (C3 example 3), although that correction is deadline v2's own job.
   - C3's example 1 uses `D` = 875 ms, while `ceil10(700 × 1.25)` = 880 ms; the results (780 ms, 850 ms, rate alone for
     `Q ≈ 0`) are the same.
+- **Step 2.** Joint proposal, lock and priority rules.
+  - **Two triggers (C3 3b).** (b1) the rate v2 HEALTHY step that reaches its target, and (b2) a change of the service's
+    healthy target (`healthyBucketTarget`, set by an operator through `PUT /policies`; the C3 sync keeps it). C3's examples
+    map to (b2): in rate v2, "50 → 100/s" with demand above 50 would be RATE_TOO_LOW (excluded by rule b), and the healthy
+    rule never lowers a rate to its target (it only relaxes while above 2 × target). With the flag off a target change
+    still produces nothing, as today.
+  - The healthy step that reaches its target is decided **after** the retry rule (`jointStep`): if a retry change, an
+    OVERLOADED/STRESSED health, APP_OVERLOADED or RATE_TOO_LOW is present, the normal recommendations are made and no joint
+    (rules 2–4). Otherwise `tryJoint` checks every analysed chain through the service (`HealthyRecalibration.notReady`:
+    READY, settled, last counted decision `HOLD IN_BAND`, no streak, shares, lever) and no pending normal proposal for the
+    service; if any check fails, or no chain's change passes the threshold, the normal rate proposal is made unchanged.
+  - Waiting joint cards: re-offered every cycle with the same ids (normal lifetime). Deadline v2 ignores joint parts for
+    `PENDING_PROPOSAL` / `PENDING_RATE_PROPOSAL`, so its own cases run every window; when it needs a case (or the chain is
+    no longer healthy) the joint is withdrawn first. A normal rate proposal for the service replaces the joint's rate
+    part, and the workflow then withdraws the joint's other parts. The rate rule's housekeeping withdraw ("no rate change
+    supported") skips joint parts when the flag is on (`withdrawExceptJoint`).
+  - `JointSimulation` (main): an isolated bed with the chain and payment; C3's examples reproduce exactly
+    (T_h 700 ms, m 0.254 → 875 → 780 ms; T_h 620 ms, m 0.251 → 780 → 850 ms).
