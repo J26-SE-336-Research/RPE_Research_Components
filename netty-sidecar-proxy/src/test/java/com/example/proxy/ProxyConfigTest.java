@@ -36,6 +36,19 @@ class ProxyConfigTest {
     }
 
     @Test
+    void theGatewayReleasesFasterAndHoldsMoreByDefault() {
+        assertEquals(100.0, ProxyConfig.from(Map.of("RPE_ROLE", "service")).inboundRequestsPerSecond(), "a service sidecar");
+        assertEquals(300.0, ProxyConfig.from(Map.of("RPE_ROLE", "gateway")).inboundRequestsPerSecond(), "the gateway sidecar");
+        assertEquals(300.0, ProxyConfig.from(Map.of("PROXY_ROLE", "gateway")).inboundRequestsPerSecond());
+        assertEquals(50.0, ProxyConfig.from(Map.of("RPE_ROLE", "gateway", "BACKPRESSURE_INBOUND_RATE_PER_SECOND", "50")).inboundRequestsPerSecond(),
+                "the environment still overrides it");
+        assertEquals(1000, ProxyConfig.from(Map.of("RPE_ROLE", "gateway")).inboundQueueCapacity(), "the gateway holds more waiting requests");
+        assertEquals(200, ProxyConfig.from(Map.of("RPE_ROLE", "service")).inboundQueueCapacity(), "a service sidecar keeps 200");
+        assertEquals(300, ProxyConfig.from(Map.of("RPE_ROLE", "gateway", "BACKPRESSURE_INBOUND_QUEUE_CAPACITY", "300")).inboundQueueCapacity(),
+                "the environment still overrides it");
+    }
+
+    @Test
     void webhookEnvironmentSelectsTheRpeSidecarPorts() {
         ProxyConfig config = ProxyConfig.from(Map.of(
                 "RPE_ROLE", "gateway", "RPE_SERVICE_NAME", "gateway", "RPE_INBOUND_MODE", "redirect",

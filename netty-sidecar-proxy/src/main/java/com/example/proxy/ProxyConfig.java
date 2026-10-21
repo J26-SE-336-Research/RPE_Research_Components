@@ -25,6 +25,12 @@ public record ProxyConfig(
         Integration integration
 ) {
     /** Default ports used when the RPE admission webhook (Component 3) injects this proxy. */
+    /** Default inbound leaky-bucket rates (requests/s); BACKPRESSURE_INBOUND_RATE_PER_SECOND overrides both. */
+    static final double SERVICE_INBOUND_RATE_PER_SECOND = 100.0;
+    static final double GATEWAY_INBOUND_RATE_PER_SECOND = 300.0;
+    /** Default inbound queue capacities (waiting requests); BACKPRESSURE_INBOUND_QUEUE_CAPACITY overrides both. */
+    static final int SERVICE_INBOUND_QUEUE_CAPACITY = 200;
+    static final int GATEWAY_INBOUND_QUEUE_CAPACITY = 1000;
     static final int RPE_OUTBOUND_PORT = 15001;
     static final int RPE_INBOUND_PORT = 15006;
     static final int RPE_ADMIN_PORT = 15020;
@@ -114,8 +120,12 @@ public record ProxyConfig(
                 GatewayDeadlineRules.parse(env(env, "GATEWAY_DEADLINE_RULES", env(env, "RPE_ROUTE_DEADLINES", ""))),
                 env(env, "SERVICE_NAME", env(env, "RPE_SERVICE_NAME", "unknown-service")),
                 env(env, "OTEL_EXPORTER_OTLP_ENDPOINT", ""),
-                boundedPositiveDoubleEnv(env, "BACKPRESSURE_INBOUND_RATE_PER_SECOND", 100.0, 1_000_000),
-                boundedPositiveIntEnv(env, "BACKPRESSURE_INBOUND_QUEUE_CAPACITY", 200, 100_000),
+                // the gateway takes every chain request of the estate, so its leaky bucket releases faster and holds more
+                // by default (C2 owner, 21 Oct 2026); a service sidecar keeps 100 requests/s and 200 waiting requests
+                boundedPositiveDoubleEnv(env, "BACKPRESSURE_INBOUND_RATE_PER_SECOND",
+                        "gateway".equalsIgnoreCase(role) ? GATEWAY_INBOUND_RATE_PER_SECOND : SERVICE_INBOUND_RATE_PER_SECOND, 1_000_000),
+                boundedPositiveIntEnv(env, "BACKPRESSURE_INBOUND_QUEUE_CAPACITY",
+                        "gateway".equalsIgnoreCase(role) ? GATEWAY_INBOUND_QUEUE_CAPACITY : SERVICE_INBOUND_QUEUE_CAPACITY, 100_000),
                 boundedPositiveIntEnv(env, "BACKPRESSURE_OUTBOUND_QUEUE_CAPACITY", 1000, 100_000),
                 positiveIntEnv(env, "BACKPRESSURE_CIRCUIT_BREAKER_FAILURE_THRESHOLD", 10),
                 positiveLongEnv(env, "BACKPRESSURE_CIRCUIT_BREAKER_OPEN_MILLIS", 5000),

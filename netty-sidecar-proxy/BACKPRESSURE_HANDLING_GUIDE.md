@@ -26,8 +26,8 @@ Current defaults:
 
 | Setting | Default | Meaning |
 | --- | ---: | --- |
-| `BACKPRESSURE_INBOUND_RATE_PER_SECOND` | 100 | Maximum pace at which this sidecar releases inbound requests toward its application. |
-| `BACKPRESSURE_INBOUND_QUEUE_CAPACITY` | 200 | Maximum number of requests waiting in this sidecar's inbound queue. |
+| `BACKPRESSURE_INBOUND_RATE_PER_SECOND` | 100 (300 on the gateway sidecar) | Maximum pace at which this sidecar releases inbound requests toward its application. |
+| `BACKPRESSURE_INBOUND_QUEUE_CAPACITY` | 200 (1000 on the gateway sidecar) | Maximum number of requests waiting in this sidecar's inbound queue. |
 
 These are environment variables for the `netty-proxy` container. For example, a rate of 100 requests per second spaces releases about 10 milliseconds apart. The queue capacity is a count of waiting requests, not a request rate.
 

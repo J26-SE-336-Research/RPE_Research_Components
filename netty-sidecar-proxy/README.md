@@ -140,8 +140,8 @@ java -jar target/netty-sidecar-proxy-1.0.0.jar
 Backpressure handling always runs on each sidecar. Set these environment variables on that Pod's `netty-proxy` container to configure its inbound request rate and queue:
 
 ```text
-BACKPRESSURE_INBOUND_RATE_PER_SECOND=100
-BACKPRESSURE_INBOUND_QUEUE_CAPACITY=200
+BACKPRESSURE_INBOUND_RATE_PER_SECOND=100   # default 300 on the gateway sidecar
+BACKPRESSURE_INBOUND_QUEUE_CAPACITY=200      # default 1000 on the gateway sidecar
 BACKPRESSURE_OUTBOUND_QUEUE_CAPACITY=1000
 BACKPRESSURE_CIRCUIT_BREAKER_FAILURE_THRESHOLD=10
 BACKPRESSURE_CIRCUIT_BREAKER_OPEN_MILLIS=5000
