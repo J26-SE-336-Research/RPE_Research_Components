@@ -37,7 +37,8 @@ type Change = {
 type Collection = { enabled: boolean; deliveryConfigured: boolean; configuredServices: string[]; problems: string[] };
 type Intel = {
   health?: { status: string };
-  status?: { mockEnabled: boolean; changes: Change[]; assessments: Assessment[]; collection: Collection };
+  status?: { mockEnabled: boolean; changes: Change[]; assessments: Assessment[]; collection: Collection;
+    joints?: { jointId: string; parts: { proposalId: string }[] }[] };
   error?: string;
 };
 type Check = { state: string; detail: string };
@@ -163,15 +164,17 @@ function HealthTag({ health }: { health: string }) {
 
 function Review({ change, onClose, onDone }: { change: Change; onClose: () => void; onDone: (msg: string) => void }) {
   const p = change.proposal;
+  const sim = p.source === "MOCK";
   const [comment, setComment] = useState("");
   const decide = useAction(async (approve: boolean) => {
     await api("POST", `/intel/changes/${p.id}/review`, { approve, comment });
-    onDone(approve ? `Approved: ${ACTION[p.action]} for ${p.target}. It is now being delivered to the policy store.` : `Rejected: ${ACTION[p.action]} for ${p.target}.`);
+    onDone(sim ? `Simulation: ${approve ? "approved" : "rejected"}, never applied (${ACTION[p.action]} for ${p.target}).`
+      : approve ? `Approved: ${ACTION[p.action]} for ${p.target}. It is now being delivered to the policy store.` : `Rejected: ${ACTION[p.action]} for ${p.target}.`);
     onClose();
   });
   const pending = change.decision === "PENDING_APPROVAL";
   return (
-    <Drawer title={`${ACTION[p.action] ?? p.action} · ${p.target}`} subtitle={`Generated from ${p.source === "TEMPO" ? "traces" : "metrics"} · based on policy ${p.baseVersion}`} onClose={onClose}>
+    <Drawer title={`${ACTION[p.action] ?? p.action} · ${p.target}`} subtitle={`${sim ? "Simulation · " : ""}Generated from ${p.source === "TEMPO" ? "traces" : "metrics"} · based on policy ${p.baseVersion}`} onClose={onClose}>
       <div className="stack">
         <div className="kpis">
           <Kpi label="Current" value={value(p.currentValue, p.unit)} />
@@ -194,7 +197,7 @@ function Review({ change, onClose, onDone }: { change: Change; onClose: () => vo
           />
         </Panel>
         {pending ? (
-          <Panel title="Decision" subtitle="You are recorded as the reviewer. Approved changes become a new policy version and roll out in two phases.">
+          <Panel title="Decision" subtitle={sim ? "Simulation: you are recorded as the reviewer; nothing is applied." : "You are recorded as the reviewer. Approved changes become a new policy version and roll out in two phases."}>
             <Alert>{decide.error}</Alert>
             <Field label="Comment" hint="Required when rejecting">
               <textarea rows={3} value={comment} onChange={(e) => setComment(e.target.value)} />
@@ -214,7 +217,7 @@ function Review({ change, onClose, onDone }: { change: Change; onClose: () => vo
               items={[
                 ["Decision", change.decision === "APPROVED" ? "Approved" : change.decision === "REJECTED" ? "Rejected" : change.decision],
                 ["Reviewer", change.reviewer ?? "—"],
-                ["Delivery", DELIVERY[change.delivery]?.[1] ?? change.delivery],
+                ["Delivery", sim ? "Never applied (simulation)" : DELIVERY[change.delivery]?.[1] ?? change.delivery],
                 ["Policy version", change.appliedVersion ?? "—"],
                 ["Detail", change.detail ?? "—"],
               ]}
@@ -405,10 +408,29 @@ function approvedBy(c: Change) {
   return "";
 }
 
-function Simulation() {
+function practiceStatus(c: Change) {
+  if (c.decision === "APPROVED") return `Simulation: approved by ${c.reviewer ?? "?"}, never applied`;
+  if (c.decision === "REJECTED") return `Simulation: rejected by ${c.reviewer ?? "?"}`;
+  return "waiting for a person";
+}
+
+function Simulation({ practice, joints, onOpen, onChanged }: { practice: Change[]; joints?: { jointId: string; parts: { proposalId: string }[] }[];
+  onOpen: (c: Change) => void; onChanged: (msg: string) => void }) {
   const [scenario, setScenario] = useState("stressed");
   const run = useAction(() => api<Run>("POST", `/intel/demo/${scenario}`));
   const r = run.result;
+  const toCards = useAction(async () => {
+    const res = await api<{ practiceCards?: unknown[] }>("POST", `/intel/demo/${scenario}?to=queue`);
+    onChanged(`Simulation: ${res.practiceCards?.length ?? 0} practice card(s) added from ${scenario}. Review them below; nothing is applied.`);
+  });
+  const clear = useAction(async () => {
+    const res = await api<{ removed: number }>("POST", "/intel/practice/clear");
+    onChanged(`Simulation: ${res.removed} practice card(s) cleared.`);
+  });
+  const practiceJoint = new Map<string, number>();
+  joints?.forEach((j, i) => j.parts.forEach((p) => practiceJoint.set(p.proposalId, i + 1)));
+  const practiceRows = [...practice.filter((c) => practiceJoint.has(c.proposal.id)).sort((a, b) => practiceJoint.get(a.proposal.id)! - practiceJoint.get(b.proposal.id)!),
+    ...practice.filter((c) => !practiceJoint.has(c.proposal.id))];
   const jointOf = new Map<string, number>();
   r?.joints?.forEach((j, i) => j.parts.forEach((p) => jointOf.set(p.proposalId, i + 1)));
   const showApproval = r?.simulatedApprovals !== undefined;
@@ -434,8 +456,15 @@ function Simulation() {
               Analyse
             </Button>
           </div>
+          {r && (
+            <div style={{ alignSelf: "flex-end" }}>
+              <Button write onClick={() => toCards.run()} busy={toCards.busy}>
+                Review these as cards
+              </Button>
+            </div>
+          )}
         </div>
-        <Alert>{run.error}</Alert>
+        <Alert>{run.error ?? toCards.error ?? clear.error}</Alert>
       </Panel>
       {r && (
         <>
@@ -476,6 +505,57 @@ function Simulation() {
           </Panel>
         </>
       )}
+      <Panel
+        title="Practice cards (simulation)"
+        subtitle="Review a scenario's recommendations as cards. Approving or rejecting records your decision; nothing is applied."
+        flush
+        actions={
+          <Button size="sm" write disabled={!practice.length} onClick={() => window.confirm("Remove all practice (simulation) cards? Real recommendations are not affected.") && clear.run()} busy={clear.busy}>
+            Clear practice cards
+          </Button>
+        }
+      >
+        {practiceRows.length ? (
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Target</th>
+                  <th>Setting</th>
+                  <th className="num">Current</th>
+                  <th className="num">Proposed</th>
+                  <th>Reason</th>
+                  <th>Status</th>
+                  <th />
+                </tr>
+              </thead>
+              <tbody>
+                {practiceRows.map((c) => (
+                  <tr key={c.proposal.id}>
+                    <td className="mono">{c.proposal.target}</td>
+                    <td>
+                      <Tag>Simulation</Tag> {practiceJoint.has(c.proposal.id) && <><Tag tone="blue">joint</Tag>{" "}</>}{ACTION[c.proposal.action] ?? c.proposal.action}
+                    </td>
+                    <td className="num">{value(c.proposal.currentValue, c.proposal.unit)}</td>
+                    <td className="num">
+                      <strong>{value(c.proposal.proposedValue, c.proposal.unit)}</strong>
+                    </td>
+                    <td style={{ fontSize: 14, maxWidth: 360 }}>{readable(c.proposal.evidence[0])}</td>
+                    <td>{practiceStatus(c)}</td>
+                    <td className="nowrap">
+                      <Button size="sm" variant="primary" onClick={() => onOpen(c)}>
+                        Review
+                      </Button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <Empty>No practice cards. Analyse a scenario, then "Review these as cards": you can approve or reject them, and nothing is applied.</Empty>
+        )}
+      </Panel>
     </div>
   );
 }
@@ -498,6 +578,7 @@ export function RecommendationsPage() {
   const active = (c: Change) => c.delivery !== "SUPERSEDED" && c.delivery !== "EXPIRED";
   const queue = changes.filter((c) => c.decision === "PENDING_APPROVAL" && active(c));
   const reviewed = changes.filter((c) => c.decision === "APPROVED" || c.decision === "REJECTED");
+  const practice = (intel.data?.status?.changes ?? []).filter((c) => c.proposal.source === "MOCK" && active(c));
   const assessments = (intel.data?.status?.assessments ?? []).filter((a) => a.source !== "MOCK");
   const stressed = assessments.filter((a) => a.health === "STRESSED" || a.health === "OVERLOADED").length;
   const live = (k: string) => conn.data?.[k]?.state === "LIVE_DATA";
@@ -507,7 +588,7 @@ export function RecommendationsPage() {
     <>
       <PageHeader title="Recommendations" description="Policy changes proposed from live telemetry. Nothing is applied until a reviewer approves it." />
       <Alert>{intel.error ?? intel.data?.error}</Alert>
-      {notice && <Alert kind="info">{notice} <a href="#/policies">View policies</a></Alert>}
+      {notice && <Alert kind="info">{notice} {!notice.startsWith("Simulation") && <a href="#/policies">View policies</a>}</Alert>}
       <div className="stack">
         <div className="kpis">
           <Kpi label="Engine" value={intel.data?.health?.status === "UP" ? <Status tone="green">Running</Status> : <Status tone="red">Unavailable</Status>} foot={collection?.enabled ? "Live collection" : "Collection disabled"} />
@@ -561,7 +642,7 @@ export function RecommendationsPage() {
           </Panel>
         )}
         {tab === "history" && <History />}
-        {tab === "simulation" && <Simulation />}
+        {tab === "simulation" && <Simulation practice={practice} joints={intel.data?.status?.joints} onOpen={setOpen} onChanged={(m) => { setNotice(m); intel.reload(); }} />}
       </div>
       {open && (
         <Review
