@@ -82,7 +82,12 @@ public class AdaptiveController {
         authorize(Source.PROMETHEUS, token); collector.resetBaselines();
     }
     @GetMapping("/outbox") public Object outbox() { return workflow.deliverable(); }
-    @PostMapping("/demo/{scenario}") public Object demo(@PathVariable String scenario) { authorize(Source.MOCK, null); return scenarios.run(scenario); }
+    /** Isolated simulation; {@code ?mode=auto} runs the rate and retry scenarios with automatic approval on (never delivered). */
+    @PostMapping("/demo/{scenario}") public Object demo(@PathVariable String scenario, @RequestParam(value = "mode", required = false) String mode) {
+        authorize(Source.MOCK, null);
+        if (mode != null && !mode.equals("auto")) throw new IllegalArgumentException("mode must be auto or absent");
+        return scenarios.run(scenario, "auto".equals(mode));
+    }
     private void authorize(Source source, String supplied) {
         if (source == null) throw new IllegalArgumentException("Evidence source is required");
         if (source == Source.MOCK) {
