@@ -103,6 +103,18 @@ func withPart(parts []Part, part Part) []Part {
 	return out
 }
 
+// mergeParts returns the parts of the previous version with the changed parts applied: a joint decision names only
+// the services it changes, and the services it does not name keep their part. Otherwise a part would drop out of the
+// policy: its service would keep enforcing the previous version, count every request of the new version as a
+// mixed-policy request and no longer be covered by drift repair.
+func mergeParts(previous, changed []Part) []Part {
+	out := previous
+	for _, part := range changed {
+		out = withPart(out, part)
+	}
+	return out
+}
+
 // validateParts checks the parts of a joint policy: every part names a service, no service appears twice.
 func validateParts(parts []Part) error {
 	seen := map[string]bool{}

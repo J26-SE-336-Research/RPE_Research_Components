@@ -179,6 +179,35 @@ func TestASingleRateChangeInAJointPolicyIsNotHeldBack(t *testing.T) {
 	h.until("rate", PhaseComplete)
 }
 
+func TestAJointDecisionKeepsThePartsItDoesNotName(t *testing.T) {
+	// v1 = deadline 1000 + payment 100, then v2 = deadline 1200 + order 200: payment keeps its part in v2, so it moves
+	// to the new version with unchanged content instead of being left behind on v1.
+	orderPart := Part{Scope: Scope{Service: "order-svc"}, Spec: json.RawMessage(`{"leakyBucket":{"ratePerSec":200}}`)}
+	parts := mergeParts(j1.parts(), []Part{gwPart(1200), orderPart})
+	v2 := Policy{PolicyID: "chain", Version: 2, Epoch: "chain-v2", Scope: Scope{Service: "gateway"}, Spec: jointSpec(parts)}
+	if strings.Join(v2.services(), ",") != "gateway,payment-svc,order-svc" {
+		t.Fatalf("parts: %v", v2.services())
+	}
+	if pay, _ := v2.forService("payment-svc"); specHash(pay.Spec) != specHash(payPart(100).Spec) {
+		t.Fatalf("payment's part is kept unchanged: %s", pay.Spec)
+	}
+	plan := planJoint(v2, &j1)
+	if kindOf(plan, "gateway") != changeLoosen || kindOf(plan, "payment-svc") != changeUnchanged || kindOf(plan, "order-svc") != changeLoosen {
+		t.Fatalf("plan: %+v", plan)
+	}
+	// v1 = deadline 1300 + payment 200, then a single change payment 150: the gateway's 1300 ms is kept and only
+	// payment tightens
+	v1b := Policy{PolicyID: "chain", Version: 1, Epoch: "chain-v1", Spec: jointSpec([]Part{gwPart(1300), payPart(200)})}
+	v2b := Policy{PolicyID: "chain", Version: 2, Epoch: "chain-v2", Spec: jointSpec(mergeParts(v1b.parts(), []Part{payPart(150)}))}
+	if gw, _ := v2b.forService("gateway"); specHash(gw.Spec) != specHash(gwPart(1300).Spec) {
+		t.Fatalf("the gateway keeps 1300 ms: %s", gw.Spec)
+	}
+	plan = planJoint(v2b, &v1b)
+	if kindOf(plan, "gateway") != changeUnchanged || kindOf(plan, "payment-svc") != changeTighten {
+		t.Fatalf("plan: %+v", plan)
+	}
+}
+
 func TestNaiveArrivalOrderServicesFirst(t *testing.T) {
 	h := jointHarness(t)
 	h.create("n", "naive", j2, "chain-v1", time.Now())
