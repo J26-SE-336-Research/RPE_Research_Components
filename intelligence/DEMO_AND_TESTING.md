@@ -151,3 +151,20 @@ files, so it can be reviewed alone:
 
 Why: so the new C4 recommendations (rate v2, retry v2, deadline v2 examples) and the joint card requested by C3 can be shown
 in the Admin Panel, with who approved each change.
+
+## 8. Practice cards: review a scenario's recommendations without applying them
+
+- **C4:** `POST /api/v2/intelligence/demo/{scenario}?to=queue` runs the scenario as usual and also adds its recommendations
+  as **practice cards** (source MOCK) to the recommendation list, waiting for a reviewer: the pending cards of the 8 old and
+  the joint scenarios (a joint card stays linked: one decision for both parts), and for the rate and deadline example
+  scenarios the first recommendation of each target and setting after learning. `POST /api/v2/intelligence/practice/clear`
+  removes them. Without `?to=queue` nothing changes.
+- **Never applied:** MOCK cards are never returned by `PolicyWorkflow.deliverable`, so the bridge never sends them to
+  Component 3, even when approved. They stay for 1 hour or until cleared, at most 30 (the oldest go first) so they cannot
+  push real cards out of the status list. The audit trail (append-only) keeps their decisions, marked MOCK.
+- **Never affect live decisions:** MOCK targets are keyed apart from live ones (`PracticeIsolationTests`: the same live run
+  with and without practice cards on the same names gives identical live recommendations).
+- **Admin Panel:** Recommendations → Simulation → Analyse → **Review these as cards**; the cards appear below the results
+  with a "Simulation" tag (joint parts together), open the same review drawer, and show "Simulation: approved by <name>,
+  never applied" after a decision; **Clear practice cards** removes them. (Needs the hub and console change of the next
+  commit.)

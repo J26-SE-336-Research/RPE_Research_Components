@@ -316,6 +316,25 @@ public class PolicyWorkflow {
         }
         return latest;
     }
+    // ---------------------------------------------------------------- practice cards (synthetic, MOCK) ----------------------------------------------------------------
+
+    /**
+     * Removes synthetic (MOCK) cards from the in-memory list, oldest first, until at most {@code keep} remain; with {@code keep}
+     * = 0 also their MOCK policy references. Live cards and the audit trail are never touched. A joint card is removed whole.
+     */
+    public synchronized int removeSynthetic(int keep) {
+        var synthetic = history.values().stream().filter(c -> c.proposal().source() == Source.MOCK)
+                .sorted(java.util.Comparator.comparing((PolicyChange c) -> c.proposal().generatedAt())).map(c -> c.proposal().id()).toList();
+        var remove = new java.util.LinkedHashSet<UUID>(synthetic.subList(0, Math.max(0, synthetic.size() - Math.max(0, keep))));
+        for (UUID id : new ArrayList<>(remove)) { UUID joint = jointOf.get(id); if (joint != null) remove.addAll(joints.getOrDefault(joint, List.of())); }
+        for (UUID id : remove) {
+            history.remove(id);
+            UUID joint = jointOf.remove(id);
+            if (joint != null) joints.remove(joint);
+        }
+        if (keep <= 0) policies.keySet().removeIf(k -> k.startsWith("MOCK:"));
+        return remove.size();
+    }
     /** Withdraws every part of the active joint recommendations that touch {@code target}. */
     public synchronized void withdrawJoint(String target, Source source, String reason) {
         for (var joint : new ArrayList<>(joints.entrySet())) {

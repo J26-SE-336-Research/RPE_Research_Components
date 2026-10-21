@@ -82,11 +82,25 @@ public class AdaptiveController {
         authorize(Source.PROMETHEUS, token); collector.resetBaselines();
     }
     @GetMapping("/outbox") public Object outbox() { return workflow.deliverable(); }
-    /** Isolated simulation; {@code ?mode=auto} runs the rate and retry scenarios with automatic approval on (never delivered). */
-    @PostMapping("/demo/{scenario}") public Object demo(@PathVariable String scenario, @RequestParam(value = "mode", required = false) String mode) {
+    /**
+     * Isolated simulation; {@code ?mode=auto} runs the rate and retry scenarios with automatic approval on (never delivered);
+     * {@code ?to=queue} also adds the scenario's recommendations as practice cards (MOCK, reviewable, never applied).
+     */
+    @PostMapping("/demo/{scenario}") public Object demo(@PathVariable String scenario, @RequestParam(value = "mode", required = false) String mode,
+            @RequestParam(value = "to", required = false) String to) {
         authorize(Source.MOCK, null);
         if (mode != null && !mode.equals("auto")) throw new IllegalArgumentException("mode must be auto or absent");
-        return scenarios.run(scenario, "auto".equals(mode));
+        if (to != null && !to.equals("queue")) throw new IllegalArgumentException("to must be queue or absent");
+        var result = scenarios.run(scenario, "auto".equals(mode));
+        if (to == null) return result;
+        var out = new java.util.LinkedHashMap<String, Object>(result);
+        out.put("practiceCards", PracticeCards.add(scenario, result, workflow, java.time.Instant.now()));
+        return out;
+    }
+    /** Removes the practice (simulation) cards; real recommendations and the audit trail are untouched. */
+    @PostMapping("/practice/clear") public Map<String, Integer> clearPractice() {
+        authorize(Source.MOCK, null);
+        return Map.of("removed", PracticeCards.clear(workflow));
     }
     private void authorize(Source source, String supplied) {
         if (source == null) throw new IllegalArgumentException("Evidence source is required");
