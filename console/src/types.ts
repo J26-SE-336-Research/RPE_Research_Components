@@ -54,6 +54,7 @@ export type BackpressureConfig = { mode: BackpressureMode; lowRate: number; conc
 export type BackpressureResults = {
   chainOk: number;
   chainFailed: number;
+  unfinished: number;
   p50Ms: number;
   p95Ms: number;
   paymentRejected: number;

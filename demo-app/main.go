@@ -141,7 +141,9 @@ func newService() *service {
 	if s.rpeEnabled {
 		transport = &rpe.SignalTransport{Reserve: time.Duration(envInt("RESERVE_MS", 5)) * time.Millisecond, Now: s.now}
 	}
-	s.client = &http.Client{Transport: transport, Timeout: 30 * time.Second}
+	// No client timeout: a slow downstream call is waited for, so a call that waits in a sidecar's queue is not turned
+	// into a failure by the application (the backpressure comparison counts only RPE's own rejections).
+	s.client = &http.Client{Transport: transport}
 	return s
 }
 

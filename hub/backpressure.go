@@ -29,6 +29,8 @@ const (
 	maxBackpressureRuns = 20
 	// after a failed request the load waits like a client honouring Retry-After, so a fast failure does not loop
 	failureBackoff = 200 * time.Millisecond
+	// after the load period, requests already sent are waited for up to this long
+	drainLimit = 5 * time.Minute
 )
 
 type backpressureConfig struct {
@@ -64,6 +66,7 @@ func (c *backpressureConfig) normalize() string {
 type backpressureResults struct {
 	ChainOK             int     `json:"chainOk"`
 	ChainFailed         int     `json:"chainFailed"` // any other status, or no response
+	Unfinished          int     `json:"unfinished"`  // still running when the drain limit after the load was reached
 	P50Ms               int64   `json:"p50Ms"`
 	P95Ms               int64   `json:"p95Ms"`
 	PaymentRejected     float64 `json:"paymentRejected"`     // 503 from payment-svc's full inbound queue
@@ -149,7 +152,7 @@ func (h *hub) updateBackpressure(run *backpressureRun, fn func(*backpressureRun)
 
 func (h *hub) runBackpressure(run *backpressureRun) {
 	c := run.Config
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(c.LoadSeconds+c.RecoverySeconds)*time.Second+5*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(c.LoadSeconds+c.RecoverySeconds)*time.Second+drainLimit+5*time.Minute)
 	defer cancel()
 	defer func() {
 		// every sidecar goes back to the full mechanism, whatever happened during the run
@@ -304,14 +307,20 @@ func (h *hub) backpressureSnapshot(ctx context.Context) bpSnapshot {
 	return snap
 }
 
-// backpressureLoad keeps c.Concurrency chain requests in flight through the gateway for c.LoadSeconds, samples the
-// sidecars every half second and returns the chain results and the peaks.
+// backpressureLoad keeps c.Concurrency chain requests in flight through the gateway for c.LoadSeconds, then sends no
+// new request and waits until every request already sent has finished (at most drainLimit), so every request is
+// counted as OK or failed. It samples the sidecars every half second until then and returns the results and peaks.
 func (h *hub) backpressureLoad(ctx context.Context, run *backpressureRun, c backpressureConfig) backpressureResults {
 	loadCtx, stop := context.WithTimeout(ctx, time.Duration(c.LoadSeconds)*time.Second)
 	defer stop()
+	// requests already sent are waited for after the load ends, up to drainLimit (then counted as unfinished)
+	reqCtx, stopRequests := context.WithTimeout(ctx, time.Duration(c.LoadSeconds)*time.Second+drainLimit)
+	defer stopRequests()
 	res := backpressureResults{MinLimitToPayment: -1}
 	var mu sync.Mutex
 	var durations []int64
+	var inFlight int
+	finished := make(chan struct{})
 
 	// sampling: payment's queue, open breakers, and order-svc's limit and waiting calls towards payment
 	sampled := make(chan struct{})
@@ -320,7 +329,7 @@ func (h *hub) backpressureLoad(ctx context.Context, run *backpressureRun, c back
 		t := time.NewTicker(500 * time.Millisecond)
 		defer t.Stop()
 		for {
-			snap := h.backpressureSnapshot(loadCtx)
+			snap := h.backpressureSnapshot(reqCtx)
 			mu.Lock()
 			if q := snap.service(backpressureService).QueueUtilization; q > res.PeakPaymentQueue {
 				res.PeakPaymentQueue = q
@@ -339,17 +348,23 @@ func (h *hub) backpressureLoad(ctx context.Context, run *backpressureRun, c back
 					res.PeakWaitingAtCaller = p.Queued
 				}
 			}
+			waiting := inFlight
 			mu.Unlock()
+			if loadCtx.Err() != nil {
+				h.updateBackpressure(run, func(r *backpressureRun) {
+					r.Stage = fmt.Sprintf("load ended: waiting for %d request(s) still in flight", waiting)
+				})
+			}
 			select {
-			case <-loadCtx.Done():
+			case <-finished:
 				return
 			case <-t.C:
 			}
 		}
 	}()
 
-	// requests may wait long in the queues; a request still waiting when the load ends is abandoned
-	client := &http.Client{Timeout: 60 * time.Second}
+	// no client timeout: a request may wait long in the queues and is waited for, also after the load ended
+	client := &http.Client{}
 	var wg sync.WaitGroup
 	for i := 0; i < c.Concurrency; i++ {
 		wg.Add(1)
@@ -358,14 +373,24 @@ func (h *hub) backpressureLoad(ctx context.Context, run *backpressureRun, c back
 			for loadCtx.Err() == nil {
 				start := time.Now()
 				code, cancelled := 0, false
-				req, _ := http.NewRequestWithContext(loadCtx, http.MethodGet, h.cfg.gatewayURL+"/api/orders", nil)
-				if resp, err := client.Do(req); err == nil {
+				mu.Lock()
+				inFlight++
+				mu.Unlock()
+				req, _ := http.NewRequestWithContext(reqCtx, http.MethodGet, h.cfg.gatewayURL+"/api/orders", nil)
+				resp, err := client.Do(req)
+				mu.Lock()
+				inFlight--
+				mu.Unlock()
+				if err == nil {
 					code = resp.StatusCode
 					cs := resultFields(resp.Header.Get("X-RPE-Result"))["cs"]
 					cancelled = cs != "" && cs != "none"
 					_ = resp.Body.Close()
-				} else if loadCtx.Err() != nil {
-					return // abandoned when the load ended: not a result
+				} else if reqCtx.Err() != nil {
+					mu.Lock()
+					res.Unfinished++ // still waiting when the drain limit was reached
+					mu.Unlock()
+					return
 				}
 				ms := time.Since(start).Milliseconds()
 				mu.Lock()
@@ -393,6 +418,7 @@ func (h *hub) backpressureLoad(ctx context.Context, run *backpressureRun, c back
 		}()
 	}
 	wg.Wait()
+	close(finished)
 	<-sampled
 	mu.Lock()
 	defer mu.Unlock()

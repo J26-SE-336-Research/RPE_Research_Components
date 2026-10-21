@@ -162,7 +162,7 @@ function Comparison() {
   return (
     <Panel
       title="Comparison: basic vs full"
-      subtitle="Run the experiment once in each mode with the same settings. Counted by the sidecars during the load; a failed request is retried after 200 ms, like a client honouring Retry-After."
+      subtitle="Run the experiment once in each mode with the same settings. After the load period no new request is sent and every request already sent is waited for, so each one counts as OK or failed (Unfinished: still running after 5 more minutes). After a failure a worker waits 200 ms before its next request, like a client honouring Retry-After."
       flush
     >
       {done.length ? (
@@ -175,6 +175,7 @@ function Comparison() {
                 <th>Load</th>
                 <th className="num">Chain OK</th>
                 <th className="num">Chain failed</th>
+                <th className="num">Unfinished</th>
                 <th className="num">503 at payment (queue full)</th>
                 <th className="num">Failed fast (breaker / outbound queue)</th>
                 <th className="num">Peak payment queue</th>
@@ -200,6 +201,7 @@ function Comparison() {
                       <strong style={{ color: x.chainFailed ? "var(--red)" : undefined }}>{fmtNum(x.chainFailed)}</strong>{" "}
                       <span className="muted">({pct(x.chainFailed, total)})</span>
                     </td>
+                    <td className="num">{fmtNum(x.unfinished ?? 0)}</td>
                     <td className="num">{fmtNum(x.paymentRejected)}</td>
                     <td className="num">{fmtNum(x.outboundRejected)}</td>
                     <td className="num">{Math.round(x.peakPaymentQueue)} %</td>
