@@ -45,6 +45,8 @@ export type Backpressure = {
   outboundInFlight: number;
   outboundQueued: number;
   openBreakers: number;
+  /** backpressure mode: true full (signals and adaptive concurrency), false basic; missing on older sidecars */
+  adaptive?: boolean;
   peers: BackpressurePeer[];
 };
 

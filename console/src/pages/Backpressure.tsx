@@ -299,7 +299,15 @@ export function BackpressurePage() {
                           {fmtNum(b.queueDepth)} / {fmtNum(b.queueCapacity)} ({Math.round(b.queueUtilizationPercent)} %)
                         </td>
                         <td className="num">{b.inboundRatePerSec} /s</td>
-                        <td>{b.pressureActive ? <Tag tone="red">signalling</Tag> : <Tag tone="green">clear</Tag>}</td>
+                        <td>
+                          {!b.pressureActive ? (
+                            <Tag tone="green">clear</Tag>
+                          ) : b.adaptive === false ? (
+                            <Tag tone="amber">high, signals off (basic)</Tag>
+                          ) : (
+                            <Tag tone="red">signalling</Tag>
+                          )}
+                        </td>
                         <td className="num">{fmtNum(b.inboundRejected)}</td>
                         <td className="num">
                           {fmtNum(b.notificationsSent)}

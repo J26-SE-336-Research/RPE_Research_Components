@@ -101,6 +101,7 @@ type Backpressure struct {
 	OutboundInFlight      float64 `json:"outboundInFlight"`
 	OutboundQueued        float64 `json:"outboundQueued"`
 	OpenBreakers          float64 `json:"openBreakers"`
+	Adaptive              bool    `json:"adaptive"` // backpressure mode: true full (signals, adaptive concurrency), false basic
 	Peers                 []Peer  `json:"peers"`
 }
 
@@ -136,6 +137,7 @@ var backpressureGauges = map[string]func(*Backpressure, float64){
 	"rpe_backpressure_outbound_in_flight": func(b *Backpressure, v float64) { b.OutboundInFlight = v },
 	"rpe_backpressure_outbound_queued":    func(b *Backpressure, v float64) { b.OutboundQueued = v },
 	"rpe_circuit_breaker_open_peers":      func(b *Backpressure, v float64) { b.OpenBreakers = v },
+	"rpe_backpressure_adaptive_enabled":   func(b *Backpressure, v float64) { b.Adaptive = v > 0 },
 }
 
 // peerGauges maps the sidecar's per-destination metrics (label peer) to their fields.
