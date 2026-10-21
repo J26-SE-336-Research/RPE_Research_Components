@@ -146,6 +146,15 @@ Per destination (label `peer`, the host-and-port key), read-only copies of the a
 
 Reading them changes nothing. The Admin Panel's **Backpressure** page shows all of these live and has an experiment that overloads payment-svc (a lower rate through a C3 rate-limit policy, plus heavy load) and restores it.
 
+## Backpressure mode (comparison experiment)
+
+`GET` / `PUT /rpe/v1/backpressure/mode` on the control API (port 15020), body `{"mode":"full"}` or `{"mode":"basic"}`:
+
+- `full` (the default): everything in this guide.
+- `basic`: only the inbound leaky bucket (503 when full) and the circuit breaker. No pressure signals are sent or acted on (neither the direct notification nor the response headers), and outbound calls are neither limited nor queued per destination.
+
+The metric `rpe_backpressure_adaptive_enabled` shows the mode (1 full, 0 basic). The Admin Panel's Backpressure experiment runs the same load in either mode, shows the runs side by side, and always switches every sidecar back to `full`.
+
 ## Scope and operational notes
 
 - The proxy does not retry calls. The circuit breaker rejects calls while open and allows a probe after the open period.

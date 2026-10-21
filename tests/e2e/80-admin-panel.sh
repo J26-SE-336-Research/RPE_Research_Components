@@ -51,6 +51,8 @@ assert_ge "$(echo "${BODY}" | jq '[.[] | select(.service=="order-svc")][0].stats
 pay=$(echo "${BODY}" | jq -r '.[] | select(.service=="payment-svc") | .pod')
 hub GET /api/hub/demos/backpressure
 assert_eq "$(echo "${BODY}" | jq -r .defaults.lowRate)" 50 "C2 backpressure experiment is available (default low rate 50 requests/s)"
+client GET "http://$(pod_ip payment-svc):15020/rpe/v1/backpressure/mode"
+assert_eq "$(echo "${BODY}" | jq -r .mode)" full "C2 backpressure: the sidecars run the full mechanism (signals and adaptive concurrency)"
 hub PUT "/api/hub/sidecars/${pay}/policy" '{"epoch":"e2e-panel","version":1,"hash":"h","state":"staged"}'
 hub POST "/api/hub/sidecars/${pay}/activate" '{"epoch":"e2e-panel"}'
 assert_eq "$(echo "${BODY}" | jq -r .activeEpoch)" e2e-panel "C2: policy epoch staged and activated through the panel"

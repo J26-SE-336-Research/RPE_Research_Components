@@ -41,6 +41,12 @@ final class BackpressureController {
     private volatile double inboundRate;
     private volatile int inboundQueueCapacity;
     private volatile boolean inboundPressureActive;
+    /**
+     * Backpressure mode, switched at runtime for the comparison experiment (user decision, 21 Oct 2026). "full" (the
+     * default) is the complete mechanism. "basic" keeps only the inbound leaky bucket and the circuit breaker: no
+     * pressure signals are sent or acted on, and outbound calls are not limited or queued per destination.
+     */
+    private volatile boolean adaptive = true;
     private final int failureThreshold;
     private final long breakerOpenMillis;
     private final int outboundQueueCapacity;
@@ -91,6 +97,19 @@ final class BackpressureController {
     }
 
     static BackpressureController current() { return INSTANCE; }
+
+    static final String MODE_FULL = "full";
+    static final String MODE_BASIC = "basic";
+
+    String mode() { return adaptive ? MODE_FULL : MODE_BASIC; }
+
+    /** Sets the backpressure mode; false (and no change) for an unknown mode. */
+    boolean setMode(String mode) {
+        if (MODE_FULL.equals(mode)) adaptive = true;
+        else if (MODE_BASIC.equals(mode)) adaptive = false;
+        else return false;
+        return true;
+    }
     boolean enqueueInbound(Runnable dispatch) {
         boolean queued = inboundQueue.submit(dispatch, () -> inboundRate, inboundQueueCapacity);
         updateInboundPressureState(inboundQueue.size());
@@ -153,6 +172,8 @@ final class BackpressureController {
             }
             return false;
         }
+        // basic mode: a signal still in transit from before the switch is accepted but not acted on
+        if (!adaptive) return true;
         String peer = registration.peer();
         PeerState state = state(peer);
         if (state == null) return false;
@@ -177,7 +198,7 @@ final class BackpressureController {
     }
 
     void applyInboundPressureSignal(io.netty.handler.codec.http.HttpHeaders headers) {
-        if (inboundPressureActive) {
+        if (inboundPressureActive && adaptive) {
             headers.set(SIGNAL_HEADER, SIGNAL_VALUE);
             headers.set(QUEUE_UTILIZATION_HEADER, Integer.toString(inboundQueueUtilizationPercent()));
         }
@@ -235,7 +256,11 @@ final class BackpressureController {
         }
         boolean runNow = false;
         synchronized (state) {
-            if (state.inFlight < state.concurrencyLimit && state.waiting.isEmpty()) {
+            if (!adaptive) {
+                // basic mode: no per-destination limit and no outbound queue; the breaker still applies (admitOutbound)
+                state.inFlight++;
+                runNow = true;
+            } else if (state.inFlight < state.concurrencyLimit && state.waiting.isEmpty()) {
                 state.inFlight++;
                 runNow = true;
             } else if (state.waiting.size() < outboundQueueCapacity) {
@@ -279,7 +304,9 @@ final class BackpressureController {
         if (state == null) return;
         synchronized (state) {
             long now = System.nanoTime();
-            if (pressureSignal || status == 429 || status == 503) {
+            if (!adaptive) {
+                // basic mode: no adaptive concurrency; only the circuit breaker below reacts to the response
+            } else if (pressureSignal || status == 429 || status == 503) {
                 pressureSignalsReceived.incrementAndGet();
                 int utilization = pressureSignal && queueUtilizationPercent != null
                         ? queueUtilizationPercent : 50;
@@ -325,7 +352,7 @@ final class BackpressureController {
         PeerState state = state(peer);
         if (state == null) return;
         synchronized (state) {
-            reduceConcurrency(state);
+            if (adaptive) reduceConcurrency(state);
             state.consecutiveFailures++;
             if (halfOpenProbe) state.probeInFlight = false;
             if (state.consecutiveFailures >= failureThreshold) open(state, System.nanoTime());
@@ -392,6 +419,8 @@ final class BackpressureController {
                 + "# TYPE rpe_backpressure_outbound_queued gauge\nrpe_backpressure_outbound_queued " + outboundQueued() + "\n"
                 + "# HELP rpe_circuit_breaker_open_peers Current number of peers with an open circuit breaker.\n"
                 + "# TYPE rpe_circuit_breaker_open_peers gauge\nrpe_circuit_breaker_open_peers " + breakerOpened.get() + "\n"
+                + "# HELP rpe_backpressure_adaptive_enabled Backpressure mode: 1 full (signals and adaptive concurrency), 0 basic (leaky bucket and breaker only).\n"
+                + "# TYPE rpe_backpressure_adaptive_enabled gauge\nrpe_backpressure_adaptive_enabled " + (adaptive ? 1 : 0) + "\n"
                 + peerMetricsText();
     }
 
@@ -545,6 +574,8 @@ final class BackpressureController {
     }
 
     private void sendSignal(CallerTarget caller, String token, int utilization, boolean active) {
+        if (!adaptive) return; // basic mode: no pressure signals
+
         String address = caller.ip().replace("%", "%25");
         String host = address.contains(":") ? "[" + address + "]" : address;
         try {

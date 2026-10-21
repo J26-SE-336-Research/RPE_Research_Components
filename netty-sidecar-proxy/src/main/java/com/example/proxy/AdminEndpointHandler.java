@@ -23,6 +23,8 @@ import java.nio.charset.StandardCharsets;
  */
 public final class AdminEndpointHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
     private static final String POLICY = "/rpe/v1/policy";
+    /** Backpressure mode for the comparison experiment: GET, or PUT {"mode":"full"|"basic"}. */
+    private static final String BACKPRESSURE_MODE = "/rpe/v1/backpressure/mode";
     private final ProxyConfig config;
     private final PolicyStore policies;
     private final PolicyAcks acks;
@@ -46,6 +48,8 @@ public final class AdminEndpointHandler extends SimpleChannelInboundHandler<Full
                     .put("role", config.gatewaySidecar() ? "gateway" : "service")
                     .put("activeEpoch", policies.activeEpoch());
             response = json(HttpResponseStatus.OK, health.toString());
+        } else if (path.equals(BACKPRESSURE_MODE)) {
+            response = backpressureMode(method, body);
         } else if (path.equals(POLICY + "/active") && method.equals(HttpMethod.GET)) {
             // the active document, so the co-located application (for example a gateway) can follow it
             PolicyStore.Entry active = policies.active();
@@ -82,6 +86,19 @@ public final class AdminEndpointHandler extends SimpleChannelInboundHandler<Full
         } else {
             ctx.writeAndFlush(response).addListener(ChannelFutureListener.CLOSE);
         }
+    }
+
+    private FullHttpResponse backpressureMode(HttpMethod method, String body) {
+        BackpressureController controller = BackpressureController.current();
+        if (controller == null) return json(HttpResponseStatus.NOT_FOUND, "{\"error\":\"backpressure is not running\"}");
+        if (method.equals(HttpMethod.PUT)) {
+            if (!controller.setMode(text(body, "mode"))) {
+                return json(HttpResponseStatus.BAD_REQUEST, "{\"error\":\"mode must be full or basic\"}");
+            }
+        } else if (!method.equals(HttpMethod.GET)) {
+            return json(HttpResponseStatus.METHOD_NOT_ALLOWED, "{\"error\":\"use GET or PUT\"}");
+        }
+        return json(HttpResponseStatus.OK, "{\"mode\":\"" + controller.mode() + "\"}");
     }
 
     private FullHttpResponse put(String body) {

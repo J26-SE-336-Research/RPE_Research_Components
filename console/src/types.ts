@@ -48,7 +48,23 @@ export type Backpressure = {
   peers: BackpressurePeer[];
 };
 
-export type BackpressureConfig = { lowRate: number; concurrency: number; loadSeconds: number; recoverySeconds: number };
+/** full: pressure signals + adaptive concurrency (default); basic: only the leaky bucket and the circuit breaker. */
+export type BackpressureMode = "full" | "basic";
+export type BackpressureConfig = { mode: BackpressureMode; lowRate: number; concurrency: number; loadSeconds: number; recoverySeconds: number };
+export type BackpressureResults = {
+  chainOk: number;
+  chainFailed: number;
+  p50Ms: number;
+  p95Ms: number;
+  paymentRejected: number;
+  inboundRejected: number;
+  outboundRejected: number;
+  signalsSent: number;
+  peakPaymentQueue: number;
+  peakOpenBreakers: number;
+  minLimitToPayment: number;
+  peakWaitingAtCaller: number;
+};
 export type BackpressureRun = {
   id: string;
   config: BackpressureConfig;
@@ -65,6 +81,7 @@ export type BackpressureRun = {
   sent: number;
   statuses: Record<string, number>;
   cancelled: number;
+  results?: BackpressureResults;
 };
 export type BackpressureRuns = { busy: boolean; defaults: BackpressureConfig; runs: BackpressureRun[] };
 

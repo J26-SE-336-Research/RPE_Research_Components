@@ -113,6 +113,21 @@ rpe_backpressure_peer_concurrency_limit{peer="inventory-svc:8080"} 32
 	}
 }
 
+func TestBackpressureConfigMode(t *testing.T) {
+	c := backpressureConfig{}
+	if problem := c.normalize(); problem != "" || c.Mode != "full" || c.LowRate != 50 || c.Concurrency != 150 {
+		t.Fatalf("defaults: %q %+v", problem, c)
+	}
+	c = backpressureConfig{Mode: "basic", Concurrency: 5000}
+	if problem := c.normalize(); problem != "" || c.Mode != "basic" || c.Concurrency != 600 {
+		t.Fatalf("basic, clamped: %q %+v", problem, c)
+	}
+	c = backpressureConfig{Mode: "off"}
+	if problem := c.normalize(); problem == "" {
+		t.Fatal("an unknown mode must be refused")
+	}
+}
+
 func ctxString(t *testing.T, mutate func(*rpe.Context)) (rpe.Context, string) {
 	t.Helper()
 	c, err := rpe.NewRoot("GET /api/orders", time.Second, 3, "e0", "")

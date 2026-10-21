@@ -90,6 +90,11 @@ Source: the user's `BACKPRESSURE_HANDLING_GUIDE.md` (netty-proxy, port 9090, `BA
   policy without a valid rate leaves the rate alone). The queue capacity is never changed by a policy (a `queueCapacity`
   in a policy is ignored) and the bucket's mechanism is unchanged (`ActivePolicy`,
   `BackpressureController.applyPolicyRate`). Env vars and `/backpressure/config` still work.
+- Decided (21 Oct 2026, the C2 owner): a runtime backpressure mode for the comparison experiment, `PUT
+  /rpe/v1/backpressure/mode` on the 15020 control API. `full` (the default) is the complete mechanism; `basic` keeps
+  only the inbound leaky bucket and the circuit breaker (no pressure signals sent or acted on, no per-destination
+  limit or outbound queue). The Admin Panel's Backpressure experiment switches it and always sets `full` again.
+  Per-destination metrics (`rpe_backpressure_peer_*`, `rpe_circuit_breaker_peer_state`) are read-only copies.
 
 ## Observability belongs to the proxy (user decision, 16 Oct 2026)
 

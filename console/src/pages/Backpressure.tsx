@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api, useAction, useData } from "../api";
 import { Alert, Button, Empty, Field, Kpi, KV, PageHeader, Panel, Status, Tag, fmtNum } from "../components/ui";
-import type { BackpressureConfig, BackpressurePeer, BackpressureRuns, Proxy } from "../types";
+import type { BackpressureConfig, BackpressureMode, BackpressurePeer, BackpressureRuns, Proxy } from "../types";
 
 // The proxy's signal levels (BACKPRESSURE_SIGNAL_THRESHOLDS_PERCENT / BACKPRESSURE_SIGNAL_CLEAR_PERCENT defaults).
 const LEVELS = [50, 65, 80, 95];
@@ -110,11 +110,17 @@ function Experiment() {
       <Alert>{runs.error ?? start.error}</Alert>
       {cfg && (
         <div className="row" style={{ alignItems: "flex-end", marginBottom: 12 }}>
+          <Field label="Backpressure mode">
+            <select value={cfg.mode} onChange={(e) => setCfg({ ...cfg, mode: e.target.value as BackpressureMode })}>
+              <option value="full">full: signals + adaptive concurrency</option>
+              <option value="basic">basic: leaky bucket + breaker only</option>
+            </select>
+          </Field>
           <Field label="Low rate (req/s)">
             <input type="number" min={1} value={cfg.lowRate} style={{ width: 100 }} onChange={set("lowRate")} />
           </Field>
           <Field label="Requests at once">
-            <input type="number" min={1} max={300} value={cfg.concurrency} style={{ width: 100 }} onChange={set("concurrency")} />
+            <input type="number" min={1} max={600} value={cfg.concurrency} style={{ width: 100 }} onChange={set("concurrency")} />
           </Field>
           <Field label="Load (s)">
             <input type="number" min={5} max={120} value={cfg.loadSeconds} style={{ width: 90 }} onChange={set("loadSeconds")} />
@@ -132,6 +138,7 @@ function Experiment() {
           items={[
             ["Run", <span key="r" className="mono">{run.id} by {run.requestedBy}</span>],
             ["State", <Status key="s" tone={run.state === "failed" ? "red" : run.state === "running" ? "blue" : "green"}>{run.state}</Status>],
+            ["Mode", run.config.mode === "basic" ? "basic (leaky bucket + breaker only)" : "full (signals + adaptive concurrency)"],
             ["Stage", run.error ? `${run.stage}: ${run.error}` : run.stage],
             ["Rate", `${run.baseRate} → ${run.config.lowRate} → ${run.baseRate} requests/s`],
             ["Chain requests", `${fmtNum(run.sent)} sent · ${Object.entries(run.statuses).map(([c, n]) => `${c === "0" ? "no response" : c}: ${fmtNum(n)}`).join(" · ") || "—"} · ${fmtNum(run.cancelled)} with the cancel signal`],
@@ -142,6 +149,74 @@ function Experiment() {
           What to watch: payment-svc's queue passes 50 %, its sidecar signals order-svc's sidecar, order-svc's limit for payment-svc drops; a full queue
           answers 503 and repeated failures open the breaker. After the restore the queue drains, a clear signal is sent below 30 % and the limit grows back.
         </p>
+      )}
+    </Panel>
+  );
+}
+
+/** The finished runs side by side: the same load in "basic" and "full" mode shows what signals and adaptive concurrency add. */
+function Comparison() {
+  const { data } = useData<BackpressureRuns>("/demos/backpressure", 5000);
+  const done = (data?.runs ?? []).filter((r) => r.results && r.loadUntil);
+  const pct = (n: number, total: number) => (total ? `${((n / total) * 100).toFixed(1)} %` : "—");
+  return (
+    <Panel
+      title="Comparison: basic vs full"
+      subtitle="Run the experiment once in each mode with the same settings. Counted by the sidecars during the load; a failed request is retried after 200 ms, like a client honouring Retry-After."
+      flush
+    >
+      {done.length ? (
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Run</th>
+                <th>Mode</th>
+                <th>Load</th>
+                <th className="num">Chain OK</th>
+                <th className="num">Chain failed</th>
+                <th className="num">503 at payment (queue full)</th>
+                <th className="num">Failed fast (breaker / outbound queue)</th>
+                <th className="num">Peak payment queue</th>
+                <th className="num">Peak open breakers</th>
+                <th className="num">Lowest limit order → payment</th>
+                <th className="num">Signals sent</th>
+                <th className="num">p50 / p95</th>
+              </tr>
+            </thead>
+            <tbody>
+              {done.map((r) => {
+                const x = r.results!;
+                const total = x.chainOk + x.chainFailed;
+                return (
+                  <tr key={r.id}>
+                    <td className="mono">{r.id}</td>
+                    <td>{r.config.mode === "basic" ? <Tag tone="amber">basic</Tag> : <Tag tone="green">full</Tag>}</td>
+                    <td className="muted">
+                      {r.config.concurrency} at once · {r.config.lowRate}/s · {r.config.loadSeconds} s
+                    </td>
+                    <td className="num">{fmtNum(x.chainOk)}</td>
+                    <td className="num">
+                      <strong style={{ color: x.chainFailed ? "var(--red)" : undefined }}>{fmtNum(x.chainFailed)}</strong>{" "}
+                      <span className="muted">({pct(x.chainFailed, total)})</span>
+                    </td>
+                    <td className="num">{fmtNum(x.paymentRejected)}</td>
+                    <td className="num">{fmtNum(x.outboundRejected)}</td>
+                    <td className="num">{Math.round(x.peakPaymentQueue)} %</td>
+                    <td className="num">{fmtNum(x.peakOpenBreakers)}</td>
+                    <td className="num">{x.minLimitToPayment < 0 ? "—" : fmtNum(x.minLimitToPayment)}</td>
+                    <td className="num">{fmtNum(x.signalsSent)}</td>
+                    <td className="num">
+                      {fmtNum(x.p50Ms)} / {fmtNum(x.p95Ms)} ms
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <Empty>No finished runs yet. Run the experiment in basic mode, then in full mode with the same settings.</Empty>
       )}
     </Panel>
   );
@@ -189,6 +264,8 @@ export function BackpressurePage() {
         </div>
 
         <Experiment />
+
+        <Comparison />
 
         <Panel title="Inbound leaky bucket" subtitle={`Queue fill per service. Signals are sent at ${LEVELS.join(" / ")} % and cleared at ${CLEAR} % or less.`} flush>
           {proxies.length ? (
