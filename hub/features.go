@@ -651,7 +651,13 @@ func (h *hub) intel(w http.ResponseWriter, r *http.Request) {
 }
 
 var intelScenarios = map[string]bool{"healthy": true, "stressed": true, "overloaded": true, "retry-stressed": true,
-	"recovery": true, "deadline-increase": true, "deadline-recovery": true, "multiple-chains": true}
+	"recovery": true, "deadline-increase": true, "deadline-recovery": true, "multiple-chains": true,
+	// C4: deadline v2 examples, rate and retry v2, joint healthy recalibration
+	"deadline-too-long-under-overload": true, "deadline-too-short-day-one": true, "services-slowing": true,
+	"queue-rate-not-deadline": true, "mixed-paths": true, "rejecting-middleware-504": true,
+	"rate-too-low": true, "rate-too-low-day-one": true, "rate-real-overload": true, "rate-recovery": true,
+	"rate-short-burst": true, "rate-bursts": true, "retry-storm-rate": true,
+	"joint-recovery": true, "joint-capacity-drop": true}
 
 func (h *hub) intelDemo(w http.ResponseWriter, r *http.Request) {
 	s := r.PathValue("scenario")

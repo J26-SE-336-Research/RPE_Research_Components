@@ -57,7 +57,8 @@ type AuditEntry = {
   detail?: string;
   policyVersion?: string;
 };
-type Run = { scenario: string; outcomes: { assessment: Assessment; changes: Change[] }[]; changes: Change[] };
+type Run = { scenario: string; outcomes: { assessment: Assessment; changes: Change[] }[]; changes: Change[];
+  simulatedApprovals?: boolean; joints?: { jointId: string; parts: { proposalId: string }[] }[] };
 
 const SCENARIOS: [string, string][] = [
   ["healthy", "Steady traffic"],
@@ -68,6 +69,21 @@ const SCENARIOS: [string, string][] = [
   ["deadline-increase", "Chain deadline failures"],
   ["deadline-recovery", "Chain deadline recovery"],
   ["multiple-chains", "Multiple request chains"],
+  ["deadline-too-long-under-overload", "Deadline v2: too long under overload"],
+  ["deadline-too-short-day-one", "Deadline v2: too short from day one"],
+  ["services-slowing", "Deadline v2: services slowing"],
+  ["queue-rate-not-deadline", "Deadline v2: queue rate, not the deadline"],
+  ["mixed-paths", "Deadline v2: mixed paths"],
+  ["rejecting-middleware-504", "Deadline v2: rejecting middleware (504)"],
+  ["rate-too-low", "Rate v2: rate too low"],
+  ["rate-too-low-day-one", "Rate v2: rate too low from day one"],
+  ["rate-real-overload", "Rate v2: real overload"],
+  ["rate-recovery", "Rate v2: recovery after a cut"],
+  ["rate-short-burst", "Rate v2: one short burst"],
+  ["rate-bursts", "Rate v2: repeating bursts"],
+  ["retry-storm-rate", "Retry v2: retry storm from a too-low rate"],
+  ["joint-recovery", "Joint card: recovery (rate + deadline)"],
+  ["joint-capacity-drop", "Joint card: capacity drop (rate + deadline)"],
 ];
 
 const HEALTH: Record<string, [Tone, string]> = {
@@ -382,10 +398,22 @@ function History() {
   );
 }
 
+function approvedBy(c: Change) {
+  if (c.decision === "APPROVED") return c.reviewer ?? "approved";
+  if (c.decision === "PENDING_APPROVAL") return "waiting for a person";
+  if (c.decision === "REJECTED") return `rejected${c.reviewer ? ` by ${c.reviewer}` : ""}`;
+  return "";
+}
+
 function Simulation() {
   const [scenario, setScenario] = useState("stressed");
   const run = useAction(() => api<Run>("POST", `/intel/demo/${scenario}`));
   const r = run.result;
+  const jointOf = new Map<string, number>();
+  r?.joints?.forEach((j, i) => j.parts.forEach((p) => jointOf.set(p.proposalId, i + 1)));
+  const showApproval = r?.simulatedApprovals !== undefined;
+  const rows = r ? [...r.changes.filter((c) => jointOf.has(c.proposal.id)).sort((a, b) => jointOf.get(a.proposal.id)! - jointOf.get(b.proposal.id)!),
+    ...r.changes.filter((c) => !jointOf.has(c.proposal.id))] : [];
   const latest = new Map<string, Assessment>();
   r?.outcomes.forEach((o) => latest.set(o.assessment.target, o.assessment));
   return (
@@ -424,18 +452,20 @@ function Simulation() {
                     <th className="num">Current</th>
                     <th className="num">Proposed</th>
                     <th>Reason</th>
+                    {showApproval && <th>Approved by</th>}
                   </tr>
                 </thead>
                 <tbody>
-                  {r.changes.map((c, i) => (
+                  {rows.map((c, i) => (
                     <tr key={i}>
                       <td className="mono">{c.proposal.target}</td>
-                      <td>{ACTION[c.proposal.action] ?? c.proposal.action}</td>
+                      <td>{jointOf.has(c.proposal.id) && <><Tag tone="blue">joint</Tag>{" "}</>}{ACTION[c.proposal.action] ?? c.proposal.action}</td>
                       <td className="num">{value(c.proposal.currentValue, c.proposal.unit)}</td>
                       <td className="num">
                         <strong>{value(c.proposal.proposedValue, c.proposal.unit)}</strong>
                       </td>
                       <td style={{ fontSize: 14 }}>{readable(c.proposal.evidence[0])}</td>
+                      {showApproval && <td>{approvedBy(c)}</td>}
                     </tr>
                   ))}
                 </tbody>
