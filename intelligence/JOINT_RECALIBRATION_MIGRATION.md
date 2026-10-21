@@ -208,3 +208,40 @@ Panel cannot start them. Please add (this work does not change the hub):
   with the code defaults and the cluster's values). E8 as a simulation (`JointSimulation.e8`, `JointE8Tests`), results in
   `evaluation/joint-e8-simulation.md`; an extra case 1b with bursty healthy traffic (Q = 24) shows the false signals that
   C3 section 2 describes, which do not occur with Q = 8.
+- **Step 7.** `RRPE_ADAPTIVE_JOINT_ENABLED=true` in `deploy/k8s/platform/intelligence.yaml`; README. With the flag off (the
+  code default) the 204 tests of `c4/rate-retry-v2` pass unchanged (no existing test file was modified on this branch).
+
+## 11. Live test of the joint delivery (after C3 confirms the fix, D5)
+
+The live demo cannot produce a joint card from real traffic (its healthy queue is about 0), so the live test checks C3's
+side of J4 with the **same request the bridge sends** (`Component3Bridge.deliverJoint`, checked in `JointBridgeTests`).
+Run in Git Bash from the repository root; it changes the demo policies, so restore them afterwards.
+
+```bash
+export MSYS_NO_PATHCONV=1
+kubectl --context kind-rpe -n rpe-system port-forward svc/rpe-policy-api 18080:80 &   # C3 policy API
+API=http://localhost:18080/api/k8s
+EFF=$(curl -s $API/effective)
+echo "$EFF" | jq '{gateway: .gateway | {policyId, epoch, route}, payment: ."payment-svc" | {policyId, epoch}}'
+
+# one policy with two parts: the gateway's route deadline and payment's rate (both built from their current specs)
+BODY=$(echo "$EFF" | jq --arg id "$(cat /proc/sys/kernel/random/uuid 2>/dev/null || powershell -c '[guid]::NewGuid()')" '{
+  policyId: .gateway.policyId, source: "c4-recommendation", recommendationId: $id,
+  approval: {approvedBy: "joint-live-test", decision: "approved"},
+  parts: [
+    {scope: {service: "gateway", route: "GET /api/orders"},
+     spec: ((.gateway.spec | fromjson) | .routes["GET /api/orders"].deadlineMs = 780)},
+    {scope: {service: "payment-svc"},
+     spec: ((."payment-svc".spec | fromjson) | .leakyBucket.ratePerSec = 100)} ] }')
+CREATED=$(curl -s -X POST $API/policies -H 'Content-Type: application/json' -d "$BODY"); echo "$CREATED" | jq .policy
+PID=$(echo "$CREATED" | jq -r .policy.policyId); VER=$(echo "$CREATED" | jq -r .policy.version)
+RO=$(curl -s -X POST $API/rollouts -H 'Content-Type: application/json' \
+  -d "{\"policyId\":\"$PID\",\"version\":$VER,\"mode\":\"two-phase\",\"requestedBy\":\"joint-live-test\"}" | jq -r .metadata.name)
+for i in $(seq 1 30); do curl -s $API/rollouts/$RO | jq -c '.status | {phase, plan, mixedPolicyRequests}'; sleep 3; done
+curl -s $API/effective | jq '{gateway: .gateway.epoch, payment: ."payment-svc".epoch}'   # expected: the same epoch
+kill %1
+make reset-data   # restore the demo policies
+```
+
+Expected (C3 section 6.4 and 7): one version and one epoch for both services; `status.phase` = `Complete`; for this
+recovery-type change the rate goes up before the deadline goes down (`status.plan`); `mixedPolicyRequests` = 0.
