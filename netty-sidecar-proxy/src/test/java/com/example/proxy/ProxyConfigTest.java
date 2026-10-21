@@ -30,6 +30,9 @@ class ProxyConfigTest {
         assertEquals(0, config.integration().inboundListenPort());
         assertEquals(0, config.integration().adminListenPort());
         assertTrue(config.integration().missingContextPassthrough(), "requests without context pass through by default");
+        assertEquals(1000, config.outboundQueueCapacity(), "outbound waiting queue per destination (C2 owner, 21 Oct 2026)");
+        assertEquals(500, ProxyConfig.from(Map.of("BACKPRESSURE_OUTBOUND_QUEUE_CAPACITY", "500")).outboundQueueCapacity(),
+                "the environment still overrides it");
     }
 
     @Test

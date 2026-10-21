@@ -83,7 +83,7 @@ The caller sidecar limits how many calls can be in flight to a destination at on
 
 | Setting | Default | Meaning |
 | --- | ---: | --- |
-| `BACKPRESSURE_OUTBOUND_QUEUE_CAPACITY` | 200 | Maximum number of calls waiting for capacity for one tracked destination. |
+| `BACKPRESSURE_OUTBOUND_QUEUE_CAPACITY` | 1000 | Maximum number of calls waiting for capacity for one tracked destination. |
 | `BACKPRESSURE_CIRCUIT_BREAKER_FAILURE_THRESHOLD` | 10 | Consecutive counted failures before that destination's circuit opens. |
 | `BACKPRESSURE_CIRCUIT_BREAKER_OPEN_MILLIS` | 5000 | How long the circuit stays open before one probe call is allowed. |
 

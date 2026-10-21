@@ -74,7 +74,7 @@ Source: the user's `BACKPRESSURE_HANDLING_GUIDE.md` (netty-proxy, port 9090, `BA
   cut per-destination concurrency to `healthy limit x (100 - utilisation) / 100` (minimum 1) and recover gradually.
   Delivered by a direct `POST /backpressure/signal` to the caller sidecar and by response headers
   (`X-Proxy-Backpressure`, `X-Proxy-Queue-Utilization-Percent`) as a fallback.
-- **Outbound queue and circuit breaker:** per-destination concurrency limit and FIFO queue (capacity 200). The breaker
+- **Outbound queue and circuit breaker:** per-destination concurrency limit and FIFO queue (capacity 1000, set by the C2 owner on 21 Oct 2026; was 200). The breaker
   opens after 10 consecutive counted failures (5xx, 429, transport errors), stays open 5 s, then allows one probe.
 - State is local to each sidecar Pod, per destination host and port.
 

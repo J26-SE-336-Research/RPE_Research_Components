@@ -116,7 +116,7 @@ public record ProxyConfig(
                 env(env, "OTEL_EXPORTER_OTLP_ENDPOINT", ""),
                 boundedPositiveDoubleEnv(env, "BACKPRESSURE_INBOUND_RATE_PER_SECOND", 100.0, 1_000_000),
                 boundedPositiveIntEnv(env, "BACKPRESSURE_INBOUND_QUEUE_CAPACITY", 200, 100_000),
-                boundedPositiveIntEnv(env, "BACKPRESSURE_OUTBOUND_QUEUE_CAPACITY", 200, 100_000),
+                boundedPositiveIntEnv(env, "BACKPRESSURE_OUTBOUND_QUEUE_CAPACITY", 1000, 100_000),
                 positiveIntEnv(env, "BACKPRESSURE_CIRCUIT_BREAKER_FAILURE_THRESHOLD", 10),
                 positiveLongEnv(env, "BACKPRESSURE_CIRCUIT_BREAKER_OPEN_MILLIS", 5000),
                 env(env, "BACKPRESSURE_CONTROL_TOKEN", ""),
