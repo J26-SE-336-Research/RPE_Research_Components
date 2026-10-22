@@ -12,7 +12,8 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 @Configuration
 @EnableScheduling
 @EnableConfigurationProperties({AdaptiveConfig.Settings.class, AdaptiveConfig.Connections.class, AdaptiveConfig.DeadlineSettings.class,
-        AdaptiveConfig.LoadSettings.class, AdaptiveConfig.LeverSettings.class})
+        AdaptiveConfig.LoadSettings.class, AdaptiveConfig.LeverSettings.class, AdaptiveConfig.RateSettings.class, AdaptiveConfig.RetrySettings.class,
+        AdaptiveConfig.BaselineSettings.class, AdaptiveConfig.AutoSettings.class, AdaptiveConfig.AutoApproval.class, AdaptiveConfig.JointSettings.class})
 public class AdaptiveConfig {
     @ConfigurationProperties("rrpe.adaptive")
     public record Settings(@DefaultValue("5m") Duration window, @DefaultValue("1m") Duration cycle,
@@ -102,6 +103,94 @@ public class AdaptiveConfig {
     public record LeverSettings(@DefaultValue("0.5") double queueShare, @DefaultValue("0.70") double cpuLow) {
         public LeverSettings { if (!(queueShare > 0 && queueShare <= 1) || cpuLow <= 0) throw new IllegalArgumentException("Invalid lever thresholds"); }
         public static LeverSettings defaults() { return new LeverSettings(.5, .70); }
+    }
+
+    /**
+     * Leaky-bucket rate v2 (rate/retry guide §4, §7), env {@code RRPE_ADAPTIVE_RATE_<NAME>}. Reused from {@link Settings}:
+     * maximum-rate-change (largest cut per step), persistence, recovery-windows, cooldown, baseline-samples.
+     */
+    @ConfigurationProperties("rrpe.adaptive.rate")
+    public record RateSettings(@DefaultValue("0.25") double headroom, @DefaultValue("80") double queueHighPercent,
+            @DefaultValue("50") double queueLowPercent, @DefaultValue("1.5") double appTolerance, @DefaultValue("0.8") double cutFactor,
+            @DefaultValue("0.10") double stepFraction, @DefaultValue("5") double minAbsolute, @DefaultValue("1000") double maxAbsolute,
+            @DefaultValue("0.5") double floorFraction, @DefaultValue("30m") Duration brokeAtMemory, @DefaultValue("5m") Duration stabilisation,
+            @DefaultValue("30m") Duration relaxAfter, @DefaultValue("0.10") double relaxStep, @DefaultValue("0.5") double maxRaise,
+            @DefaultValue("0.20") double minImprovement) {
+        public RateSettings {
+            if (!(headroom >= 0) || !(queueLowPercent > 0 && queueLowPercent < queueHighPercent && queueHighPercent <= 100) || !(appTolerance > 1)
+                    || !(cutFactor > 0 && cutFactor < 1) || !(stepFraction > 0) || !(minAbsolute > 0 && maxAbsolute > minAbsolute)
+                    || !(floorFraction > 0 && floorFraction < 1) || brokeAtMemory == null || stabilisation == null || relaxAfter == null
+                    || !(relaxStep > 0 && relaxStep < 1) || !(maxRaise > 0) || !(minImprovement > 0 && minImprovement < 1)) {
+                throw new IllegalArgumentException("Invalid rate v2 settings");
+            }
+        }
+        public static RateSettings defaults() {
+            return new RateSettings(.25, 80, 50, 1.5, .8, .10, 5, 1000, .5, Duration.ofMinutes(30), Duration.ofMinutes(5), Duration.ofMinutes(30), .10, .5, .20);
+        }
+    }
+    /**
+     * Retry budget v2 (guide §5), env {@code RRPE_ADAPTIVE_RETRY_<NAME>}. The maximum ratio is the existing
+     * {@link Settings#maximumRetryRatio()} (at most 0.10, also enforced by the workflow), so the guide's max-ratio 0.20 is not used.
+     */
+    @ConfigurationProperties("rrpe.adaptive.retry")
+    public record RetrySettings(@DefaultValue("0.10") double baseRatio, @DefaultValue("0.20") double minSuccess,
+            @DefaultValue("30") int minAttempts, @DefaultValue("0.02") double step) {
+        public RetrySettings {
+            if (!(baseRatio > 0 && baseRatio <= .10) || !(minSuccess > 0 && minSuccess < 1) || minAttempts < 1 || !(step > 0 && step <= .10)) {
+                throw new IllegalArgumentException("Invalid retry v2 settings");
+            }
+        }
+        public static RetrySettings defaults() { return new RetrySettings(.10, .20, 30, .02); }
+    }
+    /** {@code allow-shed-windows}: windows with rejections but normal errors may feed the app-time baseline P0 (guide §4.5). */
+    @ConfigurationProperties("rrpe.adaptive.baseline")
+    public record BaselineSettings(@DefaultValue("false") boolean allowShedWindows) {
+        public static BaselineSettings defaults() { return new BaselineSettings(false); }
+    }
+    /** Automatic approval safety (guide §6): verification windows, undo and flip limits within {@code period}, pause length. */
+    @ConfigurationProperties("rrpe.adaptive.auto")
+    public record AutoSettings(@DefaultValue("2") int verifyWindows, @DefaultValue("2") int maxReverts, @DefaultValue("3") int maxFlips,
+            @DefaultValue("60m") Duration pause, @DefaultValue("30m") Duration period) {
+        public AutoSettings {
+            if (verifyWindows < 1 || maxReverts < 1 || maxFlips < 1 || pause == null || pause.isNegative() || period == null || period.isNegative()) {
+                throw new IllegalArgumentException("Invalid auto-approval settings");
+            }
+        }
+        public static AutoSettings defaults() { return new AutoSettings(2, 2, 3, Duration.ofMinutes(60), Duration.ofMinutes(30)); }
+    }
+    /**
+     * Joint healthy recalibration (C3 request J1–J6): when a healthy rate step reaches its target, the matching chain
+     * deadlines are recommended in the same decision. Off by default ({@code rrpe.adaptive.joint.enabled}); a joint is made
+     * only when the deadline change is at least {@code max(min-change-fraction × D, min-change-ms)}.
+     */
+    @ConfigurationProperties("rrpe.adaptive.joint")
+    public record JointSettings(@DefaultValue("false") boolean enabled, @DefaultValue("0.05") double minChangeFraction,
+            @DefaultValue("10") long minChangeMs) {
+        public JointSettings {
+            if (!(minChangeFraction >= 0 && minChangeFraction < 1) || minChangeMs < 0) throw new IllegalArgumentException("Invalid joint settings");
+        }
+        public static JointSettings defaults() { return new JointSettings(false, .05, 10); }
+        public static JointSettings on() { return new JointSettings(true, .05, 10); }
+    }
+    /** The kinds of change that may be approved automatically. A chain deadline is never one of them. */
+    public enum AutoKind { BUCKET_RAISE, BUCKET_CUT, RETRY_DECREASE, RETRY_INCREASE }
+    /**
+     * {@code rrpe.adaptive.auto-approve-actions} (env {@code RRPE_ADAPTIVE_AUTOAPPROVEACTIONS}); empty by default, so every
+     * recommendation waits for a human exactly as before. {@code CHAIN_DEADLINE} is rejected.
+     */
+    @ConfigurationProperties("rrpe.adaptive")
+    public record AutoApproval(@DefaultValue List<String> autoApproveActions) {
+        public AutoApproval {
+            autoApproveActions = autoApproveActions == null ? List.of() : autoApproveActions.stream().map(String::trim).filter(s -> !s.isEmpty()).toList();
+            for (String action : autoApproveActions) {
+                if (action.equalsIgnoreCase("CHAIN_DEADLINE")) throw new IllegalArgumentException("Chain deadlines are never approved automatically");
+                AutoKind.valueOf(action);
+            }
+        }
+        public java.util.Set<AutoKind> kinds() {
+            var set = java.util.EnumSet.noneOf(AutoKind.class); autoApproveActions.forEach(a -> set.add(AutoKind.valueOf(a))); return set;
+        }
+        public static AutoApproval none() { return new AutoApproval(List.of()); }
     }
 
     @ConfigurationProperties("rrpe.connections")

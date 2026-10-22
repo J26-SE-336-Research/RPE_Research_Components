@@ -69,8 +69,14 @@ public final class AdaptiveModels {
     /** Per-service load signals for one window. A null value means the series is unavailable. */
     public record ServiceLoadSnapshot(String service, Double queuePressurePercent, Double overloadRejections,
             Double backpressureRejections, Double breakerOpenPeers, Double cpuUtilisation, Double cpuThrottling,
-            Double memoryUtilisation, Double queueWaitShare, List<String> problems) {
+            Double memoryUtilisation, Double queueWaitShare, List<String> problems, Double queueDepth) {
         public ServiceLoadSnapshot { problems = problems == null ? List.of() : List.copyOf(problems); }
+        /** Without queue depth (deadline v2 callers). */
+        public ServiceLoadSnapshot(String service, Double queuePressurePercent, Double overloadRejections, Double backpressureRejections,
+                Double breakerOpenPeers, Double cpuUtilisation, Double cpuThrottling, Double memoryUtilisation, Double queueWaitShare, List<String> problems) {
+            this(service, queuePressurePercent, overloadRejections, backpressureRejections, breakerOpenPeers, cpuUtilisation, cpuThrottling,
+                    memoryUtilisation, queueWaitShare, problems, null);
+        }
         public static ServiceLoadSnapshot unavailable(String service) {
             return new ServiceLoadSnapshot(service, null, null, null, null, null, null, null, null, List.of());
         }
@@ -89,7 +95,9 @@ public final class AdaptiveModels {
     /** x events out of n with one-sided Wilson bounds. */
     public record Proportion(int events, int n, double p, double lower, double upper) {}
     public enum Lever { DEADLINE, RATE, CAPACITY, NONE }
-    public enum DeadlineCase { A_RAISE, B_LOWER_OVERLOAD, C_KEEP_FIRING, D_TIGHTEN, HOLD }
+    public enum DeadlineCase { A_RAISE, B_LOWER_OVERLOAD, C_KEEP_FIRING, D_TIGHTEN, HOLD,
+        /** The deadline part of an applied joint healthy recalibration (C3 J5); verified like A_RAISE or D_TIGHTEN by direction. */
+        RECALIBRATE }
     public enum ChainDeadlineState { LEARNING, READY, PROPOSED, SETTLING, PAUSED }
     /**
      * Learned healthy time of a chain. {@code status}: IDENTIFIED (T_h known), CENSORED (only "p99 ≥ D" is known; T_h may
