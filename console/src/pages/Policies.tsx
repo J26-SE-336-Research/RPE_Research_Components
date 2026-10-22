@@ -17,9 +17,8 @@ function specSummary(p: PolicyRow): string {
     return p.spec.parts.map((part) => `${part.scope.service}: ${specSummary({ ...p, scope: part.scope, spec: part.spec })}`).join(" | ");
   }
   const parts: string[] = [];
+  // The retry budget is not shown: the sidecar does not enforce it yet (C2, planned for PP2).
   if (p.spec.deadlineMs) parts.push(`deadline ${p.spec.deadlineMs} ms`);
-  if (p.spec.retry?.budget !== undefined) parts.push(`retry budget ${p.spec.retry.budget}`);
-  if (p.spec.retry?.budgetRatio) parts.push(`retry ratio ${p.spec.retry.budgetRatio}`);
   if (p.spec.leakyBucket?.ratePerSec) parts.push(`rate ${p.spec.leakyBucket.ratePerSec}/s`);
   Object.entries(p.spec.routes ?? {}).forEach(([route, r]) => {
     // the route this policy is scoped to is already shown as "deadline"

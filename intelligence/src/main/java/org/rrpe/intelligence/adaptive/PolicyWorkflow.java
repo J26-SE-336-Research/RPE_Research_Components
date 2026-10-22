@@ -54,6 +54,7 @@ public class PolicyWorkflow {
                 replace(item, item.decision(), item.reviewer(), item.decidedAt(), Delivery.SUPERSEDED, "Current policy version changed", item.attempts(), item.lastAttempt(), null);
             }
         }
+        cascadeJoints();
     }
     public synchronized Policy current(String target, Source source) {
         Policy result = policies.get(key(target, source));
@@ -120,6 +121,7 @@ public class PolicyWorkflow {
                         "Superseded by newer evidence", previous.attempts(), previous.lastAttempt(), null);
             }
         }
+        cascadeJoints(); // a normal proposal that replaced a joint part withdraws the rest of that joint
         // Every recommendation requires human approval before delivery, unless the engine's guard approved a rate or retry change.
         Delivery delivery = proposal.source() == Source.MOCK || connections.component3Url().isBlank()
                 ? Delivery.WAITING_FOR_COMPONENT_3 : Delivery.READY;
@@ -142,6 +144,7 @@ public class PolicyWorkflow {
                         item.attempts(), item.lastAttempt(), null);
             }
         }
+        cascadeJoints();
     }
     public synchronized PolicyChange decide(UUID id, Review review) {
         expire(); var item = find(id);
@@ -151,6 +154,14 @@ public class PolicyWorkflow {
         if (item.decision() != Decision.PENDING_APPROVAL) {
             if (item.decision() == decision && review.reviewer().equals(item.reviewer())) return item;
             throw new IllegalArgumentException("Recommendation already has a decision");
+        }
+        UUID joint = jointOf.get(id);
+        if (joint != null) {
+            // A joint recommendation is one decision: every part gets the same review.
+            var parts = joints.get(joint).stream().map(history::get).filter(Objects::nonNull).toList();
+            if (parts.stream().anyMatch(c -> !active(c) || c.decision() != Decision.PENDING_APPROVAL)) throw new IllegalArgumentException("This joint recommendation is no longer current");
+            for (var c : parts) audit.decided(replace(c, decision, review.reviewer(), clock.instant(), c.delivery(), review.comment(), c.attempts(), c.lastAttempt(), null));
+            return history.get(id);
         }
         var decided = replace(item, decision, review.reviewer(), clock.instant(), item.delivery(), review.comment(), item.attempts(), item.lastAttempt(), null);
         audit.decided(decided);
@@ -176,6 +187,7 @@ public class PolicyWorkflow {
                 replace(item, item.decision(), item.reviewer(), item.decidedAt(), Delivery.SUPERSEDED, reason, item.attempts(), item.lastAttempt(), null);
             }
         }
+        cascadeJoints();
     }
     /** The newest active (not yet applied, expired, superseded or rejected) recommendation for a target and action. */
     public synchronized java.util.Optional<PolicyChange> pending(String target, Action action, Source source) {
@@ -236,11 +248,137 @@ public class PolicyWorkflow {
                 "Moved to policy version " + policy.version() + " (another change of this policy was applied first)", item.attempts(), item.lastAttempt(), item.appliedVersion()));
         return true;
     }
+    // ---------------------------------------------------------------- joint recommendations (C3 request J1) ----------------------------------------------------------------
+
+    /** Part proposal id → joint id, and joint id → its part ids (in offer order). Empty unless joint recalibration is enabled. */
+    private final Map<UUID, UUID> jointOf = new LinkedHashMap<>();
+    private final Map<UUID, List<UUID>> joints = new LinkedHashMap<>();
+
+    public synchronized boolean isJointPart(UUID id) { return jointOf.containsKey(id); }
+    public synchronized UUID jointOf(UUID id) { return jointOf.get(id); }
+    public synchronized List<PolicyChange> jointParts(UUID jointId) {
+        return joints.getOrDefault(jointId, List.of()).stream().map(history::get).filter(Objects::nonNull).toList();
+    }
+    /**
+     * Offers the parts of one joint recommendation (a rate proposal and one deadline proposal per chain). Re-offering the same
+     * parts (same base versions and values) keeps their ids, decisions and joint id and refreshes the evidence; anything
+     * else replaces the earlier joint. Parts are never approved automatically.
+     */
+    public synchronized List<PolicyChange> offerJoint(List<Proposal> parts) {
+        if (parts.size() < 2) throw new IllegalArgumentException("A joint recommendation has at least two parts");
+        var out = new ArrayList<PolicyChange>();
+        for (Proposal p : parts) out.add(offer(p));
+        var ids = out.stream().map(c -> c.proposal().id()).toList();
+        UUID existing = jointOf.get(ids.get(0));
+        boolean same = existing != null && joints.get(existing).equals(ids);
+        boolean consistent = out.stream().map(PolicyChange::decision).distinct().count() == 1;
+        if (!same || !consistent) {
+            if (!consistent || ids.stream().anyMatch(jointOf::containsKey)) {
+                // parts of an earlier joint mixed with new ones: start a clean joint
+                for (var c : out) if (active(c)) replace(c, c.decision(), c.reviewer(), c.decidedAt(), Delivery.SUPERSEDED, "Replaced by a new joint recommendation", c.attempts(), c.lastAttempt(), null);
+                cascadeJoints();
+                out.clear();
+                for (Proposal p : parts) out.add(offer(new Proposal(UUID.randomUUID(), p.target(), p.action(), p.source(), p.baseVersion(), p.currentValue(),
+                        p.proposedValue(), p.unit(), p.generatedAt(), p.expiresAt(), p.measurements(), p.evidence())));
+                ids = out.stream().map(c -> c.proposal().id()).toList();
+            }
+            UUID joint = UUID.randomUUID();
+            joints.put(joint, List.copyOf(ids));
+            for (UUID id : ids) jointOf.put(id, joint);
+        }
+        cascadeJoints();
+        return out.stream().map(c -> history.get(c.proposal().id())).toList();
+    }
+    /** The active joint recommendation that has a part for {@code target}, if any. */
+    public synchronized java.util.Optional<UUID> activeJoint(String target, Source source) {
+        expire();
+        return joints.entrySet().stream().filter(e -> e.getValue().stream().map(history::get).filter(Objects::nonNull)
+                        .anyMatch(c -> active(c) && c.proposal().target().equals(target) && key(target, c.proposal().source()).equals(key(target, source))))
+                .map(Map.Entry::getKey).reduce((a, b) -> b);
+    }
+    /** Like {@link #withdraw}, but leaves the parts of joint recommendations alone (they are withdrawn only for priority reasons). */
+    public synchronized void withdrawExceptJoint(String target, Action action, Source source, String reason) {
+        for (var item : new ArrayList<>(history.values())) {
+            if (item.proposal().target().equals(target) && item.proposal().action() == action && !jointOf.containsKey(item.proposal().id())
+                    && key(target, item.proposal().source()).equals(key(target, source)) && active(item)) {
+                replace(item, item.decision(), item.reviewer(), item.decidedAt(), Delivery.SUPERSEDED, reason, item.attempts(), item.lastAttempt(), null);
+            }
+        }
+        cascadeJoints();
+    }
+    /** The latest applied deadline part of a joint recommendation for this chain, or null. */
+    public synchronized PolicyChange appliedJointDeadline(String chain, Source source) {
+        PolicyChange latest = null;
+        for (UUID id : jointOf.keySet()) {
+            var c = history.get(id);
+            if (c != null && c.delivery() == Delivery.APPLIED && c.proposal().action() == Action.CHAIN_DEADLINE && c.proposal().target().equals(chain)
+                    && key(chain, c.proposal().source()).equals(key(chain, source)) && (latest == null || c.lastAttempt().isAfter(latest.lastAttempt()))) latest = c;
+        }
+        return latest;
+    }
+    // ---------------------------------------------------------------- practice cards (synthetic, MOCK) ----------------------------------------------------------------
+
+    /**
+     * Removes synthetic (MOCK) cards from the in-memory list, oldest first, until at most {@code keep} remain; with {@code keep}
+     * = 0 also their MOCK policy references. Live cards and the audit trail are never touched. A joint card is removed whole.
+     */
+    public synchronized int removeSynthetic(int keep) {
+        var synthetic = history.values().stream().filter(c -> c.proposal().source() == Source.MOCK)
+                .sorted(java.util.Comparator.comparing((PolicyChange c) -> c.proposal().generatedAt())).map(c -> c.proposal().id()).toList();
+        var remove = new java.util.LinkedHashSet<UUID>(synthetic.subList(0, Math.max(0, synthetic.size() - Math.max(0, keep))));
+        for (UUID id : new ArrayList<>(remove)) { UUID joint = jointOf.get(id); if (joint != null) remove.addAll(joints.getOrDefault(joint, List.of())); }
+        for (UUID id : remove) {
+            history.remove(id);
+            UUID joint = jointOf.remove(id);
+            if (joint != null) joints.remove(joint);
+        }
+        if (keep <= 0) policies.keySet().removeIf(k -> k.startsWith("MOCK:"));
+        return remove.size();
+    }
+    /** Withdraws every part of the active joint recommendations that touch {@code target}. */
+    public synchronized void withdrawJoint(String target, Source source, String reason) {
+        for (var joint : new ArrayList<>(joints.entrySet())) {
+            var parts = joint.getValue().stream().map(history::get).filter(Objects::nonNull).toList();
+            if (parts.stream().noneMatch(c -> active(c) && c.proposal().target().equals(target) && key(target, c.proposal().source()).equals(key(target, source)))) continue;
+            for (var c : parts) if (active(c)) replace(c, c.decision(), c.reviewer(), c.decidedAt(), Delivery.SUPERSEDED, reason, c.attempts(), c.lastAttempt(), null);
+        }
+    }
+    /** All parts stand or fall together: a superseded, expired or rejected part withdraws the joint's other active parts. */
+    private void cascadeJoints() {
+        for (var joint : joints.values()) {
+            var parts = joint.stream().map(history::get).filter(Objects::nonNull).toList();
+            var gone = parts.stream().filter(c -> c.decision() == Decision.REJECTED || c.delivery() == Delivery.SUPERSEDED || c.delivery() == Delivery.EXPIRED).findFirst();
+            if (gone.isEmpty()) continue;
+            for (var c : parts) if (active(c)) replace(c, c.decision(), c.reviewer(), c.decidedAt(), Delivery.SUPERSEDED,
+                    "A part of this joint recommendation was withdrawn (" + gone.get().detail() + ")", c.attempts(), c.lastAttempt(), null);
+        }
+    }
+    /** Joint recommendations for the API (additive field {@code joints}): id, parts and their state, newest first. */
+    public synchronized List<Map<String, Object>> joints() {
+        expire();
+        var out = new ArrayList<Map<String, Object>>();
+        for (var joint : joints.entrySet()) {
+            var parts = joint.getValue().stream().map(history::get).filter(Objects::nonNull).toList();
+            if (parts.isEmpty()) continue;
+            var view = new LinkedHashMap<String, Object>();
+            view.put("jointId", joint.getKey().toString());
+            view.put("parts", parts.stream().map(c -> Map.of("proposalId", c.proposal().id().toString(), "action", c.proposal().action().name(),
+                    "target", c.proposal().target(), "currentValue", c.proposal().currentValue(), "proposedValue", c.proposal().proposedValue())).toList());
+            view.put("decision", parts.get(0).decision().name()); view.put("delivery", parts.get(0).delivery().name());
+            view.put("generatedAt", parts.get(0).proposal().generatedAt().toString());
+            out.add(0, view);
+        }
+        return out.size() > 50 ? List.copyOf(out.subList(0, 50)) : List.copyOf(out);
+    }
+
     /** Rate and retry changes approved by a reviewer (not automatically) for a target at or after {@code since}. */
-    public synchronized boolean reviewerApprovedSince(String target, Source source, Instant since) {
+    public synchronized boolean reviewerApprovedSince(String target, Source source, Instant since) { return reviewerApprovedSince(target, source, since, null); }
+    /** As above, leaving out the parts of joint recommendation {@code exceptJoint} (one decision with the change being verified). */
+    public synchronized boolean reviewerApprovedSince(String target, Source source, Instant since, UUID exceptJoint) {
         return history.values().stream().anyMatch(item -> item.proposal().target().equals(target) && item.proposal().action() != Action.CHAIN_DEADLINE
                 && key(target, item.proposal().source()).equals(key(target, source)) && item.decision() == Decision.APPROVED
-                && item.reviewer() != null && !item.reviewer().startsWith("c4-auto") && item.decidedAt() != null && !item.decidedAt().isBefore(since));
+                && item.reviewer() != null && !item.reviewer().startsWith("c4-auto") && item.decidedAt() != null && !item.decidedAt().isBefore(since)
+                && (exceptJoint == null || !exceptJoint.equals(jointOf.get(item.proposal().id()))));
     }
     private boolean sameControl(Proposal a, Proposal b) { return a.action() == b.action() && key(a.target(), a.source()).equals(key(b.target(), b.source())); }
     private boolean active(PolicyChange item) { return item.delivery() != Delivery.APPLIED && item.delivery() != Delivery.EXPIRED && item.delivery() != Delivery.SUPERSEDED && item.decision() != Decision.REJECTED; }
@@ -257,6 +395,7 @@ public class PolicyWorkflow {
                 }
             }
         }
+        cascadeJoints();
     }
     private PolicyChange replace(PolicyChange original, Decision decision, String reviewer, Instant decidedAt,
             Delivery delivery, String detail, int attempts, Instant lastAttempt, String version) {

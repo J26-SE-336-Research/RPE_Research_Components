@@ -242,14 +242,21 @@ func classify(prev, next json.RawMessage) (string, []string) {
 // example a request that still carries the old, short deadline never waits in a queue that is now released at the
 // lower rate).
 func planJoint(p Policy, prev *Policy) []PartPlan {
+	before := map[string]json.RawMessage{}
+	if prev != nil {
+		for _, part := range prev.parts() {
+			before[part.Scope.Service] = part.Spec
+		}
+	}
+	return planParts(p, before)
+}
+
+// planParts orders the activation of a joint policy against the spec each of its services enforces before it
+// (before[service], absent when the service enforces nothing yet).
+func planParts(p Policy, specs map[string]json.RawMessage) []PartPlan {
 	var plan []PartPlan
 	for _, part := range p.parts() {
-		var before json.RawMessage
-		if prev != nil {
-			if q, ok := prev.forService(part.Scope.Service); ok {
-				before = q.Spec
-			}
-		}
+		before := specs[part.Scope.Service]
 		kind, changes := classify(before, part.Spec)
 		if before != nil && specHash(before) == specHash(part.Spec) {
 			kind, changes = changeUnchanged, nil
@@ -261,6 +268,55 @@ func planJoint(p Policy, prev *Policy) []PartPlan {
 		plan = append(plan, PartPlan{Service: part.Scope.Service, Kind: kind, Step: step, Changes: changes})
 	}
 	return plan
+}
+
+// governing returns, for each service of joint policy p, the spec that service enforces before p: its part of the
+// previous version prev, or else its part of another active policy (active is ordered by approval, so the last one is
+// the one the service's proxy activated last). The second case is the first joint version over separate policies, for
+// example a joint card whose policy is the gateway's while payment-svc still has its own rate policy: payment's change
+// must be compared with that policy, not counted as a new setting. takenOver lists those other policies when every
+// service they govern is a part of p, so p replaces them completely.
+func governing(p Policy, prev *Policy, active []Policy) (before map[string]json.RawMessage, takenOver []Policy) {
+	before = map[string]json.RawMessage{}
+	if prev != nil {
+		for _, part := range prev.parts() {
+			before[part.Scope.Service] = part.Spec
+		}
+	}
+	from := map[string]Policy{}
+	for _, s := range p.services() {
+		if _, ok := before[s]; ok {
+			continue
+		}
+		for _, q := range active {
+			if q.PolicyID == p.PolicyID {
+				continue
+			}
+			if part, ok := q.forService(s); ok {
+				before[s], from[s] = part.Spec, q
+			}
+		}
+	}
+	covered := map[string]bool{}
+	for _, s := range p.services() {
+		covered[s] = true
+	}
+	seen := map[string]bool{}
+	for _, q := range from {
+		if seen[q.Epoch] {
+			continue
+		}
+		seen[q.Epoch] = true
+		all := true
+		for _, s := range q.services() {
+			all = all && covered[s]
+		}
+		if all {
+			takenOver = append(takenOver, q)
+		}
+	}
+	sort.Slice(takenOver, func(i, j int) bool { return takenOver[i].Epoch < takenOver[j].Epoch })
+	return before, takenOver
 }
 
 // stepOf is the activation step of a service in a plan (1 when the service has no part in it).

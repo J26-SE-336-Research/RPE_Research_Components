@@ -13,7 +13,7 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 @EnableScheduling
 @EnableConfigurationProperties({AdaptiveConfig.Settings.class, AdaptiveConfig.Connections.class, AdaptiveConfig.DeadlineSettings.class,
         AdaptiveConfig.LoadSettings.class, AdaptiveConfig.LeverSettings.class, AdaptiveConfig.RateSettings.class, AdaptiveConfig.RetrySettings.class,
-        AdaptiveConfig.BaselineSettings.class, AdaptiveConfig.AutoSettings.class, AdaptiveConfig.AutoApproval.class})
+        AdaptiveConfig.BaselineSettings.class, AdaptiveConfig.AutoSettings.class, AdaptiveConfig.AutoApproval.class, AdaptiveConfig.JointSettings.class})
 public class AdaptiveConfig {
     @ConfigurationProperties("rrpe.adaptive")
     public record Settings(@DefaultValue("5m") Duration window, @DefaultValue("1m") Duration cycle,
@@ -157,6 +157,20 @@ public class AdaptiveConfig {
             }
         }
         public static AutoSettings defaults() { return new AutoSettings(2, 2, 3, Duration.ofMinutes(60), Duration.ofMinutes(30)); }
+    }
+    /**
+     * Joint healthy recalibration (C3 request J1–J6): when a healthy rate step reaches its target, the matching chain
+     * deadlines are recommended in the same decision. Off by default ({@code rrpe.adaptive.joint.enabled}); a joint is made
+     * only when the deadline change is at least {@code max(min-change-fraction × D, min-change-ms)}.
+     */
+    @ConfigurationProperties("rrpe.adaptive.joint")
+    public record JointSettings(@DefaultValue("false") boolean enabled, @DefaultValue("0.05") double minChangeFraction,
+            @DefaultValue("10") long minChangeMs) {
+        public JointSettings {
+            if (!(minChangeFraction >= 0 && minChangeFraction < 1) || minChangeMs < 0) throw new IllegalArgumentException("Invalid joint settings");
+        }
+        public static JointSettings defaults() { return new JointSettings(false, .05, 10); }
+        public static JointSettings on() { return new JointSettings(true, .05, 10); }
     }
     /** The kinds of change that may be approved automatically. A chain deadline is never one of them. */
     public enum AutoKind { BUCKET_RAISE, BUCKET_CUT, RETRY_DECREASE, RETRY_INCREASE }

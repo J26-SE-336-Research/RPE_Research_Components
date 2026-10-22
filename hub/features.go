@@ -657,7 +657,13 @@ func (h *hub) intel(w http.ResponseWriter, r *http.Request) {
 }
 
 var intelScenarios = map[string]bool{"healthy": true, "stressed": true, "overloaded": true, "retry-stressed": true,
-	"recovery": true, "deadline-increase": true, "deadline-recovery": true, "multiple-chains": true}
+	"recovery": true, "deadline-increase": true, "deadline-recovery": true, "multiple-chains": true,
+	// C4: deadline v2 examples, rate and retry v2, joint healthy recalibration
+	"deadline-too-long-under-overload": true, "deadline-too-short-day-one": true, "services-slowing": true,
+	"queue-rate-not-deadline": true, "mixed-paths": true, "rejecting-middleware-504": true,
+	"rate-too-low": true, "rate-too-low-day-one": true, "rate-real-overload": true, "rate-recovery": true,
+	"rate-short-burst": true, "rate-bursts": true, "retry-storm-rate": true,
+	"joint-recovery": true, "joint-capacity-drop": true}
 
 func (h *hub) intelDemo(w http.ResponseWriter, r *http.Request) {
 	s := r.PathValue("scenario")
@@ -665,7 +671,12 @@ func (h *hub) intelDemo(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, "unknown scenario")
 		return
 	}
-	code, _, b, _, err := h.call(r.Context(), http.MethodPost, h.cfg.intelligenceURL+"/api/v2/intelligence/demo/"+s, nil)
+	path := "/api/v2/intelligence/demo/" + s
+	// practice cards: the scenario's recommendations as reviewable simulation cards (never applied)
+	if r.URL.Query().Get("to") == "queue" {
+		path += "?to=queue"
+	}
+	code, _, b, _, err := h.call(r.Context(), http.MethodPost, h.cfg.intelligenceURL+path, nil)
 	if err != nil {
 		writeErr(w, 502, err.Error())
 		return
@@ -673,6 +684,11 @@ func (h *hub) intelDemo(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	_, _ = w.Write(b)
+}
+
+// intelPracticeClear removes the simulation (practice) cards from C4's list; real recommendations are untouched.
+func (h *hub) intelPracticeClear(w http.ResponseWriter, r *http.Request) {
+	h.relayIntel(w, r, http.MethodPost, "/api/v2/intelligence/practice/clear", nil)
 }
 
 // relayIntel forwards a C4 response unchanged.

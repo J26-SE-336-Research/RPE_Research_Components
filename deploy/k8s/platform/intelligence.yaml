@@ -52,6 +52,8 @@ spec:
             - {name: RRPE_ADAPTIVE_RATE_STABILISATION, value: 1m}
             - {name: RRPE_ADAPTIVE_BASELINE_ALLOWSHEDWINDOWS, value: "true"}
             - {name: RRPE_ADAPTIVE_AUTO_PAUSE, value: 10m}
+            # Joint healthy recalibration (C3 request): rate + chain deadline in one decision, always approved by a person.
+            - {name: RRPE_ADAPTIVE_JOINT_ENABLED, value: "true"}
             - {name: RRPE_DELIVERY_POLL, value: 5s}
             - {name: COMPONENT3_POLICY_URL, value: "http://rpe-policy-api.rpe-system"}
             - name: RRPE_CONTROL_TOKEN

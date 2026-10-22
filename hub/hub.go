@@ -91,6 +91,7 @@ func (h *hub) routes() http.Handler {
 	// C4 Intelligence
 	api.HandleFunc("GET /api/hub/intel", h.intel)
 	api.HandleFunc("POST /api/hub/intel/demo/{scenario}", h.intelDemo)
+	api.HandleFunc("POST /api/hub/intel/practice/clear", h.intelPracticeClear)
 	api.HandleFunc("GET /api/hub/intel/audit", h.intelAudit)
 	api.HandleFunc("GET /api/hub/intel/connections", h.intelConnections)
 	api.HandleFunc("POST /api/hub/intel/changes/{id}/review", h.intelReview)

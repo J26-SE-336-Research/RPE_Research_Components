@@ -24,8 +24,16 @@ public final class RateState {
     AdaptiveEngine.RateDecision lastDecision;
     /** Retry v2: consecutive windows with a clearly low retry success rate. */
     int retryLowStreak;
+    /** Joint recalibration: per-window maximum queue depth of HEALTHY windows (only collected when joint is enabled). */
+    final Deque<Double> healthyDepth = new ArrayDeque<>();
+    /** Q = median healthy per-window maximum queue depth; null until {@code minSamples} are collected. */
+    public Double healthyQueue(int minSamples) {
+        return healthyDepth.size() < minSamples ? null : RobustStatistics.median(healthyDepth.stream().mapToDouble(Double::doubleValue).toArray());
+    }
     /** The latest automatically approved (or reverted) rate change, followed until it is applied or dropped. */
     UUID autoProposalId, lastAutoAudited;
+    /** Joint recalibration: the last healthy target seen in the policy, and a changed target not yet reached (flag on only). */
+    Double seenHealthyTarget, healthyTargetChange;
 
     /** An applied change being checked on the next disjoint windows. */
     static final class Verification {

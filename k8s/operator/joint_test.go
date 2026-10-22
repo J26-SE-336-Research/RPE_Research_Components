@@ -208,6 +208,51 @@ func TestAJointDecisionKeepsThePartsItDoesNotName(t *testing.T) {
 	}
 }
 
+func TestAFirstJointOverSeparatePoliciesIsOrderedByWhatEachServiceEnforces(t *testing.T) {
+	// The gateway enforces its own policy gw-v1 (900 ms), payment-svc its own policy pay-v1 (100/s): the state C4's
+	// first joint card meets. The card is a new version of the gateway's policy: deadline 900 -> 1400 ms (looser) and
+	// payment 100 -> 60/s (stricter). Payment's part must be compared with pay-v1, not counted as a new setting.
+	h := newHarness(t)
+	other := Policy{PolicyID: "catalog", Version: 1, Epoch: "catalog-v1", Scope: Scope{Service: "gateway", Route: "GET /api/catalog"},
+		Spec: json.RawMessage(`{"routes":{"GET /api/catalog":{"deadlineMs":400}}}`)}
+	h.store.policies[other.Epoch], h.store.status[other.Epoch] = other, StatusActive
+	drop := Policy{PolicyID: "gw", Version: 3, Epoch: "gw-v3", Scope: Scope{Service: "gateway"},
+		Spec: jointSpec([]Part{{Scope: Scope{Service: "gateway", Route: "GET /api/orders"}, Spec: json.RawMessage(`{"routes":{"GET /api/orders":{"deadlineMs":1400}}}`)}, payPart(60)})}
+	h.store.policies[drop.Epoch] = drop
+	h.gateway.inflight["gw-v1"] = 2 // chains stamped with the gateway's previous version are still running
+	h.create("first", "two-phase", drop, "gw-v1", time.Now())
+	h.setJoint("first")
+
+	ro := h.until("first", PhaseDraining)
+	if kindOf(ro.Status.Plan, "gateway") != changeLoosen || kindOf(ro.Status.Plan, "payment-svc") != changeTighten || stepOf(ro.Status.Plan, "payment-svc") != 2 {
+		t.Fatalf("payment's lower rate is a tightening against its own policy: %+v", ro.Status.Plan)
+	}
+	if ro.Status.GateStartedAt == "" || h.payment.did("activate", "gw-v3") != 0 {
+		t.Fatalf("payment waits while chains of the gateway's previous version run: %+v, %v", ro.Status, h.payment.log)
+	}
+	h.gateway.mu.Lock()
+	h.gateway.inflight["gw-v1"] = 0
+	h.gateway.mu.Unlock()
+	h.until("first", PhaseComplete)
+	if h.payment.did("activate", "gw-v3") < h.gateway.did("activate", "gw-v3") {
+		t.Fatal("the gateway loosens before payment tightens")
+	}
+	if h.store.status["pay-v1"] != StatusSuperseded || h.payment.did("retire", "pay-v1") == 0 {
+		t.Fatalf("payment's own policy is replaced by the joint version: %v, %v", h.store.status, h.payment.log)
+	}
+	if h.store.status["catalog-v1"] != StatusActive || h.gateway.did("retire", "catalog-v1") != 0 {
+		t.Fatal("another policy of the gateway (another route) is not touched")
+	}
+
+	// the other direction (C4's joint-recovery): payment 100 -> 150/s looser first, the deadline 900 -> 800 ms after
+	before, replaced := governing(Policy{PolicyID: "gw", Version: 4, Epoch: "gw-v4", Scope: Scope{Service: "gateway"},
+		Spec: jointSpec([]Part{gwPart(800), payPart(150)})}, &g1, []Policy{g1, v1, other})
+	plan := planParts(Policy{Spec: jointSpec([]Part{gwPart(800), payPart(150)})}, before)
+	if kindOf(plan, "gateway") != changeTighten || kindOf(plan, "payment-svc") != changeLoosen || len(replaced) != 1 || replaced[0].Epoch != "pay-v1" {
+		t.Fatalf("plan %+v, replaced %+v", plan, replaced)
+	}
+}
+
 func TestNaiveArrivalOrderServicesFirst(t *testing.T) {
 	h := jointHarness(t)
 	h.create("n", "naive", j2, "chain-v1", time.Now())
