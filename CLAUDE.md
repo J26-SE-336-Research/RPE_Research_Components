@@ -123,6 +123,10 @@ Source: the user's `BACKPRESSURE_HANDLING_GUIDE.md` (netty-proxy, port 9090, `BA
   (REDIRECT -> `RPE_APP_PORT`, TPROXY -> original port), 15020 control API (`/rpe/v1/...`), 15090 metrics + backpressure
   signal/config. Gateway route budgets: `resilience.rpe.dev/route-deadlines` annotation, overridden per route by the
   active C3 policy (`policy.routes["METHOD /path"].deadlineMs`).
+- Backend connections (to the application and to downstream sidecars) are pooled per event loop and destination
+  and reused after a complete keep-alive response (`BackendConnectionPool`, C2 owner, 21 Oct 2026);
+  `PROXY_BACKEND_POOL=off` restores one connection per request. Requests without context (`PassthroughForwarder`)
+  still use one connection each. Deadline, cancellation and backpressure handling are unchanged by the pool.
 - Build: `docker build -f netty-sidecar-proxy/docker/Dockerfile .` from the repo root (needs `libs/rpe-java`).
   Tests: `mvn -f netty-sidecar-proxy/pom.xml test` after installing rpe-java; the integration tests need Linux epoll.
 - E2E on Windows Git Bash: run `scripts/test-e2e.sh` with `MSYS_NO_PATHCONV=1`, otherwise Git Bash rewrites in-pod

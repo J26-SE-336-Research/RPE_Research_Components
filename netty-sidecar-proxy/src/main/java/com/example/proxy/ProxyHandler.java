@@ -461,36 +461,13 @@ public final class ProxyHandler extends SimpleChannelInboundHandler<FullHttpRequ
             if (inboundTracker != null) inboundTracker.finish();
             return;
         }
-        Bootstrap backendBootstrap = new Bootstrap();
-        backendBootstrap.group(clientCtx.channel().eventLoop())
-                .channel(clientCtx.channel().getClass())
-                .handler(new BackendInitializer(clientCtx.channel(), activeRequestId, activeDeadline,
-                        detectThisRequestDeadline, activeOwnsContext, gatewayInbound, requestSpan, inboundTracker,
-                        requestStartNanos, backpressure, outboundRedirect ? peer : null,
-                        outboundPermit.halfOpenProbe(), hop))
-                .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, 5000);
-
-        LOGGER.info(() -> "Connecting to backend requestId=" + activeRequestId
-                + " destination=" + destination);
-        backendBootstrap.connect(destination)
-                .addListener((ChannelFutureListener) future -> {
-                    if (!future.isSuccess()) {
-                        if (outboundRedirect) {
-                            backpressure.recordTransportFailure(peer, outboundPermit.halfOpenProbe());
-                            backpressure.releaseOutbound(peer);
-                        }
-                        ProxyTelemetry.endHop(requestSpan, 502, future.cause());
-                        hop.complete(502);
-                        LOGGER.log(Level.SEVERE, "Backend connect failed requestId=" + activeRequestId
-                                + " destination=" + destination, future.cause());
-                        sendError(clientCtx, HttpResponseStatus.BAD_GATEWAY,
-                                "Could not connect to backend: " + future.cause().getMessage(), inboundTracker);
-                        return;
-                    }
-
-                    Channel backendChannel = future.channel();
-                    LOGGER.info(() -> "Backend connected requestId=" + activeRequestId
-                            + " destination=" + backendChannel.remoteAddress());
+        String poolKey = BackendConnectionPool.key(destination);
+        BackendResponseHandler responseHandler = new BackendResponseHandler(clientCtx.channel(), activeRequestId,
+                activeDeadline, detectThisRequestDeadline, activeOwnsContext, gatewayInbound, requestSpan,
+                inboundTracker, requestStartNanos, backpressure, outboundRedirect ? peer : null,
+                outboundPermit.halfOpenProbe(), hop, poolKey);
+        // Sends the request on an open backend connection: a pooled one or a newly opened one, the same way.
+        java.util.function.Consumer<Channel> send = backendChannel -> {
                     HttpHeaders latestContext = requestContext(activeRequestId);
                     if (latestContext != null) {
                         latestContext.forEach(entry -> forwarded.headers().set(entry.getKey(), entry.getValue()));
@@ -518,6 +495,46 @@ public final class ProxyHandler extends SimpleChannelInboundHandler<FullHttpRequ
                             }
                         }
                     });
+        };
+
+        Channel pooled = BackendConnectionPool.acquire(clientCtx.channel().eventLoop(), poolKey);
+        if (pooled != null) {
+            pooled.pipeline().replace(BackendConnectionPool.RESPONSE_HANDLER, BackendConnectionPool.RESPONSE_HANDLER,
+                    responseHandler);
+            LOGGER.info(() -> "Reusing backend connection requestId=" + activeRequestId
+                    + " destination=" + pooled.remoteAddress());
+            send.accept(pooled);
+            return;
+        }
+
+        Bootstrap backendBootstrap = new Bootstrap();
+        backendBootstrap.group(clientCtx.channel().eventLoop())
+                .channel(clientCtx.channel().getClass())
+                .handler(new BackendInitializer(responseHandler))
+                .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, 5000);
+
+        LOGGER.info(() -> "Connecting to backend requestId=" + activeRequestId
+                + " destination=" + destination);
+        backendBootstrap.connect(destination)
+                .addListener((ChannelFutureListener) future -> {
+                    if (!future.isSuccess()) {
+                        if (outboundRedirect) {
+                            backpressure.recordTransportFailure(peer, outboundPermit.halfOpenProbe());
+                            backpressure.releaseOutbound(peer);
+                        }
+                        ProxyTelemetry.endHop(requestSpan, 502, future.cause());
+                        hop.complete(502);
+                        LOGGER.log(Level.SEVERE, "Backend connect failed requestId=" + activeRequestId
+                                + " destination=" + destination, future.cause());
+                        sendError(clientCtx, HttpResponseStatus.BAD_GATEWAY,
+                                "Could not connect to backend: " + future.cause().getMessage(), inboundTracker);
+                        return;
+                    }
+                    BackendConnectionPool.opened();
+                    Channel backendChannel = future.channel();
+                    LOGGER.info(() -> "Backend connected requestId=" + activeRequestId
+                            + " destination=" + backendChannel.remoteAddress());
+                    send.accept(backendChannel);
                 });
         };
 

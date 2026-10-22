@@ -313,7 +313,7 @@ Pages show only what is built. New capabilities are added as real pages or secti
 
 1. A client calls `gateway:8080/api/orders`. iptables (set up by `rpe-init`) redirects the call into the gateway's **sidecar** (C2) on 15006, which forwards it to the app over loopback.
 2. The gateway app's **C1 middleware** creates a fresh root context: `bud=300` for this route (`POST /api/orders` gets 500 ms), `rb=3`, policy epoch `pe=e0`, and a new `rid` bound to the W3C trace id.
-3. The gateway calls `order-svc`. The **C1 transport** derives the child context: new `iid`, `pid` set to the gateway's `iid`, `ttl` reduced by the elapsed time. The call is redirected into the gateway sidecar's outbound port 15001, which forwards it over a pooled connection.
+3. The gateway calls `order-svc`. The **C1 transport** derives the child context: new `iid`, `pid` set to the gateway's `iid`, `ttl` reduced by the elapsed time. The call is redirected into the gateway sidecar's outbound port 15001, which forwards it over a pooled, kept-alive connection (`BackendConnectionPool`).
 4. `order-svc` fans out in parallel to inventory, payment, loyalty and legacy. The retry budget is **split, not copied** (3 → 1/1/1/0).
 5. `legacy-svc` has a sidecar like every other service, so `shipping-svc` behind it receives the context too.
 6. If payment is slow and the 300 ms budget runs out:

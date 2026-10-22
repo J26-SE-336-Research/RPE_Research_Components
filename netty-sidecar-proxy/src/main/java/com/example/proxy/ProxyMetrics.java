@@ -175,6 +175,7 @@ public final class ProxyMetrics {
                 .append("# TYPE rpe_service_request_duration_seconds histogram\n");
         ROUTE_STATS.forEach((key, stats) -> appendRouteStats(out, key, stats));
         if (BACKPRESSURE != null) out.append(BACKPRESSURE.prometheusText());
+        out.append(BackendConnectionPool.prometheusText());
         SERVICE_STATS.forEach((service, stats) -> appendHistogram(out,
                 "rpe_service_request_duration_seconds", "{service=\"" + label(service) + "\"}",
                 stats.buckets, stats.durationCount, stats.durationSumNanos));

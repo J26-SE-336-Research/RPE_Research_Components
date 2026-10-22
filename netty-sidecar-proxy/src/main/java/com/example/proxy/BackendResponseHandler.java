@@ -29,6 +29,7 @@ public final class BackendResponseHandler
     private final String peer;
     private final boolean halfOpenProbe;
     private final RpeContractMetrics.Hop hop;
+    private final String poolKey;
     private long upstreamStartNanos;
     private boolean receivedResponse;
     private boolean spanEnded;
@@ -40,7 +41,8 @@ public final class BackendResponseHandler
                                   Span requestSpan,
                                   ProxyMetrics.InboundRequestTracker inboundTracker, long requestStartNanos,
                                   BackpressureController backpressure, String peer, boolean halfOpenProbe,
-                                  RpeContractMetrics.Hop hop) {
+                                  RpeContractMetrics.Hop hop, String poolKey) {
+        this.poolKey = poolKey;
         this.clientChannel = clientChannel;
         this.requestId = requestId;
         this.deadline = deadline;
@@ -57,6 +59,12 @@ public final class BackendResponseHandler
     }
 
     @Override
+    public void handlerAdded(ChannelHandlerContext ctx) {
+        // a pooled connection is already open: the upstream time starts when this request takes it
+        if (ctx.channel().isActive()) upstreamStartNanos = System.nanoTime();
+    }
+
+    @Override
     public void channelActive(ChannelHandlerContext ctx) throws Exception {
         upstreamStartNanos = System.nanoTime();
         super.channelActive(ctx);
@@ -67,9 +75,9 @@ public final class BackendResponseHandler
         receivedResponse = true;
         final int responseStatus = response.status().code();
         hop.complete(responseStatus, System.nanoTime() - upstreamStartNanos);
-        // One backend connection per request: close it once its response has arrived, so idle upstream
-        // connections do not accumulate. The client connection stays open (see channelInactive).
-        backendCtx.close();
+        // The response is complete: the backend connection goes back to the pool for the next request to this
+        // destination, or is closed when it cannot be reused. The client connection stays open (see channelInactive).
+        BackendConnectionPool.release(backendCtx.channel(), poolKey, HttpUtil.isKeepAlive(response));
         boolean pressureSignal = BackpressureController.SIGNAL_VALUE.equalsIgnoreCase(
                 response.headers().get(BackpressureController.SIGNAL_HEADER));
         Integer queueUtilizationPercent = BackpressureController.parseQueueUtilizationPercent(
@@ -166,7 +174,7 @@ public final class BackendResponseHandler
                 clientChannel.close();
             }
         }
-        // after a response the backend connection is closed on purpose; the client connection stays usable
+        // after a response the backend connection was pooled or closed on purpose; the client connection stays usable
         // (the in-flight tracker is finished once the response has been written to the client)
     }
 

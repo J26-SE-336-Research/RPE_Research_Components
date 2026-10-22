@@ -68,6 +68,10 @@ The application continues to call Service B using its normal destination. In Kub
 - Adds `X-Proxy-Processed: true` to backend responses
 - Configurable through environment variables
 - 5-second destination connection timeout
+- Reuses backend connections: after a complete keep-alive response the connection to the application or the next
+  sidecar is kept (per event loop and destination, up to `PROXY_BACKEND_POOL_MAX_IDLE`, default 512, idle at most
+  60 s) and used for the next request; `PROXY_BACKEND_POOL=off` opens one connection per request. Metrics:
+  `rpe_backend_connections_opened_total`, `rpe_backend_connections_reused_total`, `rpe_backend_connections_idle`
 - 10 MB aggregated HTTP message limit
 
 ## Important learning point: TCP streams

@@ -99,6 +99,8 @@ final class TestHttp {
                 Map<String, String> headers = new LinkedHashMap<>();
                 exchange.getRequestHeaders().forEach((name, values) ->
                         headers.put(name.toLowerCase(Locale.ROOT), String.join(",", values)));
+                // the backend side of the connection: the same port means the proxy reused its connection
+                headers.put("x-test-client-port", Integer.toString(exchange.getRemoteAddress().getPort()));
                 exchange.getRequestBody().readAllBytes();
                 Received request = new Received(exchange.getRequestMethod(), exchange.getRequestURI().toString(), headers);
                 received.add(request);
