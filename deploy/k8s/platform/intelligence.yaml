@@ -46,12 +46,16 @@ spec:
             # Rate and retry v2, demo-cluster values; production defaults are in AdaptiveConfig.RateSettings / AutoSettings.
             # Rate and retry changes in this list are approved automatically (reviewer c4-auto) by the safety guard;
             # chain deadlines are never approved automatically. Retry increases stay advisory until C2 counts retries (PP2).
-            - {name: RRPE_ADAPTIVE_AUTOAPPROVEACTIONS, value: "BUCKET_RAISE,BUCKET_CUT,RETRY_DECREASE"}
+            # rates and retries never wait for a person (22 Oct): changes the guard refuses are held and tried again every cycle
+            - {name: RRPE_ADAPTIVE_AUTOAPPROVEACTIONS, value: "BUCKET_RAISE,BUCKET_CUT,BUCKET_RELAX,RETRY_DECREASE,RETRY_INCREASE"}
             - {name: RRPE_ADAPTIVE_RATE_MAXABSOLUTE, value: "500"}
             - {name: RRPE_ADAPTIVE_RATE_BROKEATMEMORY, value: 10m}
             - {name: RRPE_ADAPTIVE_RATE_STABILISATION, value: 1m}
             - {name: RRPE_ADAPTIVE_BASELINE_ALLOWSHEDWINDOWS, value: "true"}
             - {name: RRPE_ADAPTIVE_AUTO_PAUSE, value: 10m}
+            - {name: RRPE_ADAPTIVE_AUTO_PERIOD, value: 10m}
+            # lowering a too-generous rate starts after this wait (30m in code; short for a live demo)
+            - {name: RRPE_ADAPTIVE_RATE_GENEROUSWAIT, value: 2m}
             # Joint healthy recalibration (C3 request): rate + chain deadline in one decision, always approved by a person.
             - {name: RRPE_ADAPTIVE_JOINT_ENABLED, value: "true"}
             - {name: RRPE_DELIVERY_POLL, value: 5s}

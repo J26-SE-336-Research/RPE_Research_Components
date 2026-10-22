@@ -23,6 +23,9 @@ class DeadlineSettledLockTests {
         final PolicyWorkflow workflow = new PolicyWorkflow(AdaptiveEngineTests.connections(""), settings, clock);
         final AdaptiveEngine engine = new AdaptiveEngine(settings, workflow, clock);
         final List<PolicyChange> gateway = new ArrayList<>();
+        // rates never wait for a person (owner rule, 22 Oct): changes the guard refuses are held; their "held: …" lines are collected here
+        final List<String> held = new ArrayList<>();
+        Outcome last;
         int cycle;
         Live() {
             engine.configureDeadline(AdaptiveConfig.DeadlineSettings.demo(), null, null);
@@ -49,17 +52,18 @@ class DeadlineSettledLockTests {
             var window = new ServiceWindow("gateway", clock.now.minus(settings.window()), clock.now, Source.PROMETHEUS, true, m.original(), m.p95(), m.errors(),
                     retries != null ? retries : m.retries(), retrySuccesses != null ? retrySuccesses : m.retrySuccess(), m.rejections(), 10.0, m.accepted(), null, null, null, null, List.of());
             var load = new ServiceLoadSnapshot("gateway", m.queuePercent(), m.rejections(), 0.0, 0.0, null, null, null, null, List.of(), m.queueDepth());
-            gateway.addAll(engine.service(window, load).changes());
+            var outcome = engine.service(window, load); last = outcome;
+            gateway.addAll(outcome.changes());
+            outcome.assessment().evidence().stream().filter(e -> e.startsWith("held:")).forEach(held::add);
             clock.now = clock.now.plus(settings.cycle()); cycle++;
         }
         ChainDeadlineState state() { var e = engine.deadlineEvidence(CHAIN, Source.TEMPO); return e == null ? null : e.state(); }
         List<PolicyChange> auto() { return workflow.list().stream().filter(c -> c.proposal().target().equals("gateway") && "c4-auto".equals(c.reviewer())).toList(); }
-        List<String> reasons() {
-            return gateway.stream().flatMap(c -> c.proposal().evidence().stream()).filter(e -> e.startsWith("Automatic approval not used")).distinct().toList();
-        }
+        List<String> reasons() { return held.stream().distinct().toList(); }
         void learn() { for (int i = 0; i < 25; i++) cycle(500, 60); }
     }
 
+    // rates never wait for a person (owner rule, 22 Oct): in the gap the gateway retry change is held (tried again), not a card
     @Test void theE2e95TimeGapGetsNoAutomaticGatewayChange() {
         var live = new Live();
         live.learn();
@@ -71,21 +75,21 @@ class DeadlineSettledLockTests {
         live.policies("op-v2", 100, .1, 100);
         PolicyChange deadline = null; int inGap = 0;
         for (int i = 0; i < 40; i++) {
-            int before = live.gateway.size();
+            int before = live.held.size();
             live.cycle(100, 60, 100.0, 10.0);
-            if (deadline == null && live.gateway.size() > before) inGap++;
+            if (deadline == null && live.held.size() > before) inGap++;
             if (deadline == null) deadline = live.workflow.pending(CHAIN, Action.CHAIN_DEADLINE, Source.TEMPO).orElse(null);
         }
         var ev = live.engine.deadlineEvidence(CHAIN, Source.TEMPO);
         assertNotNull(deadline, "C4 still proposes the deadline increase: " + ev.state() + " " + ev.decisionCase() + " " + ev.holdReason() + " " + ev.advisory() + " model=" + ev.model() + " h=" + ev.hExceed());
         assertTrue(deadline.proposal().proposedValue() > 100);
         assertTrue(inGap > 0, "the retry change arrives before any deadline proposal is pending (the e2e 95 time gap)");
-        assertEquals(.02, live.gateway.get(0).proposal().proposedValue(), 1e-9);
+        assertTrue(live.held.get(0).startsWith("held: retry ratio 0.10 → 0.02"), live.held.get(0));
         assertEquals(Decision.PENDING_APPROVAL, deadline.decision(), "a chain deadline is never automatic");
         assertTrue(live.auto().isEmpty(), "no automatic gateway change during the whole test: " + live.auto());
-        var rates = live.gateway.stream().filter(c -> c.proposal().action() == Action.RETRY_BUDGET).toList();
-        assertFalse(rates.isEmpty(), "the gateway retry change is still recommended");
-        assertTrue(rates.stream().allMatch(c -> c.decision() == Decision.PENDING_APPROVAL), "a human can still approve it");
+        assertTrue(live.gateway.stream().noneMatch(c -> c.proposal().action() == Action.RETRY_BUDGET || c.proposal().action() == Action.LEAKY_BUCKET),
+                "no rate or retry card for a person");
+        assertFalse(live.held.isEmpty(), "the gateway retry change is still decided, and held");
         assertTrue(live.reasons().stream().allMatch(r -> r.contains("deadline not settled")), live.reasons().toString());
         // the gap itself: before any deadline proposal was pending, the lock came from the budget change / building raise
         assertTrue(live.reasons().stream().anyMatch(r -> r.contains("the deadline changed") || r.contains("a raise is building")), live.reasons().toString());
@@ -99,6 +103,7 @@ class DeadlineSettledLockTests {
         assertFalse(live.auto().isEmpty(), "settled chains do not block the automatic raise: " + live.reasons());
     }
 
+    // rates never wait for a person (owner rule, 22 Oct): the reason is read from the held change (Live.reasons)
     @Test void aDeadlineChangeByAnyoneLocksForTheSettlePeriod() {
         var live = new Live();
         live.learn();
@@ -110,6 +115,7 @@ class DeadlineSettledLockTests {
         assertFalse(live.auto().isEmpty(), "settled again after the settle period: " + live.reasons());
     }
 
+    // rates never wait for a person (owner rule, 22 Oct): the protective retry 0 is held on missing data, not a card
     @Test void missingQueueDataIsNeverAutomaticNotEvenTheProtectiveRetryZero() {
         var settings = AdaptiveEngineTests.settings();
         var clock = new AdaptiveEngineTests.TestClock();
@@ -124,10 +130,9 @@ class DeadlineSettledLockTests {
         clock.next(300);
         engine.service(window.apply(150.0, 80.0)); clock.next(60);
         var outcome = engine.service(window.apply(150.0, 80.0)); // no queue signals: rate diagnosis UNKNOWN, health OVERLOADED
-        var retry = outcome.changes().stream().filter(c -> c.proposal().action() == Action.RETRY_BUDGET).findFirst().orElseThrow();
-        assertEquals(0, retry.proposal().proposedValue());
-        assertEquals(Decision.PENDING_APPROVAL, retry.decision());
-        assertTrue(retry.proposal().evidence().stream().anyMatch(e -> e.contains("insufficient data for automatic change")), retry.proposal().evidence().toString());
+        assertTrue(outcome.changes().stream().noneMatch(c -> c.proposal().action() == Action.RETRY_BUDGET), "no retry card for a person");
+        String first = outcome.assessment().evidence().get(0);
+        assertTrue(first.startsWith("held: retry ratio 0.05 → 0.00") && first.contains("insufficient data for automatic change"), first);
     }
 
     @Test void aReviewerRateChangeWhileTheDeadlineSettlesMakesItsVerificationInconclusive() {

@@ -219,3 +219,32 @@ Approved as proposed below, with these notes:
   happens.
 - Tests: `DeadlineSettledLockTests` (the e2e 95 time gap with no automatic gateway change, settled chains still
   automatic, a budget change by anyone, missing data, INCONCLUSIVE verification) and `BridgeOneChangePerServiceTests`.
+
+## 9. Rates never wait for a person (owner decision, 22 Oct 2026)
+
+Replaces the 21 Oct rule "PENDING_APPROVAL when automatic approval is not possible" in **automatic mode** (the automatic list
+is not empty; the demo cluster). With the list empty (code default, unit tests, reviewer-mode simulations, practice cards)
+everything works as before.
+
+| # | Problem (live review) | Fix |
+|---|---|---|
+| 1, 3 | No rate recommendation without a C3 policy rate (fresh system, the gateway's `c4-gateway` with only routes) | `loadRatePerSecond` = `rpe_backpressure_inbound_rate_per_second` (sidecar) → `PolicyWorkflow.observeConfiguredRate`: reference `prometheus-config:rate:<r>` without a C3 policy, rate filled in for a C3 policy without one; a C3 rate wins; kept alive (not superseded) while a change is rolling out. The bridge already creates `c4-<service>` |
+| 2, 7, 8 | A rate/retry change the guard refuses became a card for a person | **held**: no card; "held: <change> (<reason>), trying again" is the first evidence line (Health view) and in `rateEvidence.held`; tried again every cycle; an older pending card for it is withdrawn. An undo always goes through (before the lock, the pause and the list). `RETRY_INCREASE` added to the demo list |
+| 4 | Lowering a too-generous rate always went to a person, and could never start | new kind `BUCKET_RELAX` (in the demo list): above 2 × the demand target (max demand × 1.25, at least min-absolute) for `rate.generous-wait` (renamed from relax-after; 30m, demo 2m), then steps of at most −10% down to that target, checked and undone like any automatic change. The demand target is used because the floor (0.5 × good rate, the good rate being the current rate) kept a generous rate above half of itself, so the old relax rule could never fire |
+| 5 | During the lock the full cut went to a person | automatic mode: a cut is always a step of at most −20%, also while held |
+| 6 | A pending rate card made a waiting deadline card go stale | a held rate is not a card, so deadline v2 never sees a pending rate (`PENDING_RATE_PROPOSAL`) and keeps its card fresh |
+| 9 | A failed delivery froze the service for up to 5 minutes | C4 keeps deciding; the same value keeps the approved change (the bridge retries every 30 s); after 5 failed attempts it is replaced by a fresh change |
+
+**Rounding fix:** the −20% cut step and the −10% lowering step are rounded **up** to 0.1 req/s. Rounding to the nearest
+value could make a step slightly larger than its limit (291.6 × 0.9 = 262.44 → 262.4), so the guard refused it forever.
+
+**Tests changed** (marked `rates never wait for a person (owner rule, 22 Oct)`): `AutoApprovalTests`
+`aPendingDeadlineChange…LocksAutomaticRateChanges` and `aRaiseThatSlowsTheApp…Pause`; `DeadlineSettledLockTests`
+`theE2e95TimeGap…`, `aDeadlineChangeByAnyone…` (reason read from the held change; the `Live` helper collects held lines),
+`missingQueueData…`; `PracticeIsolationTests.practiceCardsNeverChangeLiveDecisions` (held changes are now part of the
+compared live decisions). `AutoApprovalTests.anEmptyAllowList…` and `PolicyWorkflowTests` are unchanged.
+**New tests:** `RateStartingReferenceTests`, `RateHoldTests`, `AutoDeliveryBridgeTests`.
+
+**Timing for a live demo:** each automatic change is checked on 2 disjoint windows (window 1 min) and then waits for the
+cooldown (1 min), so one change takes about 3 minutes in the demo cluster; lowering a rate that is 2.5 × too generous takes
+about 4–5 steps.

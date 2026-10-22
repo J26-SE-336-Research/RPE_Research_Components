@@ -69,13 +69,20 @@ public final class AdaptiveModels {
     /** Per-service load signals for one window. A null value means the series is unavailable. */
     public record ServiceLoadSnapshot(String service, Double queuePressurePercent, Double overloadRejections,
             Double backpressureRejections, Double breakerOpenPeers, Double cpuUtilisation, Double cpuThrottling,
-            Double memoryUtilisation, Double queueWaitShare, List<String> problems, Double queueDepth) {
+            Double memoryUtilisation, Double queueWaitShare, List<String> problems, Double queueDepth, Double ratePerSecond) {
         public ServiceLoadSnapshot { problems = problems == null ? List.of() : List.copyOf(problems); }
+        /** Without the sidecar's configured rate (rate v2 callers and simulations). */
+        public ServiceLoadSnapshot(String service, Double queuePressurePercent, Double overloadRejections, Double backpressureRejections,
+                Double breakerOpenPeers, Double cpuUtilisation, Double cpuThrottling, Double memoryUtilisation, Double queueWaitShare, List<String> problems,
+                Double queueDepth) {
+            this(service, queuePressurePercent, overloadRejections, backpressureRejections, breakerOpenPeers, cpuUtilisation, cpuThrottling,
+                    memoryUtilisation, queueWaitShare, problems, queueDepth, null);
+        }
         /** Without queue depth (deadline v2 callers). */
         public ServiceLoadSnapshot(String service, Double queuePressurePercent, Double overloadRejections, Double backpressureRejections,
                 Double breakerOpenPeers, Double cpuUtilisation, Double cpuThrottling, Double memoryUtilisation, Double queueWaitShare, List<String> problems) {
             this(service, queuePressurePercent, overloadRejections, backpressureRejections, breakerOpenPeers, cpuUtilisation, cpuThrottling,
-                    memoryUtilisation, queueWaitShare, problems, null);
+                    memoryUtilisation, queueWaitShare, problems, null, null);
         }
         public static ServiceLoadSnapshot unavailable(String service) {
             return new ServiceLoadSnapshot(service, null, null, null, null, null, null, null, null, List.of());

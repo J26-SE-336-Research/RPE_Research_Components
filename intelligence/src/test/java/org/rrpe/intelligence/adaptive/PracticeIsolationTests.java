@@ -45,11 +45,14 @@ class PracticeIsolationTests {
         live.policies("op-v2", 100, .1, 100);                                      // the operator's tight deadline (e2e 95)
         for (int i = 0; i < 40; i++) live.cycle(100, 60, 100.0, 10.0);              // deadline case A, retry step down
         if (withPractice) assertTrue(PracticeCards.clear(live.workflow) > 0);
-        return live.workflow.list().stream().filter(c -> c.proposal().source() != Source.MOCK)
+        // rates never wait for a person (owner rule, 22 Oct): held changes are part of the live decisions compared below
+        var out = new java.util.ArrayList<String>(live.workflow.list().stream().filter(c -> c.proposal().source() != Source.MOCK)
                 .sorted(Comparator.comparing((PolicyChange c) -> c.proposal().generatedAt()).thenComparing(c -> c.proposal().action()))
                 .map(c -> c.proposal().generatedAt() + " " + c.proposal().action() + " " + c.proposal().target() + " " + c.proposal().currentValue() + "->"
                         + c.proposal().proposedValue() + " " + c.decision() + " " + c.reviewer() + " " + c.delivery())
-                .toList();
+                .toList());
+        live.held.stream().distinct().forEach(h -> out.add("HELD " + h));
+        return out;
     }
     @Test void practiceCardsNeverChangeLiveDecisions() {
         var without = liveRun(false);
@@ -57,7 +60,7 @@ class PracticeIsolationTests {
         assertEquals(without, with, "identical live recommendations with and without practice cards");
         assertTrue(without.stream().anyMatch(s -> s.contains("c4-auto")), "the run includes automatic approvals: " + without);
         assertTrue(without.stream().anyMatch(s -> s.contains("CHAIN_DEADLINE")), "and a deadline recommendation: " + without);
-        assertTrue(without.stream().anyMatch(s -> s.contains("RETRY_BUDGET")), "and a retry recommendation: " + without);
+        assertTrue(without.stream().anyMatch(s -> s.startsWith("HELD held: retry ratio")), "and a (held) retry recommendation: " + without);
     }
 
     @Test void practiceCardsOnLiveNamesCreateNoLiveLock() {

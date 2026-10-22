@@ -72,6 +72,7 @@ class AutoApprovalTests {
         assertEquals(Decision.PENDING_APPROVAL, workflow.offer(proposal).decision());
     }
 
+    // rates never wait for a person (owner rule, 22 Oct): the locked rate change is held and tried again, no card for a reviewer
     @Test void aPendingDeadlineChangeOnAChainThroughTheServiceLocksAutomaticRateChanges() {
         var r = run(ServiceSimulation.byId("rate-too-low"), Source.PROMETHEUS, DEMO, workflow -> {
             var now = Instant.parse("2026-10-20T00:00:00Z");
@@ -80,12 +81,13 @@ class AutoApprovalTests {
             workflow.offer(new Proposal(UUID.randomUUID(), CHAIN, Action.CHAIN_DEADLINE, Source.TEMPO, "e1", 1000, 1200, "milliseconds", now,
                     now.plusSeconds(86400), Map.of("windowEndEpochSeconds", (double) now.plusSeconds(86400).getEpochSecond()), List.of("pending deadline")));
         });
-        assertFalse(r.rate().isEmpty());
-        assertTrue(r.rate().stream().allMatch(s -> "pending".equals(s.reviewer())), r.rate().toString());
-        assertTrue(r.result().outcomes().stream().flatMap(o -> o.changes().stream()).flatMap(c -> c.proposal().evidence().stream())
-                .anyMatch(e -> e.contains("cross-lever lock")));
+        assertTrue(r.rate().isEmpty(), "no rate change while the deadline card waits, and no card for a person: " + r.rate());
+        assertTrue(r.workflow().list().stream().noneMatch(c -> c.proposal().action() == Action.LEAKY_BUCKET), "no rate card at all");
+        assertTrue(r.result().outcomes().stream().flatMap(o -> o.assessment().evidence().stream())
+                .anyMatch(e -> e.startsWith("held: rate") && e.contains("deadline not settled") && e.contains("trying again")), "visible as a held change");
     }
 
+    // rates never wait for a person (owner rule, 22 Oct): after the pause the next change is held, not a card for a reviewer
     @Test void aRaiseThatSlowsTheAppIsUndoneAndRepeatedUndosPauseAutomaticApproval() {
         var r = run(RAISE_HURTS, Source.PROMETHEUS, DEMO, null);
         var steps = r.rate();
@@ -100,11 +102,12 @@ class AutoApprovalTests {
         // the next raise stays below the ceiling learned from the failed raise (0.9 × the rate that slowed the app)
         var next = steps.get(first + 1);
         assertTrue(next.to() > next.from() && next.to() <= .9 * failedRaise.to() + .1, steps.toString());
-        // after two undos a reviewer decides again: the following recommendation waits
+        // after two undos automatic approval pauses: the next change is held (tried again), never a card for a person
         assertEquals(2, reverts.size(), steps.toString());
         assertEquals(1, r.audited(AuditLog.RATE_AUTO_PAUSED), steps.toString());
-        var afterPause = steps.get(steps.indexOf(reverts.get(1)) + 1);
-        assertEquals("pending", afterPause.reviewer(), "recommendations wait for a reviewer while paused: " + steps);
+        assertTrue(steps.stream().noneMatch(s -> "pending".equals(s.reviewer())), "no card for a person: " + steps);
+        assertTrue(r.result().outcomes().stream().flatMap(o -> o.assessment().evidence().stream())
+                .anyMatch(e -> e.startsWith("held: rate") && e.contains("paused")), "held while paused");
     }
 
     @Test void aRealOverloadInAutomaticModeIsCutInCheckedStepsAndSettlesNearTheAppCapacity() {

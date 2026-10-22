@@ -34,6 +34,10 @@ public final class RateState {
     UUID autoProposalId, lastAutoAudited;
     /** Joint recalibration: the last healthy target seen in the policy, and a changed target not yet reached (flag on only). */
     Double seenHealthyTarget, healthyTargetChange;
+    /** Lowering a too-generous rate has started (it continues in -relax-step steps down to the target). */
+    boolean relaxing;
+    /** Rate and retry changes held this cycle (automatic mode: tried again every cycle, never a card for a person). */
+    final List<String> held = new ArrayList<>();
 
     /** An applied change being checked on the next disjoint windows. */
     static final class Verification {

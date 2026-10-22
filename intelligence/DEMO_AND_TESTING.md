@@ -168,3 +168,21 @@ in the Admin Panel, with who approved each change.
   with a "Simulation" tag (joint parts together), open the same review drawer, and show "Simulation: approved by <name>,
   never applied" after a decision; **Clear practice cards** removes them. (Needs the hub and console change of the next
   commit.)
+
+## 9. Live viva (cluster): `intelligence/scripts/viva-live.sh` (or `.ps1`)
+
+Rates and retries never wait for a person: on the live cluster they are approved by `c4-auto` (Reviewed tab) or held and
+tried again ("held: …" in the Health tab and in `rateEvidence.held`); only deadline and joint cards wait in the Queue.
+
+| Step | What it does | What to look at |
+|---|---|---|
+| `warmup` | rpe-traffic running, Prometheus/Tempo LIVE_DATA, services HEALTHY | Health tab |
+| `lowrate [svc] [r]` | C3 rate-limit control: `payment-svc` → 1 req/s (traffic ~3 req/s fills the queue in 1–2 min) | rate raises by c4-auto in Reviewed |
+| `overload [svc]` | fault on the service: 500 ms, 10% errors | cuts of at most −20% and retry → 0 by c4-auto |
+| `recover [svc] [r]` | fault off, rate back to 100 | raises by c4-auto; a too-generous rate is lowered in −10% steps after 2 min |
+| `deadline [ms]` | `GET /api/orders` deadline → 100 ms (like e2e 95) | a deadline card in the Queue; rate changes on the chain "held: deadline not settled" |
+| `status` | health, latest c4-auto changes, held changes, waiting cards | — |
+| `reset` | faults off, `make reset-data` | — |
+
+One automatic change takes about 3 minutes in the demo cluster (checked on 2 one-minute windows, then a 1-minute
+cooldown); plan the steps so each has 3–5 minutes.

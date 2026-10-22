@@ -114,12 +114,12 @@ public class AdaptiveConfig {
             @DefaultValue("50") double queueLowPercent, @DefaultValue("1.5") double appTolerance, @DefaultValue("0.8") double cutFactor,
             @DefaultValue("0.10") double stepFraction, @DefaultValue("5") double minAbsolute, @DefaultValue("1000") double maxAbsolute,
             @DefaultValue("0.5") double floorFraction, @DefaultValue("30m") Duration brokeAtMemory, @DefaultValue("5m") Duration stabilisation,
-            @DefaultValue("30m") Duration relaxAfter, @DefaultValue("0.10") double relaxStep, @DefaultValue("0.5") double maxRaise,
+            @DefaultValue("30m") Duration generousWait, @DefaultValue("0.10") double relaxStep, @DefaultValue("0.5") double maxRaise,
             @DefaultValue("0.20") double minImprovement) {
         public RateSettings {
             if (!(headroom >= 0) || !(queueLowPercent > 0 && queueLowPercent < queueHighPercent && queueHighPercent <= 100) || !(appTolerance > 1)
                     || !(cutFactor > 0 && cutFactor < 1) || !(stepFraction > 0) || !(minAbsolute > 0 && maxAbsolute > minAbsolute)
-                    || !(floorFraction > 0 && floorFraction < 1) || brokeAtMemory == null || stabilisation == null || relaxAfter == null
+                    || !(floorFraction > 0 && floorFraction < 1) || brokeAtMemory == null || stabilisation == null || generousWait == null
                     || !(relaxStep > 0 && relaxStep < 1) || !(maxRaise > 0) || !(minImprovement > 0 && minImprovement < 1)) {
                 throw new IllegalArgumentException("Invalid rate v2 settings");
             }
@@ -173,7 +173,9 @@ public class AdaptiveConfig {
         public static JointSettings on() { return new JointSettings(true, .05, 10); }
     }
     /** The kinds of change that may be approved automatically. A chain deadline is never one of them. */
-    public enum AutoKind { BUCKET_RAISE, BUCKET_CUT, RETRY_DECREASE, RETRY_INCREASE }
+    public enum AutoKind { BUCKET_RAISE, BUCKET_CUT, RETRY_DECREASE, RETRY_INCREASE,
+        /** Lowering a too-generous healthy rate (above 2 × target for generous-wait) in steps of at most relax-step. */
+        BUCKET_RELAX }
     /**
      * {@code rrpe.adaptive.auto-approve-actions} (env {@code RRPE_ADAPTIVE_AUTOAPPROVEACTIONS}); empty by default, so every
      * recommendation waits for a human exactly as before. {@code CHAIN_DEADLINE} is rejected.
