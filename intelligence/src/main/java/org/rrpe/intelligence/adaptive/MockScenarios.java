@@ -15,12 +15,19 @@ public class MockScenarios {
     private AdaptiveConfig.DeadlineSettings deadline = AdaptiveConfig.DeadlineSettings.defaults();
     private AdaptiveConfig.LoadSettings load = AdaptiveConfig.LoadSettings.defaults();
     private AdaptiveConfig.LeverSettings lever = AdaptiveConfig.LeverSettings.defaults();
+    private AdaptiveConfig.RateSettings rate; private AdaptiveConfig.RetrySettings retry;
+    private AdaptiveConfig.BaselineSettings baseline; private AdaptiveConfig.AutoSettings auto;
     public MockScenarios(AdaptiveConfig.Settings settings, AdaptiveConfig.Connections connections) { this.settings = settings; this.connections = connections; }
     @Autowired(required = false)
     public void configureDeadline(AdaptiveConfig.DeadlineSettings deadline, AdaptiveConfig.LoadSettings load, AdaptiveConfig.LeverSettings lever) {
         if (deadline != null) this.deadline = deadline;
         if (load != null) this.load = load;
         if (lever != null) this.lever = lever;
+    }
+    @Autowired(required = false)
+    public void configureRate(AdaptiveConfig.RateSettings rate, AdaptiveConfig.RetrySettings retry, AdaptiveConfig.BaselineSettings baseline,
+            AdaptiveConfig.AutoSettings auto) {
+        this.rate = rate; this.retry = retry; this.baseline = baseline; this.auto = auto;
     }
     private static class SimulationClock extends Clock {
         Instant now;
@@ -32,10 +39,13 @@ public class MockScenarios {
     static final List<String> SERVICE_SCENARIOS = List.of("healthy", "stressed", "overloaded", "retry-stressed", "recovery");
     /** Guide §7 worked examples (deadline v2), run with a simulated reviewer that approves every proposal. */
     static final List<String> EXAMPLE_SCENARIOS = DeadlineExamples.all().stream().map(DeadlineExamples.Example::scenario).toList();
+    /** Rate/retry v2 examples (guide §4.4) on the service model, run with a simulated reviewer that approves every proposal. */
+    static final List<String> RATE_SCENARIOS = ServiceSimulation.scenarios().stream().map(ServiceSimulation.Scenario::id).toList();
     public Map<String, Object> run(String scenario) {
         if (scenario.equals("multiple-chains")) return multipleChains();
         if (List.of("deadline-increase", "deadline-recovery").contains(scenario)) return deadlineScenario(scenario);
         if (EXAMPLE_SCENARIOS.contains(scenario)) return example(scenario);
+        if (RATE_SCENARIOS.contains(scenario)) return rateScenario(scenario);
         if (!SERVICE_SCENARIOS.contains(scenario)) throw new IllegalArgumentException("Unknown scenario");
         var response = new LinkedHashMap<>(serviceScenario(scenario));
         var chainPart = chainPartOf(scenario);
@@ -73,24 +83,62 @@ public class MockScenarios {
     private Map<String, Object> serviceScenario(String scenario) {
         var clock = new SimulationClock(Instant.now().minusSeconds(settings.baselineSamples() * settings.cycle().toSeconds() + 900));
         var workflow = new PolicyWorkflow(connections, clock); var engine = new AdaptiveEngine(settings, workflow, clock);
+        engine.configureRate(rate, retry, baseline, auto);
         String service = "mock-order-service";
-        boolean recovery = scenario.equals("recovery");
+        boolean recovery = scenario.equals("recovery"), overloaded = scenario.equals("overloaded");
         workflow.putPolicy(new Policy(service, "mock-v1", clock.now.plusSeconds(7200), recovery ? 60.0 : 120.0, 120.0, recovery ? .02 : .05, null), Source.MOCK);
         double[] latency = {80,90,100,110,120}; double[] capacity = {90,105,120,135,150};
+        // Rate v2 needs the queue signals (R1): a quiet queue while learning; the overloaded app is slow (200 ms against
+        // a 100 ms baseline) with a short queue (2 waiting), so its own time is clearly above 1.5 × P0.
         for (int i = 0; i < settings.baselineSamples(); i++) {
-            engine.service(service(service, clock.now, latency[i % 5], capacity[i % 5], recovery ? 100 : 0, recovery ? 40 : 0));
+            engine.service(service(service, clock.now, latency[i % 5], capacity[i % 5], recovery ? 100 : 0, recovery ? 40 : 0), queue(service, 20, 0));
             clock.now = clock.now.plus(settings.cycle());
         }
         clock.now = clock.now.plus(settings.window());
         var outcomes = new ArrayList<Outcome>();
         for (int cycle = 0; cycle < settings.recoveryWindows(); cycle++) {
-            outcomes.add(engine.service(service(service, clock.now, scenario.equals("overloaded") ? 150 : scenario.equals("stressed") ? 125 : 100,
-                    scenario.equals("overloaded") ? 80 : scenario.equals("stressed") ? 100 : 120,
-                    recovery || scenario.equals("retry-stressed") ? 100 : 0, recovery || scenario.equals("retry-stressed") ? 40 : 0)));
+            // retry-stressed: retries rarely succeed (10 of 100), so the budget steps down (retry v2)
+            outcomes.add(engine.service(service(service, clock.now, overloaded ? 200 : scenario.equals("stressed") ? 125 : 100,
+                    overloaded ? 80 : scenario.equals("stressed") ? 100 : 120,
+                    recovery || scenario.equals("retry-stressed") ? 100 : 0, recovery ? 40 : scenario.equals("retry-stressed") ? 10 : 0),
+                    overloaded ? queue(service, 60, 2) : queue(service, 20, 0)));
             clock.now = clock.now.plus(settings.cycle());
         }
         return Map.of("scenario", scenario, "source", "MOCK", "virtualTime", true,
                 "message", "Isolated synthetic simulation. No live baseline or Component 3 delivery is modified.", "outcomes", outcomes, "changes", workflow.list());
+    }
+    private static ServiceLoadSnapshot queue(String service, double percent, double depth) {
+        return new ServiceLoadSnapshot(service, percent, 0.0, 0.0, 0.0, null, null, null, null, List.of(), depth);
+    }
+    /** A rate/retry v2 example on the service model (guide §4.4), with a simulated reviewer; nothing is sent to Component 3. */
+    private Map<String, Object> rateScenario(String id) {
+        var s = ServiceSimulation.byId(id);
+        // The learning phase lasts long enough to learn P0 with the configured baseline-samples (5 in the demo, 30 by default).
+        var phases = new ArrayList<>(s.phases()); var learn = phases.get(0);
+        if (learn.name().startsWith("healthy (learn)") && learn.cycles() < settings.baselineSamples() + 6) {
+            phases.set(0, new ServiceSimulation.Phase(learn.name(), settings.baselineSamples() + 6, learn.demand(), learn.capacity(), learn.appMs(),
+                    learn.retryPerFailure(), learn.retrySuccess(), learn.burstDemand()));
+            s = new ServiceSimulation.Scenario(s.id(), s.title(), s.rate(), s.retryRatio(), List.copyOf(phases), s.expectation());
+        }
+        int cycles = s.phases().stream().mapToInt(ServiceSimulation.Phase::cycles).sum();
+        var clock = new VirtualClock(Instant.now().minus(settings.cycle().multipliedBy(cycles + 10L)));
+        var workflow = new PolicyWorkflow(connections, settings, clock);
+        var engine = new AdaptiveEngine(settings, workflow, clock); engine.configureRate(rate, retry, baseline, auto);
+        String service = "mock-inventory-service";
+        var r = ServiceSimulation.run(engine, workflow, clock, settings, service, Source.MOCK, s, true);
+        var evidence = new LinkedHashMap<String, Object>();
+        evidence.put("service", service); evidence.put("title", s.title()); evidence.put("expectation", s.expectation());
+        evidence.put("initialRate", s.rate()); evidence.put("finalRate", r.finalRate()); evidence.put("lowestRate", r.lowestRate());
+        evidence.put("initialRetry", s.retryRatio()); evidence.put("finalRetry", r.finalRetry()); evidence.put("shedAtEnd", r.shedAtEnd());
+        evidence.put("steps", r.steps());
+        var rs = engine.rateState(service, Source.MOCK);
+        if (rs.lastDecision != null) evidence.put("evidence", AdaptiveEngine.rateEvidence(rs, clock.now));
+        var response = new LinkedHashMap<String, Object>();
+        response.put("scenario", id); response.put("source", "MOCK"); response.put("virtualTime", true); response.put("simulatedApprovals", true);
+        response.put("message", "Isolated synthetic simulation of " + s.title() + ". A simulated reviewer approves every proposal; nothing is sent to Component 3. Expected: " + s.expectation());
+        response.put("outcomes", r.outcomes().isEmpty() ? List.of() : List.of(r.outcomes().get(r.outcomes().size() - 1)));
+        response.put("changes", workflow.list()); response.put("rateEvidence", List.of(evidence));
+        return response;
     }
 
     // ---------- deadline v2 simulations (per-request synthetic traffic) ----------

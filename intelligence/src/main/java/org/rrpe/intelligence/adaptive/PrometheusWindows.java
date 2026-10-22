@@ -50,6 +50,10 @@ public class PrometheusWindows {
         queries.put("loadOverloadRejections", "sum(increase(rpe_rejections_total" + selector.replace("}", ",reason=\"overload\"}") + range + "))");
         queries.put("loadBackpressureRejections", "sum(increase(rpe_backpressure_inbound_rejected_total" + selector + range + "))");
         queries.put("loadBreakerOpenPeers", "max(max_over_time(rpe_circuit_breaker_open_peers" + selector + range + "))");
+        // Rate v2: the most requests waiting in the leaky-bucket queue during the window (worst pod), for the queue wait
+        // Wq = depth / rate taken out of p95. The maximum, not the average: when the queue fills in bursts, p95 contains the
+        // full-queue waits, and an average depth would make the app look slow.
+        queries.put("loadQueueDepth", "max(max_over_time(rpe_backpressure_inbound_queue_depth" + selector + range + "))");
         String app = selector.replace("}", ",container!=\"rpe-sidecar\"}");
         queries.put("loadCpuUtilisation", "sum(rate(container_cpu_usage_seconds_total" + app + range + ")) / sum(kube_pod_container_resource_limits"
                 + app.replace("}", ",resource=\"cpu\"}") + ")");
@@ -68,7 +72,7 @@ public class PrometheusWindows {
         }
         return new ServiceLoadSnapshot(service, values.get("loadQueuePressurePercent"), values.get("loadOverloadRejections"),
                 values.get("loadBackpressureRejections"), values.get("loadBreakerOpenPeers"), values.get("loadCpuUtilisation"),
-                values.get("loadCpuThrottling"), values.get("loadMemoryUtilisation"), null, problems);
+                values.get("loadCpuThrottling"), values.get("loadMemoryUtilisation"), null, problems, values.get("loadQueueDepth"));
     }
     public Collection collect(String service, Instant end) {
         var values = new HashMap<String, Double>(); var problems = new ArrayList<String>();

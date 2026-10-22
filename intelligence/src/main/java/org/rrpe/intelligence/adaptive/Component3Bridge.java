@@ -51,18 +51,23 @@ public class Component3Bridge {
         try {
             confirm();
             Map<String, JsonNode> effective = effective();
-            for (var change : workflow.deliverable()) deliver(change, effective);
+            // At most one change per service policy per cycle, and none while another change of that policy is still
+            // rolling out: each new version is built from the effective spec, so two at once would undo each other.
+            var busy = new java.util.HashSet<String>();
+            for (var change : workflow.sent()) busy.add(policyService(change.proposal()));
+            for (var change : workflow.deliverable()) if (busy.add(policyService(change.proposal()))) deliver(change, effective);
             sync(effective());
         } catch (RuntimeException e) {
             LOG.log(Level.WARNING, "Component 3 bridge: " + e.getMessage());
         }
     }
 
+    /** The service whose policy a change modifies: a chain deadline is a route budget on the gateway (R-S01). */
+    private String policyService(Proposal p) { return p.action() == Action.CHAIN_DEADLINE ? connections.gatewayService() : p.target(); }
+
     private void deliver(PolicyChange change, Map<String, JsonNode> effective) {
         var p = change.proposal();
-        boolean chain = p.action() == Action.CHAIN_DEADLINE;
-        // A chain deadline is a route budget on the gateway, which creates the root context (R-S01).
-        String service = chain ? connections.gatewayService() : p.target();
+        String service = policyService(p);
         JsonNode current = effective.get(service);
         String route = current != null ? current.path("route").asString("") : "";
         ObjectNode spec = current != null ? (ObjectNode) json.readTree(current.path("spec").asString("{}")) : json.createObjectNode();
@@ -130,8 +135,12 @@ public class Component3Bridge {
             Double rate = positive(spec.path("leakyBucket").path("ratePerSec"));
             Double ratio = spec.path("retry").path("budgetRatio").isNumber() ? spec.path("retry").path("budgetRatio").asDouble() : null;
             if (ratio != null && (ratio < 0 || ratio > settings.maximumRetryRatio())) ratio = null;
+            // Rate v2 (R4): the healthy target is C4's own; a sync updates the current rate and retry ratio but keeps the
+            // existing healthy target (set from the rate only the first time).
+            Policy known = workflow.current(entry.getKey(), Source.PROMETHEUS);
+            Double healthy = known != null && known.healthyBucketTarget() != null ? known.healthyBucketTarget() : rate;
             try {
-                workflow.putPolicy(new Policy(entry.getKey(), epoch, validUntil, rate, rate, ratio, null), Source.PROMETHEUS);
+                workflow.putPolicy(new Policy(entry.getKey(), epoch, validUntil, rate, healthy, ratio, null), Source.PROMETHEUS);
             } catch (IllegalArgumentException ignored) {
                 // incomplete policy for this service; the engine keeps waiting for a usable reference
             }

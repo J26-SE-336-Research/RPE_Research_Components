@@ -45,9 +45,9 @@ public class AdaptiveCollector {
         var loads = new HashMap<String, ServiceLoadSnapshot>();
         for (String service : connections.services()) {
             var data = prometheus.collect(service, end); latest.put(service, data);
-            engine.service(data.window()); // Full service analysis can wait for retries/rejections independently.
+            var load = prometheus.collectLoad(service, end); loads.put(service, load); // load signals; never block
+            engine.service(data.window(), load); // Full service analysis can wait for retries/rejections independently.
             var guard = deadlineHealth.observe(data); guardResults.add(guard); health.put(service, guard.health());
-            loads.put(service, prometheus.collectLoad(service, end)); // deadline v2 load signals; never blocks
             if (Thread.currentThread().isInterrupted()) return;
         }
         guards = List.copyOf(guardResults);
