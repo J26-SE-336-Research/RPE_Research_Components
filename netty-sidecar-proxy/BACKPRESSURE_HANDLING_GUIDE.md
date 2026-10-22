@@ -39,7 +39,7 @@ The receiver sidecar watches its inbound waiting queue. When it gets busy, it te
 
 ### When signals are sent
 
-The default queue pressure levels are **50%, 65%, 80%, and 95%** full. When the queue crosses a new level, the receiver sends an update. When the queue drains to **30% or less**, it sends a clear signal.
+The default queue pressure levels are **70%, 80%, 90%, and 95%** full (50/65/80/95 until 22 Oct 2026). When the queue crosses a new level, the receiver sends an update. When the queue drains to **50% or less** (30% until 22 Oct 2026), it sends a clear signal.
 
 These percentages describe how full the receiver's **inbound leaky bucket waiting queue** is. The pressure levels and clear level can be configured with `BACKPRESSURE_SIGNAL_THRESHOLDS_PERCENT` and `BACKPRESSURE_SIGNAL_CLEAR_PERCENT`.
 
@@ -60,7 +60,7 @@ Each caller sidecar has an outbound concurrency limit for each tracked destinati
 
 `target concurrency = healthy limit × (100 − queue utilization percentage) / 100`
 
-The target has a minimum of 1. For example, if the healthy limit is 32 and the receiver reports 50% queue utilization, the target is 16. At 65%, the target is about 11.
+The target has a minimum of 1. For example, if the healthy limit is 32 and the receiver reports 70% queue utilization, the target is about 9. At 80%, the target is about 6.
 
 As the receiver queue becomes less full, the caller raises its active limit gradually. A clear signal does not instantly restore the old limit; successful responses increase it over time. The learned healthy limit can grow beyond the initial 32 when successful responses continue and there is actual queued demand. There is no configured maximum concurrency in the current implementation.
 
@@ -101,9 +101,9 @@ Suppose both Order and Payment call Inventory:
 
 1. Order's and Payment's sidecars send calls to Inventory and include their peer key and temporary token.
 2. Inventory's sidecar queues inbound requests and releases them toward Inventory at its configured rate.
-3. If Inventory's inbound queue crosses 50%, 65%, 80%, or 95%, its sidecar sends each recent caller sidecar a direct signal with the current percentage. It also adds pressure headers to responses while pressure is active.
+3. If Inventory's inbound queue crosses 70%, 80%, 90%, or 95%, its sidecar sends each recent caller sidecar a direct signal with the current percentage. It also adds pressure headers to responses while pressure is active.
 4. Order's sidecar uses the signal to reduce concurrency for Inventory. Payment's sidecar independently does the same. Calls to other destinations are unaffected.
-5. If Inventory's queue drains to 30% or less, its sidecar sends a clear signal. Callers recover their concurrency gradually as successful responses arrive.
+5. If Inventory's queue drains to 50% or less, its sidecar sends a clear signal. Callers recover their concurrency gradually as successful responses arrive.
 6. If Inventory keeps returning errors, each caller's circuit breaker can open for Inventory. After the open period, one probe checks whether Inventory has recovered.
 
 ## Why use all three mechanisms?

@@ -36,6 +36,17 @@ class ProxyConfigTest {
     }
 
     @Test
+    void pressureSignalsStartAt70PercentByDefault() {
+        ProxyConfig config = ProxyConfig.from(Map.of());
+        assertArrayEquals(new int[]{70, 80, 90, 95}, config.backpressureSignalThresholdsPercent(), "C2 owner, 22 Oct 2026");
+        assertEquals(50, config.backpressureSignalClearPercent(), "the clear signal at 50 % (C2 owner, 22 Oct 2026; was 30)");
+        assertArrayEquals(new int[]{50, 65, 80, 95}, ProxyConfig.from(Map.of("BACKPRESSURE_SIGNAL_THRESHOLDS_PERCENT", "50,65,80,95", "BACKPRESSURE_SIGNAL_CLEAR_PERCENT", "30"))
+                .backpressureSignalThresholdsPercent(), "the environment still overrides it (the clear level must stay below the first level)");
+        assertThrows(IllegalArgumentException.class, () -> ProxyConfig.from(Map.of("BACKPRESSURE_SIGNAL_THRESHOLDS_PERCENT", "50,65,80,95")),
+                "levels starting at 50 % need a clear level below 50 % now that the default clear is 50 %");
+    }
+
+    @Test
     void theGatewayReleasesFasterAndHoldsMoreByDefault() {
         assertEquals(100.0, ProxyConfig.from(Map.of("RPE_ROLE", "service")).inboundRequestsPerSecond(), "a service sidecar");
         assertEquals(300.0, ProxyConfig.from(Map.of("RPE_ROLE", "gateway")).inboundRequestsPerSecond(), "the gateway sidecar");

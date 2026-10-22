@@ -228,7 +228,7 @@ func (h *hub) runBackpressure(run *backpressureRun) {
 			return
 		}
 	}
-	stage(fmt.Sprintf("watching the recovery for %d s (clear signal below 30 %%, limits grow back)", c.RecoverySeconds))
+	stage(fmt.Sprintf("watching the recovery for %d s (clear signal at 50 %% or less, limits grow back)", c.RecoverySeconds))
 	select {
 	case <-ctx.Done():
 	case <-time.After(time.Duration(c.RecoverySeconds) * time.Second):

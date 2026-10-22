@@ -80,8 +80,8 @@ public record ProxyConfig(
      */
     static ProxyConfig from(Map<String, String> env) {
         boolean rpe = !env(env, "RPE_ROLE", "").isEmpty() || !env(env, "RPE_SERVICE_NAME", "").isEmpty();
-        int[] signalThresholds = signalThresholdsEnv(env, "BACKPRESSURE_SIGNAL_THRESHOLDS_PERCENT", "50,65,80,95");
-        int signalClearPercent = boundedPercentageEnv(env, "BACKPRESSURE_SIGNAL_CLEAR_PERCENT", 30);
+        int[] signalThresholds = signalThresholdsEnv(env, "BACKPRESSURE_SIGNAL_THRESHOLDS_PERCENT", "70,80,90,95"); // C2 owner, 22 Oct 2026 (was 50,65,80,95)
+        int signalClearPercent = boundedPercentageEnv(env, "BACKPRESSURE_SIGNAL_CLEAR_PERCENT", 50); // C2 owner, 22 Oct 2026 (was 30)
         if (signalClearPercent >= signalThresholds[0]) {
             throw new IllegalArgumentException("BACKPRESSURE_SIGNAL_CLEAR_PERCENT must be below the first signal threshold");
         }

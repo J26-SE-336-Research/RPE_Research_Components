@@ -70,7 +70,7 @@ Source: the user's `BACKPRESSURE_HANDLING_GUIDE.md` (netty-proxy, port 9090, `BA
   503 with `Retry-After: 1`, and an open circuit breaker fails calls fast. Only the deadline/cancellation rules above
   are signal-only.
 - **Inbound leaky bucket:** per-sidecar FIFO queue released at a steady rate (default 100 req/s and queue capacity 200; on the gateway sidecar 300 req/s and 1000 since 21 Oct 2026, by the C2 owner).
-- **Backpressure signals:** the receiver reports queue pressure at 50/65/80/95% full and a clear at 30% or less. Callers
+- **Backpressure signals:** the receiver reports queue pressure at 70/80/90/95% full (was 50/65/80/95 until 22 Oct 2026, C2 owner) and a clear at 50% or less (was 30% until 22 Oct 2026). Callers
   cut per-destination concurrency to `healthy limit x (100 - utilisation) / 100` (minimum 1) and recover gradually.
   Delivered by a direct `POST /backpressure/signal` to the caller sidecar and by response headers
   (`X-Proxy-Backpressure`, `X-Proxy-Queue-Utilization-Percent`) as a fallback.

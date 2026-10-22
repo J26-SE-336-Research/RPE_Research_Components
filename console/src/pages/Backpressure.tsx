@@ -4,8 +4,8 @@ import { Alert, Button, Empty, Field, Kpi, KV, PageHeader, Panel, Status, Tag, f
 import type { BackpressureConfig, BackpressureMode, BackpressurePeer, BackpressureRuns, Proxy } from "../types";
 
 // The proxy's signal levels (BACKPRESSURE_SIGNAL_THRESHOLDS_PERCENT / BACKPRESSURE_SIGNAL_CLEAR_PERCENT defaults).
-const LEVELS = [50, 65, 80, 95];
-const CLEAR = 30;
+const LEVELS = [70, 80, 90, 95];
+const CLEAR = 50;
 const HISTORY_S = 120;
 const COLORS = ["var(--primary)", "var(--red)", "var(--amber)", "var(--green)", "#7a5af8", "#0e9384", "#c11574", "#667085"];
 
@@ -147,7 +147,7 @@ function Experiment() {
       ) : (
         <p className="muted">
           What to watch: payment-svc's queue passes 50 %, its sidecar signals order-svc's sidecar, order-svc's limit for payment-svc drops; a full queue
-          answers 503 and repeated failures open the breaker. After the restore the queue drains, a clear signal is sent below 30 % and the limit grows back.
+          answers 503 and repeated failures open the breaker. After the restore the queue drains, a clear signal is sent at 50 % or less and the limit grows back.
         </p>
       )}
     </Panel>
