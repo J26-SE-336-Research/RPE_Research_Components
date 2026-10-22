@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"math/rand/v2"
@@ -110,6 +111,7 @@ func hasSidecar(p corev1.Pod) bool {
 // rolloutStore is the part of the PostgreSQL policy store the rollout state machine uses.
 type rolloutStore interface {
 	get(ctx context.Context, policyID string, version int) (Policy, error)
+	active(ctx context.Context) ([]Policy, error)
 	recordRollout(ctx context.Context, name string, spec RolloutSpec) error
 	updateRollout(ctx context.Context, name, state, message string, done bool) error
 	setStatus(ctx context.Context, policyID string, version int, status string) error
@@ -234,13 +236,10 @@ func (r *RolloutReconciler) start(ctx context.Context, ro *RPERollout, p Policy)
 	ro.Status.MixedBaseline = map[string]int64{}
 	ro.Status.Plan, ro.Status.Step = nil, 1
 	if p.joint() && ro.Spec.Mode != "naive" {
-		var prev *Policy
-		if v := versionOf(ro.Spec.PreviousEpoch); v > 0 {
-			if q, err := r.store.get(ctx, ro.Spec.PolicyID, v); err == nil {
-				prev = &q
-			}
-		}
-		ro.Status.Plan = planJoint(p, prev)
+		// each part is compared with what its service enforces now, also when that is another policy (the first
+		// joint version over separate policies)
+		before, _ := r.governing(ctx, ro, p)
+		ro.Status.Plan = planParts(p, before)
 	}
 	for _, t := range targets {
 		ro.Status.Pods = append(ro.Status.Pods, PodStatus{Name: t.Pod, Service: t.Service, Role: t.Role, State: "pending", Part: t.Part})
@@ -543,6 +542,7 @@ func (r *RolloutReconciler) complete(ctx context.Context, ro *RPERollout, p Poli
 			}
 		}
 	}
+	r.takeOver(ctx, ro, p)
 	for _, part := range p.projections() {
 		r.bus.setEffective(ctx, part)
 	}
@@ -551,6 +551,49 @@ func (r *RolloutReconciler) complete(ctx context.Context, ro *RPERollout, p Poli
 	r.finish(ctx, ro, true)
 	r.markPolicy(ctx, p, ro)
 	return nil
+}
+
+// governing is what each service of joint policy p enforces before this rollout (see governing in joint.go), with the
+// other policies p takes over.
+func (r *RolloutReconciler) governing(ctx context.Context, ro *RPERollout, p Policy) (map[string]json.RawMessage, []Policy) {
+	var prev *Policy
+	if v := versionOf(ro.Spec.PreviousEpoch); v > 0 {
+		if q, err := r.store.get(ctx, ro.Spec.PolicyID, v); err == nil {
+			prev = &q
+		}
+	}
+	active, _ := r.store.active(ctx)
+	return governing(p, prev, active)
+}
+
+// takeOver retires the other policies a completed joint version replaces: each was the policy of a service that is
+// now a part of p (the first joint version over separate policies). It is marked superseded, so drift repair no longer
+// expects it, and removed from its proxies, so each proxy holds one policy for its service.
+func (r *RolloutReconciler) takeOver(ctx context.Context, ro *RPERollout, p Policy) {
+	if !p.joint() || ro.Spec.Mode == "naive" {
+		return
+	}
+	_, replaced := r.governing(ctx, ro, p)
+	if len(replaced) == 0 {
+		return
+	}
+	targets, _ := r.targets(ctx, ro)
+	for _, q := range replaced {
+		if err := r.store.setStatus(ctx, q.PolicyID, q.Version, StatusSuperseded); err != nil {
+			continue
+		}
+		for _, t := range targets {
+			if _, ok := q.forService(t.Service); !ok {
+				continue
+			}
+			if err := r.side.retire(ctx, t.IP, q.Epoch); err == nil {
+				r.bus.ack(ctx, q.Epoch, t.Pod, "retired")
+				_ = r.store.recordDelivery(ctx, t.Pod, t.Service, q.Epoch, q.Version, "", "retired", "")
+			}
+		}
+		r.bus.emit(ctx, "policy-superseded", map[string]string{"policyId": q.PolicyID, "epoch": q.Epoch, "by": p.Epoch})
+		log.Printf("rollout %s: %s replaces %s (%s)", ro.Name, p.Epoch, q.Epoch, strings.Join(q.services(), ", "))
+	}
 }
 
 // settleRollout reads the proxies' mixed-policy counters and acknowledgements once more after the rollout, so

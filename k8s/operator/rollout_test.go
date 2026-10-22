@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -139,6 +140,18 @@ func (m *memStore) get(_ context.Context, id string, v int) (Policy, error) {
 		}
 	}
 	return Policy{}, errNotFound
+}
+func (m *memStore) active(context.Context) ([]Policy, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []Policy
+	for e, p := range m.policies {
+		if m.status[e] == StatusActive {
+			out = append(out, p)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Epoch < out[j].Epoch })
+	return out, nil
 }
 func (m *memStore) recordRollout(context.Context, string, RolloutSpec) error          { return nil }
 func (m *memStore) updateRollout(context.Context, string, string, string, bool) error { return nil }
