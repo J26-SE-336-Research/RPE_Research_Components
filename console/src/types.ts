@@ -123,6 +123,12 @@ export type FleetAudit = {
   driftPods: number;
 };
 
+/** One part of a rollout plan in words. Retry changes are left out: the sidecar does not enforce the retry budget yet (C2, PP2). */
+export function planStep(p: PartPlan) {
+  const changes = (p.changes ?? []).filter((c) => !c.startsWith("retry"));
+  return `${p.step}. ${p.kind} ${p.service}${changes.length ? ` (${changes.join(", ")})` : ""}`;
+}
+
 export const EVENT_LABEL: Record<string, string> = {
   "policy-approved": "Policy approved",
   "rollout-started": "Rollout started",

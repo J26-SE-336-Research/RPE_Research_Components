@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { api, useAction, useData } from "../api";
 import { Alert, Button, Empty, Field, Kpi, Panel, Status, Tag, fmtMs } from "../components/ui";
-import type { ConsistencyRun, ConsistencyState } from "../types";
+import { planStep, type ConsistencyRun, type ConsistencyState } from "../types";
 
 type Delivery = "two-phase" | "naive-services-first" | "naive-gateway-first" | "naive-random";
 const DELIVERY: Record<Delivery, { label: string; mode: string; order?: string; skewMs: number; hint: string }> = {
@@ -162,7 +162,7 @@ function RunDetail({ r }: { r: ConsistencyRun }) {
           {r.plan
             .slice()
             .sort((a, b) => a.step - b.step)
-            .map((p) => `${p.step}. ${p.kind} ${p.service}${p.changes?.length ? ` (${p.changes.join(", ")})` : ""}`)
+            .map(planStep)
             .join(" → wait for the old version to drain → ")}
         </div>
       )}
