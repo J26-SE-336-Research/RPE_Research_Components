@@ -147,7 +147,8 @@ func trailConfig(name string, gateway bool) *rpe.TrailConfig {
 	if url == "" {
 		return nil
 	}
-	reg := rpe.NewRegistryClient(url)
+	// a service the registry does not list yet registers itself (it gets the next free id)
+	reg := rpe.NewRegistryClient(url).RegisterAs(name)
 	go reg.Run(context.Background(), 30*time.Second)
 	cfg := &rpe.TrailConfig{Service: name, Registry: reg}
 	if collector := env("RPE_TRAIL_COLLECTOR_URL", ""); gateway && collector != "" {

@@ -1,26 +1,47 @@
 package main
 
 import (
+	"fmt"
+	"hash/crc32"
+	"math"
+	"regexp"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
 	rpe "github.com/J26-SE-336-Research/rpe/libs/rpe-go"
 )
 
-// registry is the service registry (R-P03): names never travel in the trail, only their 2-byte ids.
+// registry is the service registry (R-P03): names never travel in the trail, only their 2-byte ids. Ids never change
+// once given. The registry is kept in memory: the seed list (REGISTRY) always gets ids 1..n and version REGISTRY_VERSION,
+// so the demo services keep the same ids after a restart. A service added later (by registration) gets the next free id
+// and the version becomes a checksum of the whole name → id mapping. So the same mapping always has the same version, and
+// if a restart gave a later service another id, the version would differ too and trails of the two mappings are never
+// merged (a subtree of another registry version only marks the trail incomplete).
 type registry struct {
-	mu      sync.RWMutex
-	version int64
-	ids     map[string]int64
-	names   map[int64]string
+	mu          sync.RWMutex
+	seedVersion int64
+	version     int64
+	ids         map[string]int64
+	names       map[int64]string
 }
 
+// maxRegistered is the largest trail id (svcId is 0..65535; 0 means not registered).
+const maxRegistered = 65535
+
+// serviceName is a Kubernetes-style name (DNS label): lowercase letters, digits and '-', 1..63 characters.
+var serviceName = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
+
 func newRegistry(version int64, services []string) *registry {
-	r := &registry{version: version, ids: map[string]int64{}, names: map[int64]string{}}
-	for i, s := range services {
-		r.ids[s] = int64(i + 1)
-		r.names[int64(i+1)] = s
+	r := &registry{seedVersion: version, version: version, ids: map[string]int64{}, names: map[int64]string{}}
+	for _, s := range services {
+		if s = strings.TrimSpace(s); s != "" {
+			if _, dup := r.ids[s]; !dup {
+				id := int64(len(r.ids) + 1)
+				r.ids[s], r.names[id] = id, s
+			}
+		}
 	}
 	return r
 }
@@ -35,22 +56,55 @@ func (r *registry) snapshot() (int64, map[string]int64) {
 	return r.version, out
 }
 
-// add registers new services (existing ids never change) and bumps the version when anything was added.
-func (r *registry) add(services []string) (int64, map[string]int64) {
+// mappingVersion is the checksum version of a mapping: 2 .. 2^31-1, different from the seed version.
+func mappingVersion(ids map[string]int64, seed int64) int64 {
+	names := make([]string, 0, len(ids))
+	for n := range ids {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	h := crc32.NewIEEE()
+	for _, n := range names {
+		fmt.Fprintf(h, "%s=%d;", n, ids[n])
+	}
+	v := 2 + int64(h.Sum32())%(math.MaxInt32-2)
+	if v == seed {
+		v++
+	}
+	return v
+}
+
+// add registers services that are not known yet (existing ids never change) and returns the registry. Invalid names
+// are reported and not added.
+func (r *registry) add(services []string) (int64, map[string]int64, error) {
 	r.mu.Lock()
 	changed := false
+	var bad []string
 	for _, s := range services {
-		if _, ok := r.ids[s]; !ok && s != "" {
-			id := int64(len(r.ids) + 1)
-			r.ids[s], r.names[id] = id, s
-			changed = true
+		if _, ok := r.ids[s]; ok {
+			continue
 		}
+		if !serviceName.MatchString(s) {
+			bad = append(bad, s)
+			continue
+		}
+		if len(r.ids) >= maxRegistered {
+			bad = append(bad, s+" (registry full)")
+			continue
+		}
+		id := int64(len(r.ids) + 1)
+		r.ids[s], r.names[id] = id, s
+		changed = true
 	}
 	if changed {
-		r.version++
+		r.version = mappingVersion(r.ids, r.seedVersion)
 	}
 	r.mu.Unlock()
-	return r.snapshot()
+	v, ids := r.snapshot()
+	if len(bad) > 0 {
+		return v, ids, fmt.Errorf("not registered (a service name is lowercase letters, digits and '-', at most 63 characters): %s", strings.Join(bad, ", "))
+	}
+	return v, ids, nil
 }
 
 func (r *registry) name(id int64) string {

@@ -43,6 +43,9 @@ different inputs.
 
 ## Adding vectors
 
+`make test-unit` also checks that the committed vectors are exactly what the generator produces
+(`conformance-vectors-current`), so a change to the reference library that would change a vector cannot go unnoticed.
+
 Vectors are generated once from the reference implementation by `go run ./cmd/genvectors ../vectors`, reviewed and
 committed. Add a case to `cmd/genvectors/main.go`, regenerate, review the diff, and run both runners. A vector change
 is a spec change: note it in the spec's change log.

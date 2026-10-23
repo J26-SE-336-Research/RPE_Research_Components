@@ -10,7 +10,8 @@ One pod, two containers built from one image (`rpe/protocol-service:dev`, Servic
 | Method / path | Purpose |
 |---|---|
 | `GET /api/protocol/registry` | Service name → 2-byte trail id, with a version (R-P03). The demo services fetch it at start |
-| `PUT /api/protocol/registry` | `{services: [...]}` adds services (existing ids never change; the version increases) |
+| `PUT /api/protocol/registry` | `{services: [...]}` adds services (existing ids never change; the version changes) |
+| `POST /api/protocol/registry/register` | `{service}`: automatic registration. A service the registry does not list calls this on start (rpe-go `RegistryClient.RegisterAs`) and gets the next free id; a known service gets its existing id (idempotent). `AUTO_REGISTER=false` switches it off |
 | `POST /api/protocol/trails` | `{trails: [{rid, route, budgetMs, epoch, status, at, trail}]}` from the gateway (batched, R-P04) |
 | `GET /api/protocol/trails?limit=&window=&route=` | Recent requests with their trail summary (hops, bytes, late, bottleneck) |
 | `GET /api/protocol/attribution/{rid}` | Per-hop deadline breakdown of one request: start in the budget, time taken, own time, bottleneck |
@@ -18,6 +19,15 @@ One pod, two containers built from one image (`rpe/protocol-service:dev`, Servic
 | `GET /api/protocol/topology/compare?window=` | The same graph scored against the declared ground truth (precision, recall, missing edges) |
 | `POST /api/protocol/validate` | `{kind: context\|result\|hop\|trail, value, impl: go\|java\|both}` → both verdicts and whether they agree |
 | `GET /api/protocol/conformance` | Every conformance case run now by rpe-go and rpe-java (the matrix) |
+
+**Registry versions.** The seed list (`REGISTRY`) always gets ids 1..n and version `REGISTRY_VERSION`, so the demo
+services keep their ids after a restart. Once a service is added, the version is a checksum of the whole name → id
+mapping: the same mapping always has the same version, and two different mappings never share one, so trails recorded
+under different mappings are never merged (R-P03).
+
+**Ground truth.** The call graph the rebuilt topology is scored against is read every minute from the deployments of
+`DEMO_NAMESPACE` (each service's `CHILDREN` setting), with read-only access to deployments in that namespace only.
+`GROUND_TRUTH="a>b,..."` overrides it by hand. The comparison reports where the graph came from (`source`).
 
 Port 8095 is not one of the sidecars' outbound ports, so registry lookups and trail reports from the demo services
 bypass the RPE sidecars and never appear in their metrics.

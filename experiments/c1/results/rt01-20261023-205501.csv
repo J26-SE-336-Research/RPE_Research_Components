@@ -1,0 +1,6 @@
+mode,deadline_ms,chains_checked,chains_broken,rules_broken
+two-phase,1150,30,0,
+two-phase,1250,30,0,
+naive,1150,30,0,
+naive,1250,30,0,
+none,1000,30,0,

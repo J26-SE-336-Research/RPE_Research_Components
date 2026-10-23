@@ -3,6 +3,32 @@
 # answers the same validation and conformance questions with the Java library, so both are shown side by side.
 # Port 8095 is not one of the sidecars' outbound ports (80, 8080): the demo services reach it directly, so registry
 # lookups and trail reports never pass through (or show up in the metrics of) the RPE sidecars.
+# Read-only access to the demo deployments: the declared call graph (each service's CHILDREN) is the ground truth the
+# rebuilt topology is scored against, so nobody has to type it in.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: rpe-protocol
+  namespace: rpe-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: rpe-protocol-demo
+  namespace: rpe-demo
+rules:
+  - apiGroups: [apps]
+    resources: [deployments]
+    verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: rpe-protocol-demo
+  namespace: rpe-demo
+subjects: [{kind: ServiceAccount, name: rpe-protocol, namespace: rpe-system}]
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: rpe-protocol-demo}
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -17,6 +43,7 @@ spec:
     metadata:
       labels: {app: rpe-protocol}
     spec:
+      serviceAccountName: rpe-protocol
       containers:
         - name: protocol
           image: rpe/protocol-service:dev
@@ -25,10 +52,12 @@ spec:
           env:
             - {name: PORT, value: "8095"}
             - {name: JAVA_URL, value: "http://127.0.0.1:8096"}
+            # the demo services keep ids 1..8 (stable across restarts); any other service registers itself on start
             - {name: REGISTRY_VERSION, value: "1"}
             - {name: REGISTRY, value: "gateway,order-svc,inventory-svc,payment-svc,loyalty-svc,fraud-check-svc,legacy-svc,shipping-svc"}
-            # the declared call graph of the demo shop (deploy/k8s/demo), used to score the rebuilt topology
-            - {name: GROUND_TRUTH, value: "gateway>order-svc,order-svc>inventory-svc,order-svc>payment-svc,order-svc>loyalty-svc,order-svc>legacy-svc,legacy-svc>shipping-svc"}
+            - {name: AUTO_REGISTER, value: "true"}
+            # ground truth: read from the deployments of this namespace (set GROUND_TRUTH="a>b,..." to override by hand)
+            - {name: DEMO_NAMESPACE, value: rpe-demo}
             - {name: TRAIL_CAPACITY, value: "5000"}
           readinessProbe:
             httpGet: {path: /healthz, port: 8095}

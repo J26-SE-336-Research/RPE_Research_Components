@@ -35,6 +35,7 @@ func (s StaticRegistry) Lookup(name string) (int64, int64, bool) {
 // {"version": 1, "services": {"gateway": 1, ...}}).
 type RegistryClient struct {
 	url    string
+	self   string // registered automatically when the registry does not know it (RegisterAs)
 	client *http.Client
 	mu     sync.RWMutex
 	reg    StaticRegistry
@@ -42,6 +43,14 @@ type RegistryClient struct {
 
 func NewRegistryClient(url string) *RegistryClient {
 	return &RegistryClient{url: url, client: &http.Client{Timeout: 3 * time.Second}}
+}
+
+// RegisterAs makes the client register this service (POST {url}/register) when the registry does not list it, so a new
+// service joins the trail without anyone editing the registry. When registration is refused (switched off, invalid
+// name), the service simply records no trail.
+func (c *RegistryClient) RegisterAs(service string) *RegistryClient {
+	c.self = service
+	return c
 }
 
 func (c *RegistryClient) Lookup(name string) (int64, int64, bool) {
@@ -64,6 +73,34 @@ func (c *RegistryClient) Refresh(ctx context.Context) error {
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("registry: %s", resp.Status)
 	}
+	if err := c.load(resp); err != nil {
+		return err
+	}
+	if c.self == "" {
+		return nil
+	}
+	if _, _, ok := c.Lookup(c.self); ok {
+		return nil
+	}
+	b, _ := json.Marshal(map[string]string{"service": c.self})
+	reg, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimSuffix(c.url, "/")+"/register", bytes.NewReader(b))
+	if err != nil {
+		return err
+	}
+	reg.Header.Set("Content-Type", "application/json")
+	rresp, err := c.client.Do(reg)
+	if err != nil {
+		return err
+	}
+	defer rresp.Body.Close()
+	if rresp.StatusCode != http.StatusOK {
+		return fmt.Errorf("registry: registering %s: %s", c.self, rresp.Status)
+	}
+	return c.load(rresp)
+}
+
+// load reads a registry answer ({"version": n, "services": {...}}).
+func (c *RegistryClient) load(resp *http.Response) error {
 	var body struct {
 		Version  int64            `json:"version"`
 		Services map[string]int64 `json:"services"`
