@@ -56,6 +56,7 @@ assert_contains "${edges}" "order-svc>legacy-svc" "edge order-svc → legacy-svc
 assert_eq "$(echo "${BODY}" | jq -r .comparison.precision)" 100 "precision 100%: every rebuilt edge is a real edge"
 assert_ge "$(echo "${BODY}" | jq -r '.comparison.recall | floor')" 83 "recall $(echo "${BODY}" | jq -r .comparison.recall)%: only the call behind the non-RPE hop is invisible"
 assert_eq "$(echo "${BODY}" | jq -r '.comparison.missing | join(",")')" "legacy-svc → shipping-svc" "the invisible edge is the one behind legacy-svc"
+assert_contains "$(echo "${BODY}" | jq -r .comparison.source)" "deployments" "the declared call graph is read from the deployments, not typed in"
 
 # --- 4. interoperability: rpe-go and rpe-java ---------------------------------------------------------------------
 trail=$(echo "${A}" | jq -r .trail)
@@ -69,4 +70,7 @@ assert_eq "$(echo "${BODY}" | jq -r '"\(.goPassed)/\(.total)"')" "150/150" "rpe-
 assert_eq "$(echo "${BODY}" | jq -r '"\(.javaPassed)/\(.total)"')" "150/150" "rpe-java passes every conformance case, run live"
 hub GET /api/hub/protocol/registry
 assert_eq "$(echo "${BODY}" | jq -r '.services.gateway')" 1 "the service registry maps names to trail ids"
+reg_version=$(echo "${BODY}" | jq -r .version)
+client POST http://rpe-protocol.rpe-system:8095/api/protocol/registry/register '{"service":"payment-svc"}'
+assert_eq "$(echo "${BODY}" | jq -r '"\(.id) \(.version)"')" "4 ${reg_version}" "registering a known service again keeps its id and the registry version (idempotent)"
 finish

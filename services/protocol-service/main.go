@@ -19,26 +19,37 @@ import (
 )
 
 type server struct {
-	reg        *registry
-	trails     *store
-	truth      [][2]string
-	vectorsDir string
-	java       javaClient
+	reg          *registry
+	autoRegister bool
+	trails       *store
+	truth        *groundTruth
+	vectorsDir   string
+	java         javaClient
 }
 
 func main() {
 	reg := newRegistry(int64(envInt("REGISTRY_VERSION", 1)), strings.Split(env("REGISTRY",
 		"gateway,order-svc,inventory-svc,payment-svc,loyalty-svc,fraud-check-svc,legacy-svc,shipping-svc"), ","))
 	s := &server{
-		reg:        reg,
-		trails:     newStore(envInt("TRAIL_CAPACITY", 5000)),
-		truth:      parseTruth(env("GROUND_TRUTH", "gateway>order-svc,order-svc>inventory-svc,order-svc>payment-svc,order-svc>loyalty-svc,order-svc>legacy-svc,legacy-svc>shipping-svc")),
-		vectorsDir: env("VECTORS_DIR", "../../conformance-kit/vectors"),
-		java:       javaClient{url: env("JAVA_URL", "http://127.0.0.1:8096"), client: &http.Client{Timeout: 10 * time.Second}},
+		reg:          reg,
+		autoRegister: env("AUTO_REGISTER", "true") == "true",
+		trails:       newStore(envInt("TRAIL_CAPACITY", 5000)),
+		truth:        &groundTruth{},
+		vectorsDir:   env("VECTORS_DIR", "../../conformance-kit/vectors"),
+		java:         javaClient{url: env("JAVA_URL", "http://127.0.0.1:8096"), client: &http.Client{Timeout: 10 * time.Second}},
 	}
 	srv := &http.Server{Addr: ":" + env("PORT", "8095"), Handler: s.routes(), ReadHeaderTimeout: 5 * time.Second}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	// The declared call graph: set by hand (GROUND_TRUTH), or read from the demo deployments when running in a cluster.
+	switch kube := newKubeReader(); {
+	case os.Getenv("GROUND_TRUTH") != "":
+		s.truth.set(parseTruth(os.Getenv("GROUND_TRUTH")), "GROUND_TRUTH setting")
+	case kube != nil:
+		go s.truth.followDeployments(ctx, kube, env("DEMO_NAMESPACE", "rpe-demo"), time.Minute)
+	default:
+		s.truth.set(parseTruth(defaultTruth), "built-in demo shop graph (not running in a cluster)")
+	}
 	go func() {
 		<-ctx.Done()
 		sd, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -56,6 +67,7 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 	mux.HandleFunc("GET /api/protocol/registry", s.getRegistry)
 	mux.HandleFunc("PUT /api/protocol/registry", s.putRegistry)
+	mux.HandleFunc("POST /api/protocol/registry/register", s.register)
 	mux.HandleFunc("POST /api/protocol/trails", s.postTrails)
 	mux.HandleFunc("GET /api/protocol/trails", s.listTrails)
 	mux.HandleFunc("GET /api/protocol/trails/{rid}", s.attribution)
@@ -80,8 +92,34 @@ func (s *server) putRegistry(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err.Error())
 		return
 	}
-	v, ids := s.reg.add(in.Services)
+	v, ids, err := s.reg.add(in.Services)
+	if err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
 	writeJSON(w, 200, map[string]any{"version": v, "services": ids})
+}
+
+// register is the automatic registration of one service (a hop that starts and does not find its own name): it is
+// given the next free id, or its existing id when it is already registered (idempotent).
+func (s *server) register(w http.ResponseWriter, r *http.Request) {
+	if !s.autoRegister {
+		writeErr(w, 403, "automatic registration is switched off (AUTO_REGISTER=false); add the service with PUT /api/protocol/registry")
+		return
+	}
+	var in struct {
+		Service string `json:"service"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<12)).Decode(&in); err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	v, ids, err := s.reg.add([]string{in.Service})
+	if err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]any{"version": v, "id": ids[in.Service], "services": ids})
 }
 
 func (s *server) postTrails(w http.ResponseWriter, r *http.Request) {
@@ -156,7 +194,8 @@ func (s *server) topology(w http.ResponseWriter, r *http.Request) {
 func (s *server) compare(w http.ResponseWriter, r *http.Request) {
 	window := s.window(r)
 	t := rebuild(s.trails.since(time.Now().Add(-window)), s.reg, window)
-	writeJSON(w, 200, map[string]any{"topology": t, "comparison": compare(t, s.truth)})
+	edges, source := s.truth.get()
+	writeJSON(w, 200, map[string]any{"topology": t, "comparison": compare(t, edges, source)})
 }
 
 func (s *server) validate(w http.ResponseWriter, r *http.Request) {
@@ -196,6 +235,9 @@ func (s *server) validate(w http.ResponseWriter, r *http.Request) {
 func (s *server) conformance(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, conformanceMatrix(r.Context(), s.vectorsDir, s.java))
 }
+
+// defaultTruth is the demo shop's call graph, used only outside a cluster (local development and tests).
+const defaultTruth = "gateway>order-svc,order-svc>inventory-svc,order-svc>payment-svc,order-svc>loyalty-svc,order-svc>legacy-svc,legacy-svc>shipping-svc"
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")

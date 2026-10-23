@@ -258,12 +258,14 @@ type Comparison struct {
 	Precision float64  `json:"precision"`
 	Recall    float64  `json:"recall"`
 	Note      string   `json:"note"`
+	// Source says where the declared call graph comes from (the deployments, or the GROUND_TRUTH setting).
+	Source string `json:"source"`
 }
 
-func compare(t Topology, truth [][2]string) Comparison {
+func compare(t Topology, truth [][2]string, source string) Comparison {
 	key := func(a, b string) string { return a + " → " + b }
 	want := map[string]bool{}
-	c := Comparison{Truth: []string{}, Rebuilt: []string{}, Matched: []string{}, Missing: []string{}, Extra: []string{}}
+	c := Comparison{Truth: []string{}, Rebuilt: []string{}, Matched: []string{}, Missing: []string{}, Extra: []string{}, Source: source}
 	for _, e := range truth {
 		want[key(e[0], e[1])] = true
 		c.Truth = append(c.Truth, key(e[0], e[1]))

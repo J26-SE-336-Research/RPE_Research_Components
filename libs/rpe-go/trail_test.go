@@ -1,6 +1,8 @@
 package rpe
 
 import (
+	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -175,5 +177,42 @@ func TestTrailOffWithoutRegistry(t *testing.T) {
 	rec := serve(t, h, cancelledHeader(t, CancelNone, 500*time.Millisecond))
 	if rec.Header().Get(HeaderTrail) != "" {
 		t.Fatal("no trail before the registry is loaded")
+	}
+}
+
+func TestRegistryClientRegistersItself(t *testing.T) {
+	var mu sync.Mutex
+	version, ids := int64(1), map[string]int64{"gateway": 1}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		if r.Method == http.MethodPost && r.URL.Path == "/api/protocol/registry/register" {
+			var in struct{ Service string }
+			_ = json.NewDecoder(r.Body).Decode(&in)
+			if _, ok := ids[in.Service]; !ok {
+				ids[in.Service] = int64(len(ids) + 1)
+				version = 77
+			}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"version": version, "services": ids})
+	}))
+	defer srv.Close()
+	c := NewRegistryClient(srv.URL + "/api/protocol/registry").RegisterAs("search-svc")
+	if err := c.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if v, id, ok := c.Lookup("search-svc"); !ok || id != 2 || v != 77 {
+		t.Fatalf("registered: %d %d %v", v, id, ok)
+	}
+	// a known service does not register again
+	known := NewRegistryClient(srv.URL + "/api/protocol/registry").RegisterAs("gateway")
+	if err := known.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if v, id, _ := known.Lookup("gateway"); id != 1 || v != 77 {
+		t.Fatalf("known: %d %d", v, id)
+	}
+	if len(ids) != 2 {
+		t.Fatalf("no extra registration: %v", ids)
 	}
 }
