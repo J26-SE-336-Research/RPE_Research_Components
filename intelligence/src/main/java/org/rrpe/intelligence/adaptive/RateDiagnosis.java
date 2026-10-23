@@ -16,7 +16,11 @@ public final class RateDiagnosis {
      * (0–100); {@code queueDepth}: average queued requests; {@code accepted}: successful throughput (req/s); {@code shed}: overload
      * rejections per second; {@code p0Ms}: learned app-time baseline; {@code errorsHigh}: the service error rate breached its baseline.
      */
-    public record Inputs(Double rate, Double queuePercent, Double queueDepth, Double p95Ms, Double accepted, Double shed, Double p0Ms, boolean errorsHigh) {}
+    public record Inputs(Double rate, Double queuePercent, Double queueDepth, Double p95Ms, Double accepted, Double shed, Double p0Ms, boolean errorsHigh, String loadGrowth) {
+        public Inputs(Double rate, Double queuePercent, Double queueDepth, Double p95Ms, Double accepted, Double shed, Double p0Ms, boolean errorsHigh) {
+            this(rate, queuePercent, queueDepth, p95Ms, accepted, shed, p0Ms, errorsHigh, null);
+        }
+    }
     public record Result(Diagnosis diagnosis, String reason, Double queueWaitMs, Double appMs) {}
 
     /** Queue wait in ms, or null when the rate or the depth is unknown. */
@@ -32,12 +36,16 @@ public final class RateDiagnosis {
         Double wq = queueWaitMs(in.queueDepth(), in.rate()), papp = appMs(in.p95Ms(), wq);
         String missing = in.rate() == null || !(in.rate() > 0) ? "current rate" : in.queuePercent() == null ? "queue utilisation"
                 : in.queueDepth() == null ? "queue depth" : in.p95Ms() == null ? "latency" : in.accepted() == null ? "throughput"
-                : in.shed() == null ? "rejections" : in.p0Ms() == null ? "app-time baseline P0 (learning)" : null;
+                : in.shed() == null ? "rejections" : in.p0Ms() == null && in.loadGrowth() == null ? "app-time baseline P0 (learning)" : null;
         if (missing != null) return new Result(Diagnosis.UNKNOWN, "missing " + missing, wq, papp);
-        boolean appSlow = papp > cfg.appTolerance() * in.p0Ms();
-        if (appSlow || in.errorsHigh()) {
-            return new Result(Diagnosis.APP_OVERLOADED, (appSlow ? String.format(java.util.Locale.ROOT, "app time %.0f ms > %.1f × P0 %.0f ms", papp, cfg.appTolerance(), in.p0Ms()) : "")
-                    + (appSlow && in.errorsHigh() ? " and " : "") + (in.errorsHigh() ? "service errors above baseline" : ""), wq, papp);
+        // "App time grows with load" (rate learning fix B2) shows a saturating app even without a trustworthy P0.
+        boolean appSlow = in.p0Ms() != null && papp > cfg.appTolerance() * in.p0Ms(), grows = in.loadGrowth() != null;
+        if (appSlow || grows || in.errorsHigh()) {
+            var reasons = new java.util.ArrayList<String>();
+            if (appSlow) reasons.add(String.format(java.util.Locale.ROOT, "app time %.0f ms > %.1f × P0 %.0f ms", papp, cfg.appTolerance(), in.p0Ms()));
+            if (grows) reasons.add(in.loadGrowth());
+            if (in.errorsHigh()) reasons.add("service errors above baseline");
+            return new Result(Diagnosis.APP_OVERLOADED, String.join(" and ", reasons), wq, papp);
         }
         if (in.queuePercent() >= cfg.queueHighPercent() || in.shed() > 0) {
             return new Result(Diagnosis.RATE_TOO_LOW, String.format(java.util.Locale.ROOT, "queue %.0f%% full, %.1f req/s shed, app time normal (%.0f ms, P0 %.0f ms)",
@@ -58,9 +66,9 @@ public final class RateDiagnosis {
     }
     /** RATE_TOO_LOW: target = min(ceiling, max(R + a, D × (1 + h))), one step at most R × (1 + max-raise). */
     public static double raise(double rate, double demand, double goodRate, double ceiling, AdaptiveConfig.RateSettings cfg) {
-        double a = cfg.stepFraction() * goodRate;
+        double a = cfg.stepFraction() * goodRate, limit = Math.min(ceiling, rate * (1 + cfg.maxRaise()));
         double target = Math.min(ceiling, Math.max(rate + a, demand * (1 + cfg.headroom())));
-        return round(Math.max(rate, Math.min(target, rate * (1 + cfg.maxRaise()))));
+        return Math.max(rate, roundAtMost(Math.min(target, rate * (1 + cfg.maxRaise())), limit));
     }
     /** APP_OVERLOADED: max(floor, cut-factor × min(R, accepted)). */
     public static double cut(double rate, double accepted, double floor, AdaptiveConfig.RateSettings cfg) {
@@ -68,7 +76,8 @@ public final class RateDiagnosis {
     }
     /** HEALTHY target: clamp(max demand of the last windows × (1 + h), floor, ceiling). */
     public static double healthyTarget(double maxDemand, double floor, double ceiling, AdaptiveConfig.RateSettings cfg) {
-        return round(Math.max(floor, Math.min(ceiling, maxDemand * (1 + cfg.headroom()))));
+        double v = Math.max(floor, Math.min(ceiling, maxDemand * (1 + cfg.headroom())));
+        return v <= ceiling ? roundAtMost(v, ceiling) : round(v);
     }
     /** HEALTHY step: up by at most a toward the target; down only when relaxing is due, by at most relax-step and not below the target. */
     public static double healthyStep(double rate, double target, double goodRate, boolean relax, AdaptiveConfig.RateSettings cfg) {
@@ -77,4 +86,12 @@ public final class RateDiagnosis {
         return rate;
     }
     static double round(double v) { return Math.round(v * 10) / 10.0; }
+    /**
+     * Rounded to 0.1 req/s but never above {@code limit} (the ceiling or the +max-raise step): rounding to the nearest value
+     * could land just above it (ceiling 56.16 → 56.2), and the automatic-approval guard would then hold the raise forever.
+     */
+    static double roundAtMost(double v, double limit) {
+        double r = round(v);
+        return r > limit + 1e-9 ? Math.floor(limit * 10 + 1e-6) / 10 : r;
+    }
 }

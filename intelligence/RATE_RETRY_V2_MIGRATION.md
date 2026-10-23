@@ -219,3 +219,87 @@ Approved as proposed below, with these notes:
   happens.
 - Tests: `DeadlineSettledLockTests` (the e2e 95 time gap with no automatic gateway change, settled chains still
   automatic, a budget change by anyone, missing data, INCONCLUSIVE verification) and `BridgeOneChangePerServiceTests`.
+
+## 9. Rates never wait for a person (owner decision, 22 Oct 2026)
+
+Replaces the 21 Oct rule "PENDING_APPROVAL when automatic approval is not possible" in **automatic mode** (the automatic list
+is not empty; the demo cluster). With the list empty (code default, unit tests, reviewer-mode simulations, practice cards)
+everything works as before.
+
+| # | Problem (live review) | Fix |
+|---|---|---|
+| 1, 3 | No rate recommendation without a C3 policy rate (fresh system, the gateway's `c4-gateway` with only routes) | `loadRatePerSecond` = `rpe_backpressure_inbound_rate_per_second` (sidecar) → `PolicyWorkflow.observeConfiguredRate`: reference `prometheus-config:rate:<r>` without a C3 policy, rate filled in for a C3 policy without one; a C3 rate wins; kept alive (not superseded) while a change is rolling out. The bridge already creates `c4-<service>` |
+| 2, 7, 8 | A rate/retry change the guard refuses became a card for a person | **held**: no card; "held: <change> (<reason>), trying again" is the first evidence line (Health view) and in `rateEvidence.held`; tried again every cycle; an older pending card for it is withdrawn. An undo always goes through (before the lock, the pause and the list). `RETRY_INCREASE` added to the demo list |
+| 4 | Lowering a too-generous rate always went to a person, and could never start | new kind `BUCKET_RELAX` (in the demo list): above 2 × the demand target (max demand × 1.25, at least min-absolute) for `rate.generous-wait` (renamed from relax-after; 30m, demo 2m), then steps of at most −10% down to that target, checked and undone like any automatic change. The demand target is used because the floor (0.5 × good rate, the good rate being the current rate) kept a generous rate above half of itself, so the old relax rule could never fire |
+| 5 | During the lock the full cut went to a person | automatic mode: a cut is always a step of at most −20%, also while held |
+| 6 | A pending rate card made a waiting deadline card go stale | a held rate is not a card, so deadline v2 never sees a pending rate (`PENDING_RATE_PROPOSAL`) and keeps its card fresh |
+| 9 | A failed delivery froze the service for up to 5 minutes | C4 keeps deciding; the same value keeps the approved change (the bridge retries every 30 s); after 5 failed attempts it is replaced by a fresh change |
+
+**Rounding fix:** the −20% cut step and the −10% lowering step are rounded **up** to 0.1 req/s. Rounding to the nearest
+value could make a step slightly larger than its limit (291.6 × 0.9 = 262.44 → 262.4), so the guard refused it forever.
+
+**Tests changed** (marked `rates never wait for a person (owner rule, 22 Oct)`): `AutoApprovalTests`
+`aPendingDeadlineChange…LocksAutomaticRateChanges` and `aRaiseThatSlowsTheApp…Pause`; `DeadlineSettledLockTests`
+`theE2e95TimeGap…`, `aDeadlineChangeByAnyone…` (reason read from the held change; the `Live` helper collects held lines),
+`missingQueueData…`; `PracticeIsolationTests.practiceCardsNeverChangeLiveDecisions` (held changes are now part of the
+compared live decisions). `AutoApprovalTests.anEmptyAllowList…` and `PolicyWorkflowTests` are unchanged.
+**New tests:** `RateStartingReferenceTests`, `RateHoldTests`, `AutoDeliveryBridgeTests`.
+
+**Timing for a live demo:** each automatic change is checked on 2 disjoint windows (window 1 min) and then waits for the
+cooldown (1 min), so one change takes about 3 minutes in the demo cluster; lowering a rate that is 2.5 × too generous takes
+about 4–5 steps.
+
+## 10. Rate learning fix: a rate that is wrong from the start (owner decision, 22 Oct 2026)
+
+From `c4-leaky-bucket-rate-learning-fix.md` (fixes A–C; fix D, the sidecar's rate as the reference, is section 9 #1).
+Approval is unchanged: rate and retry changes are `c4-auto` or held, deadline and joint cards wait for a person.
+
+| Fix | Problem | Change |
+|---|---|---|
+| A | Rate too low from day one: the queue is never calm, P0 is never learned, UNKNOWN for hours | `baseline.allow-shed-windows` defaults to **true** (full or shedding queue, normal errors: the bucket limited the app). While the queue is full or shedding, a **provisional P0** (25th percentile) after `baseline.provisional-windows` (5, demo 3) windows; the lowest-app fallback also after those windows. Evidence: "P0 … ms provisional: …" |
+| B1 | Rate too high from day one: the queue is calm, the overloaded app time is learned as P0 | each learning window keeps its app time **and its load** (`successfulThroughput`, the last `baseline.load-windows`, 60, demo 40). When the load clearly varies (busiest quarter ≥ `baseline.load-spread` 2.0 × the quietest quarter), P0 = median app time of the **quietest quarter** (`quiet-share` 0.25, at least `min-quiet-windows` 3; unknown until then). Evidence: "P0 … ms from the N quietest of M windows" |
+| B2 | Traffic that never gets quiet | over the last `rate.load-growth-windows` (6) learning windows, the busiest third is more than `rate.load-growth-factor` (1.5) × slower than the quietest third with at least `rate.load-growth-min-load-ratio` (1.25) × its load, and this window is in that slow, busy range: **APP_OVERLOADED** "app time grows with load", also without a P0 |
+| C | After a cut the ceiling came from the configured rate, so the rate went up and down | a cut remembers `min(rate, accepted)`; `rate.broke-at-memory` **6 h** (was 30 min; demo 10 min). When it expires, RATE_TOO_LOW raises are **+10% probes** (`step-fraction`) until the service has been HEALTHY for `recovery-windows` cycles. Evidence: "probing: the remembered limit expired …" |
+
+**Further changes found by the new tests (deviations, all inside C4):**
+- A window in which the app is APP_OVERLOADED never teaches P0 (it is still kept with its load for B). Otherwise a slow
+  app's time became "normal" within a few windows: with allow-shed-windows on, the full-queue windows after a cut; in
+  test 5, the calm windows of a rate that is too high.
+- The provisional P0 is used only while the queue is full or shedding. Calm windows wait for the full baseline (nothing is
+  lost by waiting there); without this, every calm learning phase ended one window earlier and four scenario tests shifted.
+- A cut that has not bitten yet (nothing shed, fewer requests arrive than the new rate lets through: an automatic −20%
+  step from 200 while 150 arrive) is neither undone by its check nor stopped by the anti-ratchet; the next step follows.
+  Evidence: "the cut has not bitten yet".
+- The good rate after persistent HEALTHY is `min(rate, max demand × 1.25)`: a rate far above the demand only shows that
+  the demand is fine. Otherwise a rate that was too high from the start set the floor (0.5 × good rate) above the app's
+  capacity (200 → floor 100 while the app manages 80). In the cluster `rate-bursts` now ends at 168.4 (was 169.5).
+- The B2 load ratio is 1.25, not the planned 1.5: the throughput of a saturated app stops rising at its capacity, so a
+  1.5 ratio held for one window only. B1's spread stays 2.0 (1.5 changed the calibrated `correctedMad` example).
+
+**Tests changed (intended fix C behaviour, owner decisions 22/23 Oct; marked in the test):**
+- `C4ScenarioTests.rateScenariosInAutomaticMode`: after the cuts 100 → 80 → 64 → 51.2 one raise stops at 56.1 =
+  0.9 × the 62.4 req/s the app managed, under its capacity 60 (was 57.6 = 0.9 × the configured 64). A first version of
+  this test (22 Oct) expected no raise at all; that was the rounding bug below, not the ceiling.
+- `AutoApprovalTests.aRealOverloadInAutomaticMode…`: runs with a 30 min memory (the 6 h default keeps the rate under the
+  remembered limit for the whole run) and checks that the first raise after the memory expired is a +10% probe.
+  `AutoApprovalTests.run` got an optional rate-settings argument.
+
+**New tests:** `RateLearningTests` (document §6, tests 1–5, automatic mode): too low from day one (provisional P0 after
+≤ 5 windows, 30 → 45 → … → about 75); too high with quiet and busy periods (P0 ≈ 120 ms from the quiet windows,
+APP_OVERLOADED only in the busy ones, cuts from the accepted ≈ 80 req/s); app time growing with load (APP_OVERLOADED
+"app time grows with load" before any P0); a flat app is never overloaded; after the cut from 200 the raises stop at
+0.9 × 80 ≈ 72 and the rate settles at about the capacity with no up-and-down over 20 windows. Test 6 is
+`RateStartingReferenceTests`.
+
+**Rounding fix (23 Oct):** a raise (and the healthy target) is rounded to 0.1 req/s but never above its limit, the
+ceiling or the +50% step (`RateDiagnosis.roundAtMost`). Rounded to the nearest value it could land just above it
+(ceiling 56.16 → 56.2), and the automatic-approval guard then held the raise forever ("held: … above the ceiling
+56.160000000000004"). Same problem as the cut and lowering steps (section 9), on the raise side. Test:
+`RateDiagnosisTests.aRaiseNeverRoundsAboveTheCeilingOrTheStepLimit`.
+
+**Scenario values (demo guide §4):** `rate-real-overload` reviewer settles at 54; automatic: cuts to 51.2, then one
+raise just under 0.9 × what the app managed (56.1 defaults, 55 cluster); after the recovery it rises only in +10%
+probes (cluster, 10-min memory, up to 80.6) or not at all within the run (defaults, 6 h).
+
+**Viva:** `viva-live.sh toohigh` / `toohigh-stop` (and `.ps1`): rate 200 through the hub, demo-app fault `cpuBurnMs`, a
+temporary load pod with busy and quiet periods; `toohigh-stop` and `reset` undo it. Not yet tried on the cluster.

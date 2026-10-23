@@ -73,6 +73,45 @@ public class PolicyWorkflow {
         putPolicy(new Policy(target, version, observedAt.plus(settings.cycle().multipliedBy(2)).plus(evidenceDelay), null, null, null, deadline), Source.TEMPO);
         return true;
     }
+    /**
+     * The sidecar's configured inbound rate ({@code rpe_backpressure_inbound_rate_per_second}) as the rate reference, like
+     * {@link #observeConfiguredDeadline} for the deadline: with no Component 3 policy the service gets a short-lived reference
+     * {@code prometheus-config:rate:<r>}; a Component 3 policy without a rate gets the rate filled in (same version); a Component 3
+     * rate always wins. While a change of the service is approved and not yet applied the reference is only kept alive, so the
+     * rollout itself (which changes the sidecar's rate) never supersedes that change.
+     */
+    public synchronized boolean observeConfiguredRate(String service, double rate, Instant observedAt) {
+        if (!Double.isFinite(rate) || rate <= 0 || observedAt == null || observedAt.isAfter(clock.instant())
+                || java.time.Duration.between(observedAt, clock.instant()).compareTo(settings.cycle().multipliedBy(2).plus(evidenceDelay)) > 0) return false;
+        Instant until = observedAt.plus(settings.cycle().multipliedBy(2)).plus(evidenceDelay);
+        Policy existing = current(service, Source.PROMETHEUS);
+        if (existing != null && !existing.version().startsWith("prometheus-config:")) {
+            if (existing.bucketRate() != null) return false; // a Component 3 rate wins
+            putPolicy(new Policy(service, existing.version(), existing.validUntil(), rate,
+                    existing.healthyBucketTarget() != null ? existing.healthyBucketTarget() : rate, existing.retryRatio(), existing.deadlineMs()), Source.PROMETHEUS);
+            return true;
+        }
+        boolean inFlight = history.values().stream().anyMatch(c -> c.proposal().target().equals(service) && c.proposal().source() != Source.MOCK
+                && c.proposal().action() != Action.CHAIN_DEADLINE && c.decision() == Decision.APPROVED && active(c));
+        if (existing != null && inFlight) {
+            putPolicy(new Policy(service, existing.version(), until, existing.bucketRate(), existing.healthyBucketTarget(), existing.retryRatio(), null), Source.PROMETHEUS);
+            return true;
+        }
+        String version = "prometheus-config:rate:" + (rate == Math.rint(rate) ? String.valueOf((long) rate) : String.valueOf(rate));
+        Double healthy = existing != null && existing.healthyBucketTarget() != null ? existing.healthyBucketTarget() : rate;
+        putPolicy(new Policy(service, version, until, rate, healthy, existing == null ? null : existing.retryRatio(), null), Source.PROMETHEUS);
+        return true;
+    }
+    /** Withdraws only the cards of {@code target} and {@code action} that still wait for a person (not joint parts, not approved changes). */
+    public synchronized void withdrawPending(String target, Action action, Source source, String reason) {
+        for (var item : new ArrayList<>(history.values())) {
+            if (item.proposal().target().equals(target) && item.proposal().action() == action && item.decision() == Decision.PENDING_APPROVAL
+                    && !jointOf.containsKey(item.proposal().id()) && key(target, item.proposal().source()).equals(key(target, source)) && active(item)) {
+                replace(item, item.decision(), item.reviewer(), item.decidedAt(), Delivery.SUPERSEDED, reason, item.attempts(), item.lastAttempt(), null);
+            }
+        }
+        cascadeJoints();
+    }
     public synchronized Instant lastApplied(String target, Action action, Source source) {
         return history.values().stream().filter(item -> item.proposal().target().equals(target) && item.proposal().action() == action
                 && key(target, item.proposal().source()).equals(key(target, source)) && item.delivery() == Delivery.APPLIED)

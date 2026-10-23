@@ -54,6 +54,9 @@ public class PrometheusWindows {
         // Wq = depth / rate taken out of p95. The maximum, not the average: when the queue fills in bursts, p95 contains the
         // full-queue waits, and an average depth would make the app look slow.
         queries.put("loadQueueDepth", "max(max_over_time(rpe_backpressure_inbound_queue_depth" + selector + range + "))");
+        // Rate starting reference (owner decision 22 Oct): the inbound rate the sidecar enforces now, the starting reference for rate v2
+        // when Component 3 has no policy rate for the service (as the configured deadline is for deadline v2).
+        queries.put("loadRatePerSecond", "max(rpe_backpressure_inbound_rate_per_second" + selector + ")");
         String app = selector.replace("}", ",container!=\"rpe-sidecar\"}");
         queries.put("loadCpuUtilisation", "sum(rate(container_cpu_usage_seconds_total" + app + range + ")) / sum(kube_pod_container_resource_limits"
                 + app.replace("}", ",resource=\"cpu\"}") + ")");
@@ -72,7 +75,7 @@ public class PrometheusWindows {
         }
         return new ServiceLoadSnapshot(service, values.get("loadQueuePressurePercent"), values.get("loadOverloadRejections"),
                 values.get("loadBackpressureRejections"), values.get("loadBreakerOpenPeers"), values.get("loadCpuUtilisation"),
-                values.get("loadCpuThrottling"), values.get("loadMemoryUtilisation"), null, problems, values.get("loadQueueDepth"));
+                values.get("loadCpuThrottling"), values.get("loadMemoryUtilisation"), null, problems, values.get("loadQueueDepth"), values.get("loadRatePerSecond"));
     }
     public Collection collect(String service, Instant end) {
         var values = new HashMap<String, Double>(); var problems = new ArrayList<String>();
