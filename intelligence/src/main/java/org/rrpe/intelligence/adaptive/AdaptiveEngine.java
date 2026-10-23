@@ -563,6 +563,17 @@ public class AdaptiveEngine {
                     }
                 }
                 if (rs.antiRatchetHold) { evidence.add("Rate v2: holding after an anti-ratchet undo (the rate was not the problem)"); break; }
+                // A cut only helps when it holds traffic back. When the service gets fewer requests than even the full cut
+                // would let through (nothing shed), it is slow for another reason (a slow dependency, a busy machine), so the
+                // rate is not lowered; otherwise not-yet-binding steps would slide down to the floor.
+                double counted = window.originalRequests() == null || !Double.isFinite(window.originalRequests()) ? 0 : window.originalRequests() / seconds;
+                double arrivals = Math.max(counted, accepted + (shed == null ? 0 : shed)); // requests per second that reach the service
+                double fullCut = RateDiagnosis.cut(current, accepted, floor, rate);
+                if ((shed == null || shed == 0) && fullCut >= arrivals) {
+                    evidence.add(String.format(Locale.ROOT, "Rate v2: the app is slow, but it gets %.1f req/s, less than even the cut to %s would let through: the rate is not the cause, no change",
+                            arrivals, fmt(fullCut)));
+                    break;
+                }
                 double cut = Math.max(RateDiagnosis.cut(current, accepted, floor, rate), RateDiagnosis.round(current * (1 - settings.maximumRateChange())));
                 // In automatic mode a cut always goes in checked steps of at most −20% (the guard's step limit), also while it is
                 // held; a reviewer (automatic approval off) gets the full cut.

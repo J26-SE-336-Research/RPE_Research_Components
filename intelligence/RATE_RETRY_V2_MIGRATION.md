@@ -291,6 +291,12 @@ APP_OVERLOADED only in the busy ones, cuts from the accepted ≈ 80 req/s); app 
 0.9 × 80 ≈ 72 and the rate settles at about the capacity with no up-and-down over 20 windows. Test 6 is
 `RateStartingReferenceTests`.
 
+**No cut when the rate is not the cause (23 Oct, seen live):** a busy machine made every service slow at only ~3 req/s;
+because a cut that has not bitten yet is not undone, automatic cuts slid from 100 down to the minimum 5 req/s. Now
+APP_OVERLOADED cuts only when the full cut would hold traffic back (nothing shed and the full cut ≥ the requests that
+reach the service, max(counted, accepted + shed) per second → no change, evidence "the rate is not the cause").
+Test: `RateLearningTests.aSlowServiceWithLittleTrafficKeepsItsRate`. No scenario value changed.
+
 **Rounding fix (23 Oct):** a raise (and the healthy target) is rounded to 0.1 req/s but never above its limit, the
 ceiling or the +50% step (`RateDiagnosis.roundAtMost`). Rounded to the nearest value it could land just above it
 (ceiling 56.16 → 56.2), and the automatic-approval guard then held the raise forever ("held: … above the ceiling

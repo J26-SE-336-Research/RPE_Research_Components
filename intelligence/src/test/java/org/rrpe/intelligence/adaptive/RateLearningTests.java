@@ -30,6 +30,10 @@ class RateLearningTests {
      * completes min(admitted, capacity) at {@code appMs(admitted)} (±4% jitter). Approved changes apply on the next cycle.
      */
     static Run run(double rate, int cycles, IntToDoubleFunction demandAt, DoubleUnaryOperator appMs, double capacity) {
+        return run(rate, cycles, demandAt, (cycle, admitted) -> appMs.applyAsDouble(admitted), capacity);
+    }
+    /** As above, with an app time that may also change over time ({@code appMs(cycle, admitted)}). */
+    static Run run(double rate, int cycles, IntToDoubleFunction demandAt, BiFunction<Integer, Double, Double> appMs, double capacity) {
         var settings = DeadlineExamplesTests.settings();
         var clock = new ChainSimulation.VirtualClock(Instant.parse("2026-10-20T00:00:00Z"));
         var workflow = new PolicyWorkflow(AdaptiveEngineTests.connections(""), settings, clock);
@@ -50,7 +54,7 @@ class RateLearningTests {
             toApply.clear();
             double jitter = 1 + .02 * ((cycle % 5) - 2), demand = demandAt.applyAsDouble(cycle);
             double admitted = Math.min(demand, rate), shed = Math.max(0, demand - rate), accepted = Math.min(admitted, capacity) * jitter;
-            double app = appMs.applyAsDouble(admitted) * jitter, depth = shed > 0 ? 200 : 0, pct = shed > 0 ? 100 : Math.min(45, 40 * admitted / rate);
+            double app = appMs.apply(cycle, admitted) * jitter, depth = shed > 0 ? 200 : 0, pct = shed > 0 ? 100 : Math.min(45, 40 * admitted / rate);
             var window = new ServiceWindow(SERVICE, clock.now.minus(settings.window()), clock.now, source, true, demand * w, app + depth / rate * 1000, 0.0,
                     0.0, 0.0, shed * w, 10.0, accepted, null, null, null, null, List.of());
             var load = new ServiceLoadSnapshot(SERVICE, pct, shed * w, 0.0, 0.0, null, null, null, null, List.of(), depth);
@@ -135,5 +139,14 @@ class RateLearningTests {
         assertTrue(last20.stream().allMatch(c -> c.rate() <= 1.05 * CAPACITY && c.rate() >= .5 * CAPACITY), "settled at about the capacity 80: " + rate);
         assertTrue(last20.stream().map(Cycle::rate).distinct().count() <= 2, "no up-and-down over the last 20 windows: " + rate);
         assertTrue(rate.stream().allMatch(s -> s.reviewer().startsWith("c4-auto")), "automatic (c4-auto), never a card for a person: " + rate);
+    }
+
+    // seen live (23 Oct): a busy machine made every service slow at only ~3 req/s, and not-yet-binding cuts slid to 5 req/s
+    @Test void aSlowServiceWithLittleTrafficKeepsItsRate() {
+        // rate 100, 3 req/s arrive; the app takes 40 ms, then 300 ms from cycle 20 for a reason the rate cannot fix
+        var r = run(100, 60, c -> 3, (cycle, admitted) -> cycle < 20 ? 40.0 : 300.0, CAPACITY);
+        assertTrue(r.cycles().stream().anyMatch(c -> c.diagnosis() == RateDiagnosis.Diagnosis.APP_OVERLOADED), "the slow app is seen: " + r.cycles());
+        assertTrue(r.rate().stream().noneMatch(s -> s.to() < s.from()), "never a cut: " + r.rate());
+        assertTrue(r.cycles().stream().anyMatch(c -> c.evidence().stream().anyMatch(e -> e.contains("the rate is not the cause"))), "the evidence says why");
     }
 }
