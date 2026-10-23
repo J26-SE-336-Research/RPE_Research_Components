@@ -101,8 +101,11 @@ class C4ScenarioTests {
         var during = steps(overload, Action.LEAKY_BUCKET).stream().filter(s -> s.phase().startsWith("app capacity 60")).toList();
         assertEquals(List.of(80.0, 64.0, 51.2), during.stream().filter(s -> s.to() < s.from()).limit(3).map(ServiceSimulation.Step::to).toList(),
                 "stepped cuts of at most −20%: 100 → 80 → 64 → 51.2");
-        assertEquals(57.6, during.get(3).to(), 1e-9, "then one step up to 57.6, under the app capacity 60");
-        assertTrue(during.size() == 4 || during.get(4).cycle() - during.get(3).cycle() >= 10, "and it settles there: " + during);
+        // Intended rate learning fix C behaviour (owner decision 22 Oct, option A): a cut remembers what the app actually
+        // managed (about 57 req/s), not the configured rate, so the ceiling is about 0.9 × 57 ≈ 51.2 and the rate settles at
+        // 51.2 with no step up (before: one step up to 0.9 × 64 = 57.6). See RATE_RETRY_V2_MIGRATION.md.
+        assertTrue(during.stream().skip(3).noneMatch(s -> s.to() > s.from()), "it settles at 51.2, no step up: " + during);
+        assertEquals(51.2, during.get(during.size() - 1).to(), .7, "below 0.9 × the app capacity 60: " + during);
         // a later probe up that slowed the app is undone automatically
         assertTrue(steps(overload, Action.LEAKY_BUCKET).stream().noneMatch(s -> "c4-auto-revert".equals(s.reviewer()) && s.to() < 50));
         assertTrue((double) rate(overload).get("lowestRate") >= 50, "never below the floor 50");

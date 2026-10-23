@@ -5,6 +5,7 @@ import java.util.List;
 import java.util.Map;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.boot.context.properties.bind.ConstructorBinding;
 import org.springframework.boot.context.properties.bind.DefaultValue;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.scheduling.annotation.EnableScheduling;
@@ -115,17 +116,28 @@ public class AdaptiveConfig {
             @DefaultValue("0.10") double stepFraction, @DefaultValue("5") double minAbsolute, @DefaultValue("1000") double maxAbsolute,
             @DefaultValue("0.5") double floorFraction, @DefaultValue("30m") Duration brokeAtMemory, @DefaultValue("5m") Duration stabilisation,
             @DefaultValue("30m") Duration generousWait, @DefaultValue("0.10") double relaxStep, @DefaultValue("0.5") double maxRaise,
-            @DefaultValue("0.20") double minImprovement) {
+            @DefaultValue("0.20") double minImprovement, @DefaultValue("6") int loadGrowthWindows, @DefaultValue("1.5") double loadGrowthFactor,
+            @DefaultValue("1.25") double loadGrowthMinLoadRatio) {
+        // brokeAtMemory: what the app managed when it slowed down is kept for 6 h (learning fix C); after that raises probe in small steps.
+        // load-growth-*: "app time grows with load" (learning fix B2) over the last load-growth-windows learning windows.
+        @ConstructorBinding
         public RateSettings {
             if (!(headroom >= 0) || !(queueLowPercent > 0 && queueLowPercent < queueHighPercent && queueHighPercent <= 100) || !(appTolerance > 1)
                     || !(cutFactor > 0 && cutFactor < 1) || !(stepFraction > 0) || !(minAbsolute > 0 && maxAbsolute > minAbsolute)
                     || !(floorFraction > 0 && floorFraction < 1) || brokeAtMemory == null || stabilisation == null || generousWait == null
-                    || !(relaxStep > 0 && relaxStep < 1) || !(maxRaise > 0) || !(minImprovement > 0 && minImprovement < 1)) {
+                    || !(relaxStep > 0 && relaxStep < 1) || !(maxRaise > 0) || !(minImprovement > 0 && minImprovement < 1)
+                    || loadGrowthWindows < 3 || !(loadGrowthFactor > 1) || !(loadGrowthMinLoadRatio > 1)) {
                 throw new IllegalArgumentException("Invalid rate v2 settings");
             }
         }
+        public RateSettings(double headroom, double queueHighPercent, double queueLowPercent, double appTolerance, double cutFactor, double stepFraction,
+                double minAbsolute, double maxAbsolute, double floorFraction, Duration brokeAtMemory, Duration stabilisation, Duration generousWait,
+                double relaxStep, double maxRaise, double minImprovement) {
+            this(headroom, queueHighPercent, queueLowPercent, appTolerance, cutFactor, stepFraction, minAbsolute, maxAbsolute, floorFraction, brokeAtMemory,
+                    stabilisation, generousWait, relaxStep, maxRaise, minImprovement, 6, 1.5, 1.25);
+        }
         public static RateSettings defaults() {
-            return new RateSettings(.25, 80, 50, 1.5, .8, .10, 5, 1000, .5, Duration.ofMinutes(30), Duration.ofMinutes(5), Duration.ofMinutes(30), .10, .5, .20);
+            return new RateSettings(.25, 80, 50, 1.5, .8, .10, 5, 1000, .5, Duration.ofHours(6), Duration.ofMinutes(5), Duration.ofMinutes(30), .10, .5, .20);
         }
     }
     /**
@@ -142,10 +154,26 @@ public class AdaptiveConfig {
         }
         public static RetrySettings defaults() { return new RetrySettings(.10, .20, 30, .02); }
     }
-    /** {@code allow-shed-windows}: windows with rejections but normal errors may feed the app-time baseline P0 (guide §4.5). */
+    /**
+     * App-time baseline P0 (guide §4.5 and the rate learning fix), env {@code RRPE_ADAPTIVE_BASELINE_<NAME>}.
+     * {@code allow-shed-windows}: windows with a full or shedding queue but normal errors also teach P0 (fix A; the bucket
+     * limited the app there). {@code provisional-windows}: a provisional P0 (25th percentile) after this many windows, the
+     * median after baseline-samples. When the load (successful requests per second) clearly varies, i.e. the busiest quarter
+     * of the last {@code load-windows} learning windows carries at least {@code load-spread} × the load of the quietest
+     * quarter ({@code quiet-share}), P0 is the median app time of that quietest quarter, once it has {@code min-quiet-windows} (fix B1).
+     */
     @ConfigurationProperties("rrpe.adaptive.baseline")
-    public record BaselineSettings(@DefaultValue("false") boolean allowShedWindows) {
-        public static BaselineSettings defaults() { return new BaselineSettings(false); }
+    public record BaselineSettings(@DefaultValue("true") boolean allowShedWindows, @DefaultValue("5") int provisionalWindows,
+            @DefaultValue("0.25") double quietShare, @DefaultValue("3") int minQuietWindows, @DefaultValue("2.0") double loadSpread,
+            @DefaultValue("60") int loadWindows) {
+        @ConstructorBinding
+        public BaselineSettings {
+            if (provisionalWindows < 1 || !(quietShare > 0 && quietShare <= .5) || minQuietWindows < 1 || !(loadSpread > 1) || loadWindows < 4) {
+                throw new IllegalArgumentException("Invalid baseline settings");
+            }
+        }
+        public BaselineSettings(boolean allowShedWindows) { this(allowShedWindows, 5, .25, 3, 2.0, 60); }
+        public static BaselineSettings defaults() { return new BaselineSettings(true); }
     }
     /** Automatic approval safety (guide §6): verification windows, undo and flip limits within {@code period}, pause length. */
     @ConfigurationProperties("rrpe.adaptive.auto")

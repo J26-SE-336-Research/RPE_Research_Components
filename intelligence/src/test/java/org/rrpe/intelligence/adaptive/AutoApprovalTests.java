@@ -15,6 +15,10 @@ class AutoApprovalTests {
         long audited(String kind) { return audit.recent(500).stream().filter(e -> e.kind().equals(kind)).count(); }
     }
     static Run run(ServiceSimulation.Scenario s, Source source, List<String> allowed, java.util.function.Consumer<PolicyWorkflow> before) {
+        return run(s, source, allowed, before, null);
+    }
+    static Run run(ServiceSimulation.Scenario s, Source source, List<String> allowed, java.util.function.Consumer<PolicyWorkflow> before,
+            AdaptiveConfig.RateSettings rate) {
         var settings = DeadlineExamplesTests.settings();
         var clock = new ChainSimulation.VirtualClock(Instant.parse("2026-10-20T00:00:00Z"));
         var workflow = new PolicyWorkflow(AdaptiveEngineTests.connections(""), settings, clock);
@@ -22,6 +26,7 @@ class AutoApprovalTests {
         var audit = new AuditLog("", "", "");
         workflow.setAudit(audit); engine.setAudit(audit);
         engine.configureAutoApproval(new AdaptiveConfig.AutoApproval(allowed));
+        engine.configureRate(rate, null, null, null);
         if (before != null) { before.accept(workflow); engine.chain(lockedChain(source)); }
         return new Run(ServiceSimulation.run(engine, workflow, clock, settings, "inventory-svc", source, s, false), audit, workflow);
     }
@@ -110,8 +115,18 @@ class AutoApprovalTests {
                 .anyMatch(e -> e.startsWith("held: rate") && e.contains("paused")), "held while paused");
     }
 
+    /** The default rate settings with another broke-at memory. */
+    static AdaptiveConfig.RateSettings brokeAtMemory(java.time.Duration memory) {
+        var d = AdaptiveConfig.RateSettings.defaults();
+        return new AdaptiveConfig.RateSettings(d.headroom(), d.queueHighPercent(), d.queueLowPercent(), d.appTolerance(), d.cutFactor(), d.stepFraction(),
+                d.minAbsolute(), d.maxAbsolute(), d.floorFraction(), memory, d.stabilisation(), d.generousWait(), d.relaxStep(), d.maxRaise(), d.minImprovement());
+    }
+
     @Test void aRealOverloadInAutomaticModeIsCutInCheckedStepsAndSettlesNearTheAppCapacity() {
-        var r = run(ServiceSimulation.byId("rate-real-overload"), Source.PROMETHEUS, DEMO, null);
+        // Intended rate learning fix C behaviour (owner decision 22 Oct, option A): the default broke-at memory is 6 h, so
+        // within this run the rate would stay under the remembered limit after the app recovers. A 30 min memory shows what
+        // happens once it expires: the rate rises again, in small probing steps. See RATE_RETRY_V2_MIGRATION.md.
+        var r = run(ServiceSimulation.byId("rate-real-overload"), Source.PROMETHEUS, DEMO, null, brokeAtMemory(java.time.Duration.ofMinutes(30)));
         var overload = r.rate().stream().filter(s -> s.phase().startsWith("app capacity 60")).toList();
         var cuts = overload.stream().filter(s -> s.to() < s.from() && !"c4-auto-revert".equals(s.reviewer())).toList();
         assertTrue(cuts.size() >= 2, "the overload is cut: " + overload);
@@ -122,6 +137,9 @@ class AutoApprovalTests {
         assertTrue(settled >= 50 && settled <= 66, "settles near the app capacity 60: " + overload);
         assertEquals(0, r.audited(AuditLog.RATE_AUTO_PAUSED), "no back-and-forth, so no pause: " + r.rate());
         assertTrue(r.result().finalRate() > settled, "rises again once the app recovers: " + r.rate());
+        var probes = r.rate().stream().filter(s -> s.phase().startsWith("app recovered") && s.to() > s.from()).toList();
+        assertFalse(probes.isEmpty(), r.rate().toString());
+        assertTrue(probes.get(0).to() <= Math.round(probes.get(0).from() * 1.1 * 10) / 10.0 + 1e-9, "the first raise after the memory expired is a small +10% probe: " + probes);
         var retry = r.result().steps().stream().filter(s -> s.action() == Action.RETRY_BUDGET && s.phase().startsWith("app capacity 60")).findFirst().orElseThrow();
         assertEquals(0, retry.to(), "retry 0 while the app is overloaded");
         assertEquals("c4-auto", retry.reviewer(), "RETRY_DECREASE is allowed");

@@ -414,13 +414,13 @@ public class AdaptiveEngine {
         boolean raise = AdaptiveConfig.AutoKind.BUCKET_RAISE.name().equals(v.kind);
         // A raise is undone only when it slowed the app. Shedding that did not fall (demand grew) is no reason to lower the
         // rate again, which would shed even more; the next raise may follow (see RATE_RETRY_V2_MIGRATION.md §6).
-        boolean pass = raise ? app <= normal : app <= (1 - rate.minImprovement()) * v.appBefore || app <= normal;
+        boolean pass = raise ? app <= normal : app <= (1 - rate.minImprovement()) * v.appBefore || app <= normal || notBinding(window, shed, v.toRate);
         String detail = String.format(Locale.ROOT, "%s %s → %s: app time %.0f → %.0f ms (normal ≤ %.0f), shed %.1f → %.1f req/s",
                 raise ? "raise" : "cut", fmt(v.fromRate), fmt(v.toRate), v.appBefore, app, normal, v.shedBefore, shedAfter);
         if (pass) {
-            boolean shedFell = shedAfter < v.shedBefore || shedAfter == 0;
-            rs.lastVerification = "passed: " + detail + (raise && !shedFell ? " (shedding did not fall: demand grew)" : "");
-            evidence.add("Rate v2: automatic change checked and kept (" + detail + (raise && !shedFell ? "; shedding did not fall, a further raise may follow" : "") + ")");
+            boolean shedFell = shedAfter < v.shedBefore || shedAfter == 0, idle = !raise && notBinding(window, shed, v.toRate);
+            rs.lastVerification = "passed: " + detail + (raise && !shedFell ? " (shedding did not fall: demand grew)" : idle ? " (the cut has not bitten yet: fewer requests arrive than it lets through)" : "");
+            evidence.add("Rate v2: automatic change checked and kept (" + detail + (raise && !shedFell ? "; shedding did not fall, a further raise may follow" : idle ? "; the cut has not bitten yet, the next step may follow" : "") + ")");
             return false;
         }
         rs.lastVerification = "failed: " + detail;
@@ -435,6 +435,14 @@ public class AdaptiveEngine {
         rs.autoProposalId = undo.proposal().id(); rs.lastProposalId = undo.proposal().id();
         audit.rate(AuditLog.RATE_AUTO_REVERTED, undo, Map.of("check", detail, "inputs", measurements));
         return true;
+    }
+    /**
+     * A cut to {@code rateAfter} has not bitten yet: nothing is shed and fewer requests arrive than it lets through (a stepwise
+     * cut from a rate far above the demand). It cannot have helped, so it is neither undone nor the end of the cutting.
+     */
+    private boolean notBinding(ServiceWindow window, Double shed, double rateAfter) {
+        Double arrivals = window.originalRequests();
+        return (shed == null || shed == 0) && arrivals != null && Double.isFinite(arrivals) && arrivals / settings.window().toSeconds() < rateAfter;
     }
     /** Pauses automatic approval for the service after {@code max-reverts} undos or {@code max-flips} direction changes within {@code period}. */
     private void pauseIfUnstable(String service, Source source, double current, RateState rs, Instant now, List<String> evidence) {
@@ -494,12 +502,19 @@ public class AdaptiveEngine {
                 : window.rejections();
         Double shed = rejected == null ? null : rejected / seconds;
         double accepted = window.successfulThroughput();
-        Double p0 = rs.p0(settings.baselineSamples());
-        var result = RateDiagnosis.diagnose(new RateDiagnosis.Inputs(current, queuePct, depth, window.p95Ms(), accepted, shed, p0, errorsHigh), rate);
+        // Rate learning fix A: while the queue is full or shedding (the bucket limits the app) a provisional P0 is used after
+        // provisional-windows windows; calm windows wait for the full baseline, nothing is lost by waiting there.
+        boolean limiting = queuePct != null && queuePct >= rate.queueHighPercent() || shed != null && shed > 0;
+        Double p0 = rs.p0(settings.baselineSamples(), limiting ? Math.min(baselineSettings.provisionalWindows(), settings.baselineSamples()) : settings.baselineSamples(),
+                baselineSettings);
+        // Rate learning fix B2: does the app time (queue wait taken out) grow with the load (successful requests per second)?
+        String growth = rs.loadGrowth(RateDiagnosis.appMs(window.p95Ms(), RateDiagnosis.queueWaitMs(depth, current)), accepted,
+                rate.loadGrowthWindows(), rate.loadGrowthFactor(), rate.loadGrowthMinLoadRatio());
+        var result = RateDiagnosis.diagnose(new RateDiagnosis.Inputs(current, queuePct, depth, window.p95Ms(), accepted, shed, p0, errorsHigh, growth), rate);
         // Learn the app-time baseline after diagnosing, so this window is judged against the past only.
         boolean clean = queuePct != null && queuePct < rate.queueLowPercent() && shed != null && shed == 0;
-        rs.learnApp(result.appMs(), clean, shed != null && shed > 0, !errorsHigh, baselineSettings.allowShedWindows(),
-                queuePct != null && queuePct >= rate.queueHighPercent(), settings.baselineSamples());
+        rs.learnApp(result.appMs(), accepted, clean, shed != null && shed > 0, !errorsHigh, baselineSettings.allowShedWindows(),
+                queuePct != null && queuePct >= rate.queueHighPercent(), result.diagnosis() == RateDiagnosis.Diagnosis.APP_OVERLOADED, settings.baselineSamples(), Math.max(settings.baselineSamples(), baselineSettings.loadWindows()));
         int streak = rs.observe(result.diagnosis());
         if (result.diagnosis() != RateDiagnosis.Diagnosis.HEALTHY) { rs.relaxing = false; rs.relaxSince = null; } // lowering a generous rate only while healthy
         // Joint recalibration (flag on only): the healthy queue depth Q of this service.
@@ -520,6 +535,7 @@ public class AdaptiveEngine {
         put(inputs, "goodRate", rs.goodRate); put(inputs, "healthyRate", rs.healthyRate); put(inputs, "brokeAt", rs.brokeAt);
         inputs.put("errorsHigh", errorsHigh ? 1.0 : 0.0); inputs.put("persistentCycles", (double) streak);
         evidence.add("Rate v2: " + result.diagnosis() + " (" + result.reason() + ")");
+        if (p0 != null && rs.p0Note != null) evidence.add("Rate v2: P0 " + fmt(RateDiagnosis.round(p0)) + " ms " + rs.p0Note);
 
         Double proposed = null; String kind = null, rule = null; boolean undo = false, reachesTarget = false;
         boolean persistent = streak >= settings.persistence();
@@ -536,7 +552,8 @@ public class AdaptiveEngine {
                 var last = rs.lastCut;
                 if (last != null && Math.abs(current - last.toRate()) < 1e-9) {
                     // Anti-ratchet: a second cut only if the previous cut made the app time fall by ≥ 20% or back to normal.
-                    boolean helped = result.appMs() <= (1 - rate.minImprovement()) * last.appBefore() || result.appMs() <= rate.appTolerance() * p0;
+                    boolean helped = result.appMs() <= (1 - rate.minImprovement()) * last.appBefore() || p0 != null && result.appMs() <= rate.appTolerance() * p0
+                            || notBinding(window, shed, last.toRate()); // a cut that has not bitten yet is followed by the next step
                     if (!helped) {
                         proposed = last.fromRate(); kind = AdaptiveConfig.AutoKind.BUCKET_RAISE.name(); undo = true;
                         rule = String.format(Locale.ROOT, "Anti-ratchet: the previous cut %s → %s did not help the app (%.0f → %.0f ms); undo it and hold, the rate was not the problem",
@@ -561,16 +578,23 @@ public class AdaptiveEngine {
                 rs.antiRatchetHold = false;
                 if (!persistent) break;
                 double up = RateDiagnosis.raise(current, demand, rs.goodRate, ceiling, rate);
+                // Rate learning fix C: once the remembered limit has expired, only small probing steps until healthy again.
+                if (rs.probing) up = Math.min(up, RateDiagnosis.round(current * (1 + rate.stepFraction())));
                 if (up > current) {
                     proposed = up; kind = AdaptiveConfig.AutoKind.BUCKET_RAISE.name();
                     rule = String.format(Locale.ROOT, "RATE_TOO_LOW: the bucket is the bottleneck; raise toward max(rate + %.1f, demand %.1f × %.2f), at most +%.0f%% per step, ceiling %s",
-                            rate.stepFraction() * rs.goodRate, demand, 1 + rate.headroom(), 100 * rate.maxRaise(), fmt(ceiling));
+                            rate.stepFraction() * rs.goodRate, demand, 1 + rate.headroom(), 100 * (rs.probing ? rate.stepFraction() : rate.maxRaise()), fmt(ceiling))
+                            + (rs.probing ? "; probing: the remembered limit expired, small steps until healthy" : "");
                 }
             }
             case HEALTHY -> {
                 rs.antiRatchetHold = false;
                 if (rs.healthyStreak < settings.recoveryWindows()) break;
-                rs.goodRate = current; // a persistently healthy rate is good; the floor follows it
+                // A persistently healthy rate is good, as far as it was used: a rate far above the demand only shows that the
+                // demand plus headroom is fine (rate learning fix: a rate too high from the start must not become a floor
+                // above the app's capacity). The floor follows it.
+                rs.goodRate = Math.min(current, RateDiagnosis.healthyTarget(maxDemand, rate.minAbsolute(), rate.maxAbsolute(), rate));
+                rs.probing = false;
                 floor = RateDiagnosis.floor(rs.goodRate, rate); inputs.put("floor", floor); inputs.put("goodRate", rs.goodRate);
                 double target = RateDiagnosis.healthyTarget(maxDemand, floor, ceiling, rate);
                 // Too generous (owner decision 22 Oct): above 2 × the demand target (max demand × 1.25, at least min-absolute)
@@ -607,7 +631,8 @@ public class AdaptiveEngine {
                 if (change == null) return; // held: tried again next cycle
                 changes.add(change);
                 if (AdaptiveConfig.AutoKind.BUCKET_CUT.name().equals(fKind) && !change.proposal().id().equals(rs.lastProposalId)) {
-                    rs.rememberBrokeAt(current, now, rate.brokeAtMemory());
+                    // Rate learning fix C: remember what the app actually managed, not the configured rate.
+                    rs.rememberBrokeAt(Math.min(current, accepted), now, rate.brokeAtMemory());
                     rs.lastCut = new RateState.Cut(current, fProposed, result.appMs() == null ? Double.NaN : result.appMs());
                 }
                 rs.lastProposalId = change.proposal().id(); rs.lastKind = fKind;
