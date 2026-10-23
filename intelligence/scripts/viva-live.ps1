@@ -9,9 +9,13 @@ the demo-app fault switch (/admin/faults) and make reset-data. No code is change
   ... recover [-Service payment-svc] [-Rate 100] fault off, rate back
   ... deadline [-DeadlineMs 100]                 GET /api/orders deadline: a deadline card
   ... status                                     health, latest c4-auto changes, held changes, waiting cards
+  ... toohigh [-Service payment-svc] [-Rate 200] [-BurnMs 20] [-Parallel 8]
+                                                 rate too high from the start: fault cpuBurnMs, a load pod busy/quiet
+  ... toohigh-stop [-Service payment-svc] [-Rate 100]   undo toohigh: load pod deleted, fault off, rate back
   ... reset                                      everything back (make reset-data, needs make in Git Bash)
 #>
-param([Parameter(Position = 0)][string]$Step = "", [string]$Service = "payment-svc", [int]$Rate = 0, [int]$DeadlineMs = 100, [string]$Context = "kind-rpe")
+param([Parameter(Position = 0)][string]$Step = "", [string]$Service = "payment-svc", [int]$Rate = 0, [int]$DeadlineMs = 100, [string]$Context = "kind-rpe",
+    [int]$BurnMs = 20, [int]$Parallel = 8)
 $ErrorActionPreference = "Stop"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $C4 = "http://rpe-intelligence.rpe-system:8090/api/v2/intelligence"
@@ -87,11 +91,42 @@ switch ($Step) {
         Look "Approval queue -> a deadline card waiting for a person. Health -> rate changes on the chain are 'held: deadline not settled ..., trying again'."
     }
     "status" { Status }
+    "toohigh" {
+        $r = if ($Rate -gt 0) { $Rate } else { 200 }
+        HubLogin
+        Write-Output "== Leaky bucket of $Service to $r req/s: far above what the app can do once it burns CPU"
+        HubPost "/api/hub/policies" "{`"control`":`"rate-limit`",`"service`":`"$Service`",`"ratePerSec`":$r,`"rollout`":`"two-phase`"}"
+        Write-Output "== Fault on ${Service}: cpuBurnMs $BurnMs (each request burns CPU, so the app gets slower with more load)"
+        Fault $Service "{`"cpuBurnMs`":$BurnMs}"
+        Write-Output "== Load pod rpe-viva-load: 3 min busy ($Parallel parallel loops on GET /api/orders), 3 min quiet, repeating"
+        & kubectl --context $Context -n rpe-e2e delete pod rpe-viva-load --ignore-not-found --wait=true | Out-Null
+        $loop = 'while true; do end=$(($(date +%s) + 180)); i=0; while [ $i -lt PAR ]; do i=$((i+1)); (while [ $(date +%s) -lt $end ]; do curl -s -o /dev/null --max-time 5 http://gateway.rpe-demo:8080/api/orders; done) & done; wait; sleep 180; done'
+        $loop = $loop.Replace("PAR", "$Parallel") # no double quotes inside, so Windows PowerShell passes it as one argument
+        & kubectl --context $Context -n rpe-e2e run rpe-viva-load --image=curlimages/curl:8.11.1 --restart=Never --labels=app.kubernetes.io/part-of=rpe `
+            --command -- /bin/sh -c $loop
+        Write-Output "  Watch (refresh with: ... status), allow 10-15 minutes:"
+        Write-Output "  1. quiet periods teach P0: Health evidence 'P0 ... ms from the N quietest of M windows'"
+        Write-Output "  2. busy periods: $Service APP_OVERLOADED ('app time ... > 1.5 x P0' or 'app time grows with load'), not HEALTHY"
+        Write-Output "  3. automatic cuts by c4-auto in steps of at most -20% (Reviewed tab), never a card for a person"
+        Write-Output "  4. the rate settles below what $Service really managed: ceiling 0.9 x accepted req/s (remembered 10 min in the demo)"
+        Write-Output "  Nothing happens? Raise the burn or the loops: ... toohigh -BurnMs 40 -Parallel 12"
+        Look "Health -> $Service rate diagnosis and P0 evidence; Reviewed -> c4-auto cuts. Undo everything with: ... toohigh-stop"
+    }
+    "toohigh-stop" {
+        $r = if ($Rate -gt 0) { $Rate } else { 100 }
+        Write-Output "== Undo toohigh: load pod deleted, fault off on $Service, rate back to $r req/s"
+        & kubectl --context $Context -n rpe-e2e delete pod rpe-viva-load --ignore-not-found --wait=false
+        Fault $Service '{}'
+        HubLogin
+        HubPost "/api/hub/policies" "{`"control`":`"rate-limit`",`"service`":`"$Service`",`"ratePerSec`":$r,`"rollout`":`"two-phase`"}"
+        Look "Health -> $Service back to HEALTHY within a few minutes (C4 keeps the learned P0; make reset-data starts fresh)."
+    }
     "reset" {
         Write-Output "== Reset: faults off, then make reset-data"
+        try { & kubectl --context $Context -n rpe-e2e delete pod rpe-viva-load --ignore-not-found --wait=false } catch {}
         foreach ($svc in "gateway", "order-svc", "inventory-svc", "payment-svc", "loyalty-svc", "shipping-svc", "fraud-check-svc") { try { Fault $svc '{}' } catch {} }
         Write-Output "  Now run in Git Bash from the repository root:  make reset-data"
         Look "a fresh C4 relearns its baselines (5-7 minutes); rate recommendations work without any C3 policy."
     }
-    default { Get-Content $PSCommandPath -TotalCount 14 | Select-Object -Skip 1 }
+    default { Get-Content $PSCommandPath -TotalCount 15 | Select-Object -Skip 1 }
 }

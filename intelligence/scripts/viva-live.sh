@@ -9,6 +9,9 @@
 #   intelligence/scripts/viva-live.sh recover [svc] [r]   # fault off, rate back to r (100)
 #   intelligence/scripts/viva-live.sh deadline [ms]       # GET /api/orders deadline to ms (100): a deadline card
 #   intelligence/scripts/viva-live.sh status              # health, latest c4-auto changes, held changes, waiting cards
+#   intelligence/scripts/viva-live.sh toohigh [svc] [r] [burn] [par]  # rate too high from the start (rate learning fix): svc rate r (200),
+#                                                         #   fault cpuBurnMs burn (20), a load pod alternating busy (par loops, 8) and quiet
+#   intelligence/scripts/viva-live.sh toohigh-stop [svc] [r]  # undo toohigh: load pod deleted, fault off, rate back to r (100)
 #   intelligence/scripts/viva-live.sh reset               # everything back (make reset-data)
 # Run from Git Bash with kubectl, jq and make; MSYS_NO_PATHCONV is set here so in-pod paths are not rewritten.
 set -euo pipefail
@@ -80,12 +83,42 @@ case "${1:-}" in
     echo "  Requests are still served; they are signalled (cs=expired). C4 proposes a deadline increase after 1–3 minutes."
     look "Approval queue → a deadline card waiting for a person (Review → Approve). Health → rate changes on the chain are 'held: deadline not settled …, trying again'."
     ;;
+  toohigh)
+    svc="${2:-payment-svc}"; r="${3:-200}"; burn="${4:-20}"; par="${5:-8}"
+    hub_login
+    echo "== Leaky bucket of $svc to $r req/s: far above what the app can do once it burns CPU"
+    hub_post /api/hub/policies "{\"control\":\"rate-limit\",\"service\":\"$svc\",\"ratePerSec\":$r,\"rollout\":\"two-phase\"}"
+    echo "== Fault on $svc: cpuBurnMs $burn (each request burns CPU, so the app gets slower with more load)"
+    fault "$svc" "{\"cpuBurnMs\":$burn}"
+    echo "== Load pod rpe-viva-load: 3 min busy ($par parallel loops on GET /api/orders), 3 min quiet, repeating"
+    kubectl --context "$CTX" -n rpe-e2e delete pod rpe-viva-load --ignore-not-found --wait=true >/dev/null
+    kubectl --context "$CTX" -n rpe-e2e run rpe-viva-load --image=curlimages/curl:8.11.1 --restart=Never --labels=app.kubernetes.io/part-of=rpe \
+      --command -- /bin/sh -c "while true; do end=\$((\$(date +%s) + 180)); i=0; while [ \$i -lt $par ]; do i=\$((i+1)); \
+(while [ \$(date +%s) -lt \$end ]; do curl -s -o /dev/null --max-time 5 http://gateway.rpe-demo:8080/api/orders; done) & done; wait; sleep 180; done"
+    echo "  Watch (refresh with: $0 status), allow 10-15 minutes:"
+    echo "  1. quiet periods teach P0: Health evidence 'P0 … ms from the N quietest of M windows'"
+    echo "  2. busy periods: $svc APP_OVERLOADED ('app time … > 1.5 × P0' or 'app time grows with load'), not HEALTHY"
+    echo "  3. automatic cuts by c4-auto in steps of at most −20% (Reviewed tab), never a card for a person"
+    echo "  4. the rate settles below what $svc really managed: ceiling 0.9 × accepted req/s (remembered 10 min in the demo)"
+    echo "  Nothing happens? Raise the burn (e.g. 40) or the loops (e.g. 12): $0 toohigh $svc $r 40 12"
+    look "Health → $svc rate diagnosis and P0 evidence; Reviewed → c4-auto cuts. Undo everything with: $0 toohigh-stop"
+    ;;
+  toohigh-stop)
+    svc="${2:-payment-svc}"; r="${3:-100}"
+    echo "== Undo toohigh: load pod deleted, fault off on $svc, rate back to $r req/s"
+    kubectl --context "$CTX" -n rpe-e2e delete pod rpe-viva-load --ignore-not-found --wait=false
+    fault "$svc" '{}'
+    hub_login
+    hub_post /api/hub/policies "{\"control\":\"rate-limit\",\"service\":\"$svc\",\"ratePerSec\":$r,\"rollout\":\"two-phase\"}"
+    look "Health → $svc back to HEALTHY within a few minutes (C4 keeps the learned P0; make reset-data starts fresh)."
+    ;;
   status) status ;;
   reset)
     echo "== Reset: faults off, policies and data back to the demo start (make reset-data)"
+    kubectl --context "$CTX" -n rpe-e2e delete pod rpe-viva-load --ignore-not-found --wait=false || true
     for svc in gateway order-svc inventory-svc payment-svc loyalty-svc shipping-svc fraud-check-svc; do fault "$svc" '{}' || true; done
     (cd "$ROOT" && unset MSYS_NO_PATHCONV && make reset-data)
     look "a fresh C4 relearns its baselines (5–7 minutes); rate recommendations work without any C3 policy (the sidecar's rate is the reference)."
     ;;
-  *) sed -n '2,15p' "$0"; exit 2 ;;
+  *) sed -n '2,18p' "$0"; exit 2 ;;
 esac

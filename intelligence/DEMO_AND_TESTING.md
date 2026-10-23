@@ -77,16 +77,24 @@ scenarios use a **simulated reviewer** that approves every step; with `?mode=aut
 | `rejecting-middleware-504` | 1000 → 800 ms, then the chain is PAUSED |
 | `rate-too-low` | only raises: 100 → 109.2 → 163.8 → … → 204.8 req/s, nothing shed; `?mode=auto`: the same steps by c4-auto |
 | `rate-too-low-day-one` | raises from the start: 100 → 150 → … → 204.8; `?mode=auto`: by c4-auto |
-| `rate-real-overload` | reviewer: cut to 55, retry 0.05 → 0, probes up and down, settles at 54.2, never below the floor 50, rises to 117 after recovery. `?mode=auto`: a healthy raise 100 → 110 is undone (c4-auto-revert), then stepped cuts **100 → 80 → 64 → 51.2**, settles at **57.6**, retry → 0 by c4-auto, never below 50, rises to 117 after recovery |
+| `rate-real-overload` | reviewer: cut to 55, retry 0.05 → 0, settles at **54** (under 0.9 × what the app managed, ≈ 60); when the 10-min memory expires one +10% probe 55 → 60.5 is cut back to the floor 50, then 54 again; never below 50; after recovery small +10% probes 54 → 59.4 → 65.3 → 71.8 (still rising at the end). `?mode=auto`: a healthy raise 100 → 110 is undone (c4-auto-revert), then stepped cuts **100 → 80 → 64 → 51.2**, settles at **51.2** (no probe up), retry → 0 by c4-auto, never below 50; after recovery +10% probes 51.2 → 56.3 → 61.9 → 68.1 → 74.9 |
 | `rate-recovery` | raises back: 60 → 66 → 99 → … → 119.3, never a cut (both modes) |
 | `rate-short-burst` | no change (both modes) |
-| `rate-bursts` | 120 → 157.5 → 169.5, never a cut (both modes) |
+| `rate-bursts` | 120 → 157.5 → 168.4, never a cut (both modes; 169.5 with the defaults) |
 | `retry-storm-rate` | raises 100 → … → 177.5, the retry budget is held at 0.05 (both modes) |
 | `joint-recovery` | one joint card: payment 50 → 100 req/s **and** deadline 875 → 780 ms, waiting for a person (both modes) |
 | `joint-capacity-drop` | one joint card: payment 100 → 60 req/s **and** deadline 780 → 850 ms, waiting for a person (both modes) |
 
-With the code defaults `rate-real-overload` settles at 54.7 (reviewer) and the automatic steps are the same
-(100 → 80 → 64 → 51.2 → 57.6); `rate-too-low` starts 100 → 150 instead of 100 → 109.2 (no healthy raise while learning).
+With the code defaults `rate-real-overload` settles at 54 (reviewer) and the automatic steps are the same
+(100 → 80 → 64 → 51.2, settles at 51.2); the rate stays there after the recovery, because the default memory of what the
+app managed is 6 h (rate learning fix C; the cluster uses 10 min); `rate-too-low` starts 100 → 150 instead of
+100 → 109.2 (no healthy raise while learning).
+
+Rate learning fix (rate wrong from the start, `RateLearningTests`; there is no Simulation-tab scenario for it, the live
+viva step is `viva-live.sh toohigh`): a rate **too low** from day one is raised after a provisional P0 (25th percentile)
+once the queue was full for 3 windows (5 in code); a rate **too high** from day one is cut when the app is slow in the busy
+windows compared with the quiet ones (evidence "P0 … ms from the N quietest of M windows" or "app time grows with load");
+after a cut the rate stays under 0.9 × what the app actually managed.
 
 Priority (joint): when a normal recommendation is needed (overload, RATE_TOO_LOW, a retry change, a deadline case), no joint
 card appears and a waiting one is withdrawn (`C4ScenarioTests`, `JointEngineTests`).
@@ -100,11 +108,11 @@ Example output (cluster settings, `demo-c4.sh --only rate-real-overload`, `?mode
     rate 100 -> 80 req/s   approved by c4-auto   [app capacity 60, demand 90]   APP_OVERLOADED: cut max(floor 50, ...); automatic mode: a checked step...
     rate 80 -> 64 req/s   approved by c4-auto   [app capacity 60, demand 90]   APP_OVERLOADED: cut ...
     rate 64 -> 51.2 req/s   approved by c4-auto   [app capacity 60, demand 90]   APP_OVERLOADED: cut ...
-    rate 51.2 -> 57.6 req/s   approved by c4-auto   [app capacity 60, demand 90]   RATE_TOO_LOW: the bucket is the bottleneck; ...
-    rate 57.6 -> 86.4 req/s   approved by c4-auto   [app recovered (capacity 200)]   RATE_TOO_LOW: ...
-    rate 86.4 -> 112.5 req/s   approved by c4-auto   [app recovered (capacity 200)]   RATE_TOO_LOW: ...
-    rate 112.5 -> 117 req/s   approved by c4-auto   [app recovered (capacity 200)]   HEALTHY: ...
-    final rate 117 req/s, lowest 51.2, retry ratio 0, shed at the end 0 req/s
+    rate 51.2 -> 56.3 req/s   approved by c4-auto   [app recovered (capacity 200)]   RATE_TOO_LOW: ...; probing: the remembered limit expired, ...
+    rate 56.3 -> 61.9 req/s   approved by c4-auto   [app recovered (capacity 200)]   RATE_TOO_LOW: ...
+    rate 61.9 -> 68.1 req/s   approved by c4-auto   [app recovered (capacity 200)]   RATE_TOO_LOW: ...
+    rate 68.1 -> 74.9 req/s   approved by c4-auto   [app recovered (capacity 200)]   RATE_TOO_LOW: ...
+    final rate 74.9 req/s, lowest 51.2, retry ratio 0, shed at the end 15.1 req/s
 ```
 
 ## 5. How the Admin Panel runs a scenario (hub → C4)
@@ -182,7 +190,9 @@ tried again ("held: …" in the Health tab and in `rateEvidence.held`); only dea
 | `recover [svc] [r]` | fault off, rate back to 100 | raises by c4-auto; a too-generous rate is lowered in −10% steps after 2 min |
 | `deadline [ms]` | `GET /api/orders` deadline → 100 ms (like e2e 95) | a deadline card in the Queue; rate changes on the chain "held: deadline not settled" |
 | `status` | health, latest c4-auto changes, held changes, waiting cards | — |
-| `reset` | faults off, `make reset-data` | — |
+| `toohigh [svc] [r] [burn] [par]` | rate too high from the start: `payment-svc` → 200 req/s, demo-app fault `cpuBurnMs` 20, a temporary pod `rpe-viva-load` (rpe-e2e) alternating 3 min busy (8 parallel loops on `GET /api/orders`) and 3 min quiet. Start small; if nothing happens, raise the burn or the loops (`toohigh payment-svc 200 40 12`) | after 10–15 min: "P0 … from the N quietest windows", APP_OVERLOADED in the busy periods (not HEALTHY), automatic cuts by c4-auto, the rate settling below 0.9 × what payment managed. Values not yet tried on the cluster |
+| `toohigh-stop [svc] [r]` | deletes `rpe-viva-load`, fault off, rate back to 100 | HEALTHY again within a few minutes |
+| `reset` | load pod deleted, faults off, `make reset-data` | — |
 
 One automatic change takes about 3 minutes in the demo cluster (checked on 2 one-minute windows, then a 1-minute
 cooldown); plan the steps so each has 3–5 minutes.

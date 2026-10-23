@@ -248,3 +248,50 @@ compared live decisions). `AutoApprovalTests.anEmptyAllowList…` and `PolicyWor
 **Timing for a live demo:** each automatic change is checked on 2 disjoint windows (window 1 min) and then waits for the
 cooldown (1 min), so one change takes about 3 minutes in the demo cluster; lowering a rate that is 2.5 × too generous takes
 about 4–5 steps.
+
+## 10. Rate learning fix: a rate that is wrong from the start (owner decision, 22 Oct 2026)
+
+From `c4-leaky-bucket-rate-learning-fix.md` (fixes A–C; fix D, the sidecar's rate as the reference, is section 9 #1).
+Approval is unchanged: rate and retry changes are `c4-auto` or held, deadline and joint cards wait for a person.
+
+| Fix | Problem | Change |
+|---|---|---|
+| A | Rate too low from day one: the queue is never calm, P0 is never learned, UNKNOWN for hours | `baseline.allow-shed-windows` defaults to **true** (full or shedding queue, normal errors: the bucket limited the app). While the queue is full or shedding, a **provisional P0** (25th percentile) after `baseline.provisional-windows` (5, demo 3) windows; the lowest-app fallback also after those windows. Evidence: "P0 … ms provisional: …" |
+| B1 | Rate too high from day one: the queue is calm, the overloaded app time is learned as P0 | each learning window keeps its app time **and its load** (`successfulThroughput`, the last `baseline.load-windows`, 60, demo 40). When the load clearly varies (busiest quarter ≥ `baseline.load-spread` 2.0 × the quietest quarter), P0 = median app time of the **quietest quarter** (`quiet-share` 0.25, at least `min-quiet-windows` 3; unknown until then). Evidence: "P0 … ms from the N quietest of M windows" |
+| B2 | Traffic that never gets quiet | over the last `rate.load-growth-windows` (6) learning windows, the busiest third is more than `rate.load-growth-factor` (1.5) × slower than the quietest third with at least `rate.load-growth-min-load-ratio` (1.25) × its load, and this window is in that slow, busy range: **APP_OVERLOADED** "app time grows with load", also without a P0 |
+| C | After a cut the ceiling came from the configured rate, so the rate went up and down | a cut remembers `min(rate, accepted)`; `rate.broke-at-memory` **6 h** (was 30 min; demo 10 min). When it expires, RATE_TOO_LOW raises are **+10% probes** (`step-fraction`) until the service has been HEALTHY for `recovery-windows` cycles. Evidence: "probing: the remembered limit expired …" |
+
+**Further changes found by the new tests (deviations, all inside C4):**
+- A window in which the app is APP_OVERLOADED never teaches P0 (it is still kept with its load for B). Otherwise a slow
+  app's time became "normal" within a few windows: with allow-shed-windows on, the full-queue windows after a cut; in
+  test 5, the calm windows of a rate that is too high.
+- The provisional P0 is used only while the queue is full or shedding. Calm windows wait for the full baseline (nothing is
+  lost by waiting there); without this, every calm learning phase ended one window earlier and four scenario tests shifted.
+- A cut that has not bitten yet (nothing shed, fewer requests arrive than the new rate lets through: an automatic −20%
+  step from 200 while 150 arrive) is neither undone by its check nor stopped by the anti-ratchet; the next step follows.
+  Evidence: "the cut has not bitten yet".
+- The good rate after persistent HEALTHY is `min(rate, max demand × 1.25)`: a rate far above the demand only shows that
+  the demand is fine. Otherwise a rate that was too high from the start set the floor (0.5 × good rate) above the app's
+  capacity (200 → floor 100 while the app manages 80). In the cluster `rate-bursts` now ends at 168.4 (was 169.5).
+- The B2 load ratio is 1.25, not the planned 1.5: the throughput of a saturated app stops rising at its capacity, so a
+  1.5 ratio held for one window only. B1's spread stays 2.0 (1.5 changed the calibrated `correctedMad` example).
+
+**Tests changed (intended fix C behaviour, owner decision 22 Oct, option A; marked in the test):**
+- `C4ScenarioTests.rateScenariosInAutomaticMode`: after the cuts 100 → 80 → 64 → 51.2 the rate settles at 51.2 with no
+  step up (was one step up to 57.6 = 0.9 × 64; now the ceiling is 0.9 × the ≈ 57 req/s the app managed).
+- `AutoApprovalTests.aRealOverloadInAutomaticMode…`: runs with a 30 min memory (the 6 h default keeps the rate under the
+  remembered limit for the whole run) and checks that the first raise after the memory expired is a +10% probe.
+  `AutoApprovalTests.run` got an optional rate-settings argument.
+
+**New tests:** `RateLearningTests` (document §6, tests 1–5, automatic mode): too low from day one (provisional P0 after
+≤ 5 windows, 30 → 45 → … → about 75); too high with quiet and busy periods (P0 ≈ 120 ms from the quiet windows,
+APP_OVERLOADED only in the busy ones, cuts from the accepted ≈ 80 req/s); app time growing with load (APP_OVERLOADED
+"app time grows with load" before any P0); a flat app is never overloaded; after the cut from 200 the raises stop at
+0.9 × 80 ≈ 72 and the rate settles at about the capacity with no up-and-down over 20 windows. Test 6 is
+`RateStartingReferenceTests`.
+
+**Scenario values (demo guide §4):** `rate-real-overload` reviewer settles at 54, automatic at 51.2, and after the
+recovery it rises only in +10% probes (cluster, 10-min memory) or not at all within the run (defaults, 6 h).
+
+**Viva:** `viva-live.sh toohigh` / `toohigh-stop` (and `.ps1`): rate 200 through the hub, demo-app fault `cpuBurnMs`, a
+temporary load pod with busy and quiet periods; `toohigh-stop` and `reset` undo it. Not yet tried on the cluster.
