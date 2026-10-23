@@ -92,4 +92,18 @@ class RateDiagnosisTests {
         assertThrows(IllegalArgumentException.class, () -> new AdaptiveConfig.AutoApproval(java.util.List.of("CHAIN_DEADLINE")));
         assertThrows(IllegalArgumentException.class, () -> new AdaptiveConfig.AutoApproval(java.util.List.of("LEAKY_BUCKET")));
     }
+    // a raise that reaches a limit is rounded down, so the automatic-approval guard accepts it (it was held forever)
+    @Test void aRaiseNeverRoundsAboveTheCeilingOrTheStepLimit() {
+        var all = java.util.EnumSet.allOf(AdaptiveConfig.AutoKind.class);
+        java.util.function.BiFunction<Double, Double, Boolean> guardOk = (from, to) -> AutoApprovalGuard.check(new AutoApprovalGuard.Request(
+                AdaptiveConfig.AutoKind.BUCKET_RAISE, AdaptiveModels.Source.PROMETHEUS, from, to, 50.0, 56.16, true, false, null, true, false),
+                all, cfg, AdaptiveConfig.RetrySettings.defaults()).approve();
+        double up = RateDiagnosis.raise(51.2, 88, 100, 56.16, cfg); // the live case: ceiling 0.9 × 62.4 = 56.16
+        assertEquals(56.1, up, 1e-9, "not 56.2");
+        assertTrue(guardOk.apply(51.2, up));
+        assertEquals(49.9, RateDiagnosis.raise(33.3, 100, 10, 1000, cfg), 1e-9, "+50% of 33.3 is 49.95: not 50.0");
+        assertEquals(56.1, RateDiagnosis.healthyTarget(100, 5, 56.16, cfg), 1e-9);
+        assertEquals(163.8, RateDiagnosis.raise(109.2, 150, 100, 1000, cfg), 1e-9, "values below a limit keep the normal rounding");
+        assertEquals(51.2, RateDiagnosis.raise(51.2, 88, 100, 51.2, cfg), 1e-9, "no raise at the ceiling");
+    }
 }

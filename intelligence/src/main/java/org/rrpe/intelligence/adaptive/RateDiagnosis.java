@@ -66,9 +66,9 @@ public final class RateDiagnosis {
     }
     /** RATE_TOO_LOW: target = min(ceiling, max(R + a, D × (1 + h))), one step at most R × (1 + max-raise). */
     public static double raise(double rate, double demand, double goodRate, double ceiling, AdaptiveConfig.RateSettings cfg) {
-        double a = cfg.stepFraction() * goodRate;
+        double a = cfg.stepFraction() * goodRate, limit = Math.min(ceiling, rate * (1 + cfg.maxRaise()));
         double target = Math.min(ceiling, Math.max(rate + a, demand * (1 + cfg.headroom())));
-        return round(Math.max(rate, Math.min(target, rate * (1 + cfg.maxRaise()))));
+        return Math.max(rate, roundAtMost(Math.min(target, rate * (1 + cfg.maxRaise())), limit));
     }
     /** APP_OVERLOADED: max(floor, cut-factor × min(R, accepted)). */
     public static double cut(double rate, double accepted, double floor, AdaptiveConfig.RateSettings cfg) {
@@ -76,7 +76,8 @@ public final class RateDiagnosis {
     }
     /** HEALTHY target: clamp(max demand of the last windows × (1 + h), floor, ceiling). */
     public static double healthyTarget(double maxDemand, double floor, double ceiling, AdaptiveConfig.RateSettings cfg) {
-        return round(Math.max(floor, Math.min(ceiling, maxDemand * (1 + cfg.headroom()))));
+        double v = Math.max(floor, Math.min(ceiling, maxDemand * (1 + cfg.headroom())));
+        return v <= ceiling ? roundAtMost(v, ceiling) : round(v);
     }
     /** HEALTHY step: up by at most a toward the target; down only when relaxing is due, by at most relax-step and not below the target. */
     public static double healthyStep(double rate, double target, double goodRate, boolean relax, AdaptiveConfig.RateSettings cfg) {
@@ -85,4 +86,12 @@ public final class RateDiagnosis {
         return rate;
     }
     static double round(double v) { return Math.round(v * 10) / 10.0; }
+    /**
+     * Rounded to 0.1 req/s but never above {@code limit} (the ceiling or the +max-raise step): rounding to the nearest value
+     * could land just above it (ceiling 56.16 → 56.2), and the automatic-approval guard would then hold the raise forever.
+     */
+    static double roundAtMost(double v, double limit) {
+        double r = round(v);
+        return r > limit + 1e-9 ? Math.floor(limit * 10 + 1e-6) / 10 : r;
+    }
 }

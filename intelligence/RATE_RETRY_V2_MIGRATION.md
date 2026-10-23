@@ -276,9 +276,10 @@ Approval is unchanged: rate and retry changes are `c4-auto` or held, deadline an
 - The B2 load ratio is 1.25, not the planned 1.5: the throughput of a saturated app stops rising at its capacity, so a
   1.5 ratio held for one window only. B1's spread stays 2.0 (1.5 changed the calibrated `correctedMad` example).
 
-**Tests changed (intended fix C behaviour, owner decision 22 Oct, option A; marked in the test):**
-- `C4ScenarioTests.rateScenariosInAutomaticMode`: after the cuts 100 → 80 → 64 → 51.2 the rate settles at 51.2 with no
-  step up (was one step up to 57.6 = 0.9 × 64; now the ceiling is 0.9 × the ≈ 57 req/s the app managed).
+**Tests changed (intended fix C behaviour, owner decisions 22/23 Oct; marked in the test):**
+- `C4ScenarioTests.rateScenariosInAutomaticMode`: after the cuts 100 → 80 → 64 → 51.2 one raise stops at 56.1 =
+  0.9 × the 62.4 req/s the app managed, under its capacity 60 (was 57.6 = 0.9 × the configured 64). A first version of
+  this test (22 Oct) expected no raise at all; that was the rounding bug below, not the ceiling.
 - `AutoApprovalTests.aRealOverloadInAutomaticMode…`: runs with a 30 min memory (the 6 h default keeps the rate under the
   remembered limit for the whole run) and checks that the first raise after the memory expired is a +10% probe.
   `AutoApprovalTests.run` got an optional rate-settings argument.
@@ -290,8 +291,15 @@ APP_OVERLOADED only in the busy ones, cuts from the accepted ≈ 80 req/s); app 
 0.9 × 80 ≈ 72 and the rate settles at about the capacity with no up-and-down over 20 windows. Test 6 is
 `RateStartingReferenceTests`.
 
-**Scenario values (demo guide §4):** `rate-real-overload` reviewer settles at 54, automatic at 51.2, and after the
-recovery it rises only in +10% probes (cluster, 10-min memory) or not at all within the run (defaults, 6 h).
+**Rounding fix (23 Oct):** a raise (and the healthy target) is rounded to 0.1 req/s but never above its limit, the
+ceiling or the +50% step (`RateDiagnosis.roundAtMost`). Rounded to the nearest value it could land just above it
+(ceiling 56.16 → 56.2), and the automatic-approval guard then held the raise forever ("held: … above the ceiling
+56.160000000000004"). Same problem as the cut and lowering steps (section 9), on the raise side. Test:
+`RateDiagnosisTests.aRaiseNeverRoundsAboveTheCeilingOrTheStepLimit`.
+
+**Scenario values (demo guide §4):** `rate-real-overload` reviewer settles at 54; automatic: cuts to 51.2, then one
+raise just under 0.9 × what the app managed (56.1 defaults, 55 cluster); after the recovery it rises only in +10%
+probes (cluster, 10-min memory, up to 80.6) or not at all within the run (defaults, 6 h).
 
 **Viva:** `viva-live.sh toohigh` / `toohigh-stop` (and `.ps1`): rate 200 through the hub, demo-app fault `cpuBurnMs`, a
 temporary load pod with busy and quiet periods; `toohigh-stop` and `reset` undo it. Not yet tried on the cluster.
