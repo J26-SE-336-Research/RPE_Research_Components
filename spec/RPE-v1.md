@@ -373,7 +373,10 @@ every request (no sampling) and with no tracing backend.
 - **R-P03 Interned names.** Service names never travel. Ids come from a versioned registry (`rv`, served by the
   protocol service at `GET /api/protocol/registry`). A subtree recorded with another registry version MUST NOT be
   merged (its ids mean other services); the result is marked `inc=?1`. A hop that does not know its own id (registry
-  not loaded) does not record a trail.
+  not loaded) does not record a trail. A service the registry does not list registers itself
+  (`POST /api/protocol/registry/register`) and gets the next free id. Ids never change once given. The seeded services
+  keep version `REGISTRY_VERSION`; once a service has been added, the version is a checksum of the whole name → id
+  mapping, so the same mapping always has the same version and two different mappings never share one.
 - **R-P04 Never leaves the chain.** The gateway MUST remove `X-RPE-Trail` from its response to the client and MUST
   ignore a trail sent by a client (trust boundary). It MAY report the completed trail to a collector
   (`POST /api/protocol/trails`).
@@ -491,6 +494,7 @@ entry becomes `X`, loyalty (non-critical) skips its work, and a retry of the pay
 
 | Version | Date | Change |
 |---|---|---|
+| 0.9.1 | 23 Oct 2026 | R-P03: automatic registration of new services and the checksum registry version. No change to any header or test case. |
 | 0.9 | 20 Oct 2026 | First complete draft. Signal mode for deadlines (R-D02, R-D04, R-D05 rewritten; only expired retries are refused). Retry gate R-R02 with a fixed reason order and its conformance cases. Trail v1 (R-P01..R-P05), verbose encoding, response-side subtree merge, registry, conformance cases. `cs` member of `X-RPE-Result`. C2 backpressure sidecar profile documented. |
 
 ### 17.3 Differences from the guides' Appendix A3.1 (v0.2)
