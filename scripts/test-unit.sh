@@ -10,6 +10,9 @@ if command -v gcc >/dev/null 2>&1 || command -v cc >/dev/null 2>&1; then race="-
 for mod in libs/rpe-go conformance-kit/go services/protocol-service demo-app k8s/admission-webhook k8s/operator hub; do
   run "${mod}" bash -c "cd '${ROOT}/${mod}' && go vet ./... && CGO_ENABLED=\${CGO_ENABLED:-1} go test ${race} -count=1 ./..."
 done
+# C1: the committed conformance cases must be exactly what the generator produces from the reference library. A case
+# change is a spec change: regenerate (go run ./cmd/genvectors ../vectors), review the diff and commit it.
+run conformance-vectors-current bash -c "cd '${ROOT}/conformance-kit/go' && mkdir -p ../generated/vectors-check && go run ./cmd/genvectors ../generated/vectors-check >/dev/null && diff -r ../vectors ../generated/vectors-check"
 if [[ "${SKIP_NODE:-0}" != "1" ]] && command -v npm >/dev/null 2>&1; then
   run console bash -c "cd '${ROOT}/console' && { [[ -d node_modules ]] || npm ci --no-audit --no-fund >/dev/null; } && npm run -s build >/dev/null"
 fi
