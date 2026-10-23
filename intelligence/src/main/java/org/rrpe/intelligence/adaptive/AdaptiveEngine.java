@@ -409,14 +409,21 @@ public class AdaptiveEngine {
         }
         rs.verification = null;
         double app = v.appAfter(), shedAfter = v.shedAfter();
-        if (v.appWindows == 0) { rs.lastVerification = "inconclusive: no app time measured"; evidence.add("Rate v2: check of the automatic change inconclusive (no app time); kept"); return false; }
-        double normal = rate.appTolerance() * (p0 != null ? p0 : v.appBefore);
         boolean raise = AdaptiveConfig.AutoKind.BUCKET_RAISE.name().equals(v.kind);
+        if (v.appWindows == 0) {
+            rs.lastVerification = "inconclusive: no app time measured"; evidence.add("Rate v2: check of the automatic change inconclusive (no app time); kept");
+            rs.recordCheck(new RateState.Check(v.proposalId.toString(), v.kind, v.fromRate, v.toRate, "inconclusive", finite(v.appBefore), null, null,
+                    finite(v.shedBefore), finite(shedAfter), now.toString()));
+            return false;
+        }
+        double normal = rate.appTolerance() * (p0 != null ? p0 : v.appBefore);
         // A raise is undone only when it slowed the app. Shedding that did not fall (demand grew) is no reason to lower the
         // rate again, which would shed even more; the next raise may follow (see RATE_RETRY_V2_MIGRATION.md §6).
         boolean pass = raise ? app <= normal : app <= (1 - rate.minImprovement()) * v.appBefore || app <= normal || notBinding(window, shed, v.toRate);
         String detail = String.format(Locale.ROOT, "%s %s → %s: app time %.0f → %.0f ms (normal ≤ %.0f), shed %.1f → %.1f req/s",
                 raise ? "raise" : "cut", fmt(v.fromRate), fmt(v.toRate), v.appBefore, app, normal, v.shedBefore, shedAfter);
+        rs.recordCheck(new RateState.Check(v.proposalId.toString(), v.kind, v.fromRate, v.toRate, pass ? "kept" : "undone", finite(v.appBefore), finite(app),
+                finite(normal), finite(v.shedBefore), finite(shedAfter), now.toString()));
         if (pass) {
             boolean shedFell = shedAfter < v.shedBefore || shedAfter == 0, idle = !raise && notBinding(window, shed, v.toRate);
             rs.lastVerification = "passed: " + detail + (raise && !shedFell ? " (shedding did not fall: demand grew)" : idle ? " (the cut has not bitten yet: fewer requests arrive than it lets through)" : "");
@@ -478,6 +485,7 @@ public class AdaptiveEngine {
         e.put("checking", rs.verification == null ? null : fmt(rs.verification.fromRate) + " → " + fmt(rs.verification.toRate));
         e.put("lastCheck", rs.lastVerification);
         e.put("held", List.copyOf(rs.held)); // automatic mode: changes held this cycle, tried again every cycle
+        e.put("checks", List.copyOf(rs.checks)); // check results of the automatic rate changes, newest first (additive)
         return e;
     }
 
@@ -663,6 +671,8 @@ public class AdaptiveEngine {
         return result.diagnosis();
     }
     private static String fmt(double v) { return v == Math.rint(v) ? String.valueOf((long) v) : String.format(Locale.ROOT, "%.1f", v); }
+    /** The value rounded to 0.1, or null when it was not measured (NaN is not valid JSON). */
+    private static Double finite(double v) { return Double.isFinite(v) ? Math.round(v * 10) / 10.0 : null; }
     /** Rounded up to 0.1 req/s, so a limited step (−20% cut, −10% lowering) never exceeds its limit after rounding. */
     static double roundUp(double v) { return Math.ceil(v * 10 - 1e-6) / 10; }
 

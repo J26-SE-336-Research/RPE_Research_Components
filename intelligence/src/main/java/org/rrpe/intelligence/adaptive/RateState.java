@@ -38,6 +38,15 @@ public final class RateState {
     boolean relaxing;
     /** Rate and retry changes held this cycle (automatic mode: tried again every cycle, never a card for a person). */
     final List<String> held = new ArrayList<>();
+    /**
+     * The check of one automatic rate change, for the status API: {@code result} is kept, undone or inconclusive; app times
+     * and shed rates before and after (null when not measured); {@code normalMs} is the limit the app time was checked against.
+     */
+    public record Check(String proposalId, String kind, double fromRate, double toRate, String result, Double appBeforeMs, Double appAfterMs,
+            Double normalMs, Double shedBeforePerSecond, Double shedAfterPerSecond, String at) {}
+    /** Check results of automatic rate changes, newest first, at most 20. */
+    final Deque<Check> checks = new ArrayDeque<>();
+    void recordCheck(Check check) { checks.addFirst(check); while (checks.size() > 20) checks.removeLast(); }
 
     /** An applied change being checked on the next disjoint windows. */
     static final class Verification {
