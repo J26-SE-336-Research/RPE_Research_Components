@@ -1,4 +1,4 @@
--- C4 audit trail: every recommendation, human decision and delivery result (append-only, like policy.policies).
+-- C4's audit trail: each recommendation, human decision and delivery result. Append-only, like policy.policies.
 create schema if not exists intel;
 
 create table if not exists intel.audit (
