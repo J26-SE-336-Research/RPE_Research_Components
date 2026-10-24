@@ -299,7 +299,7 @@ Pages show only what is built. New capabilities are added as real pages or secti
 | Part | What it is | Status |
 |---|---|---|
 | **Demo app** (`demo-app/`) | One configurable Go service playing every role in the demo topology. Uses `rpe-go` and exports OpenTelemetry spans to Tempo. The gateway follows the policy its proxy enforces (active epoch and route deadlines). Fault knobs `POST /admin/faults {latencyMs, jitterMs, errorRate, cpuBurnMs, clockOffsetMs}`, side-effect counters `GET /admin/counters`, `POST /admin/reset`, fan-out policy `partial`/`all`, point of no return before committing side effects. Responses nest each child's response, so one call shows the context at every hop | Built |
-| **Demo topology** (`deploy/k8s/demo`) | `gateway → order-svc → (parallel) inventory-svc, payment-svc (~120 ms provider call), loyalty-svc (optional), legacy-svc (optional) → shipping-svc`, plus `fraud-check-svc` for `fanout=all` scenarios. `rpe-traffic` (in `rpe-e2e`) sends about 3 requests/s so live telemetry always exists | Built |
+| **Demo topology** (`deploy/k8s/demo`) | `gateway → order-svc → (parallel) inventory-svc, payment-svc (~120 ms provider call), loyalty-svc (optional), legacy-svc (optional) → shipping-svc → partner-svc (optional)`, plus `fraud-check-svc` for `fanout=all` scenarios. `partner-svc` plays an outside system without RPE (no sidecar): the C1 unknown hop (R-P05). `rpe-traffic` (in `rpe-e2e`) sends about 3 requests/s so live telemetry always exists | Built |
 | **Kubernetes e2e tests** (`tests/e2e/`) | Bash + kubectl + jq suites against the kind cluster | Built (12 suites, 175 checks, all passing) |
 | **Admin Panel** (`console/` + `hub/`) | One operations console for the whole ecosystem (Monitor, Configuration, Infrastructure, Testing). Every action calls the real running components (see [section 2.1](#21-the-admin-panel)) | Built (e2e suite 80) |
 | **Scenario Lab, k6 presets** (`scenarios/`) | k6 load profiles with ground-truth labels for C4 (the panel's Scenario Lab already drives faults and traffic) | Planned |
@@ -315,7 +315,7 @@ Pages show only what is built. New capabilities are added as real pages or secti
 2. The gateway app's **C1 middleware** creates a fresh root context: `bud=300` for this route (`POST /api/orders` gets 500 ms), `rb=3`, policy epoch `pe=e0`, and a new `rid` bound to the W3C trace id.
 3. The gateway calls `order-svc`. The **C1 transport** derives the child context: new `iid`, `pid` set to the gateway's `iid`, `ttl` reduced by the elapsed time. The call is redirected into the gateway sidecar's outbound port 15001, which forwards it over a pooled, kept-alive connection (`BackendConnectionPool`).
 4. `order-svc` fans out in parallel to inventory, payment, loyalty and legacy. The retry budget is **split, not copied** (3 → 1/1/1/0).
-5. `legacy-svc` has a sidecar like every other service, so `shipping-svc` behind it receives the context too.
+5. `legacy-svc` has a sidecar like every other service, so `shipping-svc` behind it receives the context too. `shipping-svc` then calls `partner-svc`, which has no RPE: its call is recorded in the trail as an unknown hop.
 6. If payment is slow and the 300 ms budget runs out:
    - payment notices that its own request context expired and **abandons before committing** (no card charged);
    - order's transport turns the timeout into a **terminal** 504 (`term=?1`);

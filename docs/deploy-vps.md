@@ -7,7 +7,7 @@ It is **one shared environment**: every deployment replaces the previous one, so
 
 `.github/workflows/deploy-vps.yml` runs on every push to `Integrated` (or manually: Actions > Deploy to VPS > Run workflow, choosing any branch):
 
-1. builds the six images and pushes them to `ghcr.io/<org>/rpe-<name>:<git-sha12>`;
+1. builds the seven images (including the C1 protocol service) and pushes them to `ghcr.io/<org>/rpe-<name>:<git-sha12>`;
 2. opens an SSH tunnel to the k3s API (port 6443 is closed on the firewall);
 3. runs `scripts/deploy-remote.sh` (registry-image variant of `scripts/deploy.sh`);
 4. runs the e2e smoke suites 10, 60 and 90.

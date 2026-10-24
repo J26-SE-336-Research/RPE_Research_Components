@@ -32,10 +32,10 @@ hub_login viewer >/dev/null
 scraped_sidecars() {
   client GET "${PROM}/api/v1/query?query=$(enc 'count(up{job="rpe-sidecars"} == 1)')"
   SCRAPED=$(echo "${BODY}" | jq -r '.data.result[0].value[1] // 0')
-  [[ "${SCRAPED}" == 7 ]]
+  [[ "${SCRAPED}" == "${#RPE_SERVICES[@]}" ]]
 }
 wait_for 60 "Prometheus to settle on the 7 demo sidecars" scraped_sidecars
-assert_eq "${SCRAPED}" 7 "Prometheus scrapes all 7 injected sidecars"
+assert_eq "${SCRAPED}" "${#RPE_SERVICES[@]}" "Prometheus scrapes all ${#RPE_SERVICES[@]} injected sidecars"
 client GET "${PROM}/api/v1/query?query=$(enc 'sum(rpe_chain_requests_total{service="gateway",route="/api/orders"})')"
 assert_ge "$(echo "${BODY}" | jq -r '.data.result[0].value[1] // 0 | tonumber | floor')" 1 "gateway sidecar reports per-route chain counts"
 client GET "${TEMPO}/api/search?q=$(enc '{ resource.service.name = "gateway" && span.rpe.direction = "inbound" }')&limit=5"

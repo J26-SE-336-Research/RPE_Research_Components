@@ -25,10 +25,10 @@ assert_eq "$(echo "${BODY}" | jq -r '.platform["rpe-admission-webhook"]')" true 
 hub POST /api/hub/services/reset-all
 hub POST /api/hub/chain '{"path":"/api/orders"}'
 assert_eq "$(echo "${BODY}" | jq -r .status)" 200 "C1 inspector: chain request succeeds"
-assert_eq "$(echo "${BODY}" | jq '.hops | length')" 7 "C1 inspector: all 7 services in the chain are reported"
+assert_eq "$(echo "${BODY}" | jq '.hops | length')" 8 "C1 inspector: all 8 services in the chain are reported (partner-svc without RPE included)"
 assert_eq "$(echo "${BODY}" | jq '[.hops[].checks[] | select(.pass==false)] | length')" 0 "C1 inspector: all protocol rule checks pass on the live chain"
 assert_eq "$(echo "${BODY}" | jq -r '[.hops[].checks[] | select(.rule=="R-F05")][0].pass')" true "C1 inspector: fan-out budget conservation verified"
-assert_eq "$(echo "${BODY}" | jq '[.hops[].checks[] | select(.rule=="unknown-edge")] | length')" 0 "C1 inspector: no unknown edge, every hop carries the context"
+assert_eq "$(echo "${BODY}" | jq -r '[.hops[] | select(any(.checks[]; .rule=="unknown-edge")) | .service] | join(",")')" partner-svc "C1 inspector: every RPE hop carries the context; only partner-svc (no RPE) is an unknown edge"
 
 hub POST /api/hub/protocol/validate '{"header":"v=2, rid=\"4bf92f3577b34da6a3ce929d0e0e4736\", iid=\"00f067aa0ba902b7\", pid=\"0000000000000000\", ttl=5, bud=300, rb=1, cs=none, rt=\"GET /x\""}'
 assert_eq "$(echo "${BODY}" | jq -r .error.rule)" R-V02 "C1 validator reports the spec rule ID"

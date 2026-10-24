@@ -19,12 +19,14 @@ func withUser(ctx context.Context, u user) context.Context {
 }
 func userOf(ctx context.Context) user { u, _ := ctx.Value(ctxKey{}).(user); return u }
 
-// Demo topology (Appendix A6). Every demo service gets an RPE sidecar.
-var demoServices = []string{"gateway", "order-svc", "inventory-svc", "payment-svc", "loyalty-svc", "fraud-check-svc", "legacy-svc", "shipping-svc"}
+// Demo topology (Appendix A6). Every demo service gets an RPE sidecar, except partner-svc: an outside system without
+// RPE at the end of the chain, the unknown hop of C1 rule R-P05.
+var demoServices = []string{"gateway", "order-svc", "inventory-svc", "payment-svc", "loyalty-svc", "fraud-check-svc", "legacy-svc", "shipping-svc", "partner-svc"}
 
 var demoEdges = [][2]string{
 	{"gateway", "order-svc"}, {"order-svc", "inventory-svc"}, {"order-svc", "payment-svc"},
 	{"order-svc", "loyalty-svc"}, {"order-svc", "legacy-svc"}, {"legacy-svc", "shipping-svc"},
+	{"shipping-svc", "partner-svc"},
 }
 
 type hub struct {
@@ -222,7 +224,7 @@ func (h *hub) overview(w http.ResponseWriter, r *http.Request) {
 	injected, eligible := 0, 0
 	for _, name := range demoServices {
 		p, ok := pods[name]
-		s := svc{Name: name, RPE: true}
+		s := svc{Name: name, RPE: name != "partner-svc"}
 		if ok {
 			s.Pod, s.Ready, s.Sidecar = p.Metadata.Name, podReady(p), hasContainer(p, "rpe-sidecar")
 			for _, c := range p.Status.ContainerStatuses {

@@ -75,7 +75,7 @@ hub POST /api/hub/policies "{\"policyId\":\"${pol}\",\"rollout\":\"two-phase\",\
 broken=0; checked=0
 for _ in $(seq 1 30); do
   hub POST /api/hub/chain '{"path":"/api/orders"}'
-  [[ "$(echo "${BODY}" | jq '.hops | length')" == 7 ]] || continue
+  [[ "$(echo "${BODY}" | jq '.hops | length')" == 8 ]] || continue
   checked=$((checked+1))
   [[ "$(echo "${BODY}" | jq '[.hops[].checks[] | select(.pass==false)] | length')" == 0 ]] || broken=$((broken+1))
 done

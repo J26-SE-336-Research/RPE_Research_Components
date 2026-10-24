@@ -52,9 +52,9 @@ spec:
           env:
             - {name: PORT, value: "8095"}
             - {name: JAVA_URL, value: "http://127.0.0.1:8096"}
-            # the demo services keep ids 1..8 (stable across restarts); any other service registers itself on start
+            # the demo services keep ids 1..9 (stable across restarts); any other service registers itself on start
             - {name: REGISTRY_VERSION, value: "1"}
-            - {name: REGISTRY, value: "gateway,order-svc,inventory-svc,payment-svc,loyalty-svc,fraud-check-svc,legacy-svc,shipping-svc"}
+            - {name: REGISTRY, value: "gateway,order-svc,inventory-svc,payment-svc,loyalty-svc,fraud-check-svc,legacy-svc,shipping-svc,partner-svc"}
             - {name: AUTO_REGISTER, value: "true"}
             # ground truth: read from the deployments of this namespace (set GROUND_TRUTH="a>b,..." to override by hand)
             - {name: DEMO_NAMESPACE, value: rpe-demo}

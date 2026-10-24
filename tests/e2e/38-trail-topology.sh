@@ -2,8 +2,9 @@
 # C1 novelty, the self-describing request (X-RPE-Trail, rules R-P01..R-P05) and interoperability. Every RPE hop adds
 # one bounded entry to the trail; the gateway reports the finished trail to the protocol service and removes it from
 # its response. From trails alone the protocol service rebuilds the service graph (no tracing backend, no sampling)
-# and shows which hop used the deadline. The hop that does not speak RPE (legacy-svc) is an unknown edge and marks the
-# trail incomplete. rpe-go and rpe-java decode headers identically and pass every conformance case, live.
+# and shows which hop used the deadline. The hop that does not speak RPE (partner-svc, an outside system called by
+# shipping-svc) is an unknown edge and marks the trail incomplete. rpe-go and rpe-java decode headers identically and
+# pass every conformance case, live.
 source "$(dirname "$0")/lib.sh"
 hub_login admin >/dev/null
 gateway_policy
@@ -25,11 +26,12 @@ for _ in $(seq 1 20); do attribution && break; sleep 1; done
 assert_eq "${CODE}" 200 "the gateway reported the request's trail to the protocol service"
 A=${BODY}
 svcs=$(echo "${A}" | jq -r '[.hops[].service] | sort | join(",")')
-assert_eq "${svcs}" "gateway,inventory-svc,legacy-svc,loyalty-svc,order-svc,payment-svc" "every hop the request visited is in its trail"
+assert_eq "${svcs}" "gateway,inventory-svc,legacy-svc,loyalty-svc,order-svc,partner-svc,payment-svc,shipping-svc" "every hop the request visited is in its trail"
 assert_eq "$(echo "${A}" | jq -r '.hops[0] | "\(.service) \(.parent)"')" "gateway 0" "the gateway is the root entry"
 assert_eq "$(echo "${A}" | jq -r '[.hops[] | select(.service=="order-svc")][0].parent')" 1 "order-svc was called by the gateway"
 assert_eq "$(echo "${A}" | jq -r '[.hops[] | select(.parent==2)] | length')" 4 "order-svc's four calls hang below it"
-assert_eq "$(echo "${A}" | jq -r '[.hops[] | select(.service=="legacy-svc")][0].unknown')" true "legacy-svc (no RPE) is an unknown hop (R-P05)"
+assert_eq "$(echo "${A}" | jq -r '[.hops[] | select(.service=="legacy-svc")][0].unknown')" false "legacy-svc speaks RPE, so its own entry is in the trail"
+assert_eq "$(echo "${A}" | jq -r '[.hops[] | select(.service=="partner-svc")][0].unknown')" true "partner-svc (no RPE) is an unknown hop (R-P05)"
 assert_eq "$(echo "${A}" | jq -r .incomplete)" true "the trail is marked incomplete because of it"
 assert_eq "$(echo "${A}" | jq -r .budgetMs)" "${GW_ORDERS_BUDGET}" "the trail is scored against the chain budget (${GW_ORDERS_BUDGET} ms)"
 assert_ge "$(echo "${A}" | jq -r .bottleneck)" 1 "the hop that used most of the deadline is identified ($(echo "${A}" | jq -r '.hops[.bottleneck-1].service'))"
@@ -44,7 +46,7 @@ fresh="v=1, rid=\"$(openssl rand -hex 16)\", iid=\"00f067aa0ba902b7\", pid=\"000
 client GET "http://order-svc.rpe-demo:8080/orders" "" -H "X-RPE-Context: ${fresh}"
 sub=$(header X-RPE-Trail)
 assert_contains "${sub}" 'h="2:0:' "order-svc returns its own subtree, rooted at its registry id (2)"
-assert_contains "${sub}" ":U:" "with the unknown legacy hop inside it"
+assert_contains "${sub}" ":U:" "with the unknown partner-svc hop inside it"
 
 # --- 3. topology rebuilt from trails, scored against the declared call graph ----------------------------------------
 hub GET "/api/hub/protocol/topology?window=300"
@@ -52,10 +54,12 @@ assert_eq "${CODE}" 200 "the topology is available"
 edges=$(echo "${BODY}" | jq -r '[.topology.edges[] | "\(.from)>\(.to)"] | sort | join(",")')
 assert_contains "${edges}" "gateway>order-svc" "edge gateway → order-svc rebuilt"
 assert_contains "${edges}" "order-svc>payment-svc" "edge order-svc → payment-svc rebuilt"
-assert_contains "${edges}" "order-svc>legacy-svc" "edge order-svc → legacy-svc rebuilt (as an unknown hop)"
+assert_contains "${edges}" "legacy-svc>shipping-svc" "edge legacy-svc → shipping-svc rebuilt"
+assert_contains "${edges}" "shipping-svc>partner-svc" "edge shipping-svc → partner-svc rebuilt (as an unknown hop)"
+assert_eq "$(echo "${BODY}" | jq -r '[.topology.edges[] | select(.to=="partner-svc")][0].unknown')" true "the edge to partner-svc is marked unknown"
 assert_eq "$(echo "${BODY}" | jq -r .comparison.precision)" 100 "precision 100%: every rebuilt edge is a real edge"
-assert_ge "$(echo "${BODY}" | jq -r '.comparison.recall | floor')" 83 "recall $(echo "${BODY}" | jq -r .comparison.recall)%: only the call behind the non-RPE hop is invisible"
-assert_eq "$(echo "${BODY}" | jq -r '.comparison.missing | join(",")')" "legacy-svc → shipping-svc" "the invisible edge is the one behind legacy-svc"
+assert_eq "$(echo "${BODY}" | jq -r '.comparison.recall | floor')" 100 "recall 100%: every declared call is seen, also the one to the hop without RPE"
+assert_eq "$(echo "${BODY}" | jq -r '.comparison.missing | length')" 0 "no declared edge is missing"
 assert_contains "$(echo "${BODY}" | jq -r .comparison.source)" "deployments" "the declared call graph is read from the deployments, not typed in"
 
 # --- 4. interoperability: rpe-go and rpe-java ---------------------------------------------------------------------

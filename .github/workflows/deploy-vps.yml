@@ -1,6 +1,6 @@
 name: Deploy to VPS
 
-# Builds the six RPE images, pushes them to GitHub Container Registry and deploys them to the shared k3s VPS.
+# Builds the seven RPE images, pushes them to GitHub Container Registry and deploys them to the shared k3s VPS.
 # Required repository secrets (Settings > Secrets and variables > Actions):
 #   VPS_HOST, VPS_USER, VPS_SSH_KEY   SSH access of the deploy user
 #   GHCR_PULL_USER, GHCR_PULL_TOKEN   GitHub user + classic PAT (read:packages) the cluster uses to pull images
@@ -37,6 +37,7 @@ jobs:
           - {image: intelligence,      context: intelligence,           dockerfile: intelligence/Dockerfile}
           - {image: hub,               context: .,                      dockerfile: hub/Dockerfile}
           - {image: demo-app,          context: .,                      dockerfile: demo-app/Dockerfile}
+          - {image: protocol-service,  context: .,                      dockerfile: services/protocol-service/Dockerfile}
     steps:
       - uses: actions/checkout@v4
       - name: Image name and tag
