@@ -33,5 +33,7 @@
 /conformance-kit/generated/
 /services/protocol-service/protocol-service
 
-#  design rules file removed
+#  design rules file removed since the design is changed according to the poc
 CLAUDE.md
+
+
