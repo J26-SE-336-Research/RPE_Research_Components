@@ -1,6 +1,8 @@
 # Local-only research material: proposals, legacy prototypes, scope docs (shared with teammates outside git).
-# The component guides are committed in docs/components/.
 /_research/
+
+# Component guides
+/docs/components/
 
 # Generated output and local configuration
 **/target/
