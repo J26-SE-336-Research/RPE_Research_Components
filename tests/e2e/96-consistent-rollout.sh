@@ -114,9 +114,9 @@ assert_eq "$(active_on gateway)|$(active_on shipping-svc)|$(active_on fraud-chec
 # The gateway and shipping-svc each have their own policy. C4's joint card is a new version of the gateway's policy:
 # a longer route deadline (780 -> 850 ms, looser) and a lower rate for shipping (stricter). Shipping's change must be
 # compared with shipping's own policy: the gateway loosens first, the stricter rate waits, and the joint version then
-# replaces shipping's own policy. Shipping's rate is set back afterwards. C4 changes rates by itself (c4-auto, for example
-# lowering a too-generous rate) and may do so during this section, so the checks are what C3 delivered: each rollout
-# completed and every sidecar holds the approved content (verified by its hash), not the sidecar's live rate.
+# replaces shipping's own policy. Shipping's rate is set back afterwards.
+# C4 can change rates on its own while this runs, so we don't check the live rate here. We check that each rollout
+# completed and that every sidecar has the approved policy, using its hash.
 gid="e2e-firstgw-$(date +%s)"; sid="e2e-firstship-$(date +%s)"; froute="GET /api/e2e-first"
 low=$(( ${ship%.*} * 6 / 10 )); (( low < 1 )) && low=1
 deliver_to() {
