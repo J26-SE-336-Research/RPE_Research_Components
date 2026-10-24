@@ -1,4 +1,4 @@
-# C3 policy store (also used later by C4 audit and the hub). Dev-only credentials.
+# C3's policy store. C4's audit and the hub use it too. The credentials are for development only.
 apiVersion: apps/v1
 kind: Deployment
 metadata:

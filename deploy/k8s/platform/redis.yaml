@@ -1,5 +1,5 @@
-# Redis: fast path next to the PostgreSQL system of record (policy events stream, effective-policy
-# cache, delivery acks, change broadcast, Operator checkpoint).
+# Redis is the fast copy next to PostgreSQL, which is the real record. It holds the policy events stream, the
+# effective policies, delivery acks and the change broadcast.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
