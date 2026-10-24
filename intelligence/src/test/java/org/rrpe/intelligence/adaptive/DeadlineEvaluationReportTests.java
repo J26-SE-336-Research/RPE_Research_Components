@@ -7,8 +7,8 @@ import java.util.*;
 import org.junit.jupiter.api.Test;
 
 /**
- * Runs the guide examples and the built-in scenarios with v2 and, when {@code -Devaluation.out=<file>} is set, writes the
- * markdown table of intelligence/evaluation/v2-results.md (same format and verdicts as the old-logic baseline).
+ * Runs the deadline examples and the built-in scenarios. When {@code -Devaluation.out=<file>} is set, it writes the
+ * markdown table of intelligence/evaluation/v2-results.md, in the same format as the old results.
  */
 class DeadlineEvaluationReportTests {
     static String fmt(double v) { return v == Math.rint(v) ? String.valueOf((long) v) : String.format(Locale.ROOT, "%.3f", v); }

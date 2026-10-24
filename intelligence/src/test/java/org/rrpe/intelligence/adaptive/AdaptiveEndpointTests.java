@@ -18,7 +18,7 @@ class AdaptiveEndpointTests {
         if (body == null) request.GET(); else request.method(method, HttpRequest.BodyPublishers.ofString(body));
         return HttpClient.newHttpClient().send(request.build(), HttpResponse.BodyHandlers.ofString());
     }
-    // v2: intended behaviour change (see DEADLINE_V2_MIGRATION.md) - deadline-increase is Case A on healthy over-signalling (1000 → 1500)
+    // deadline-increase is Case A: too many healthy requests get the signal, so 1000 goes up to 1500
     @Test void isolatedDeadlineScenarioMatchesCorrectedExampleAndNeverEntersLiveDelivery() throws Exception {
         var response = request("/api/v2/intelligence/demo/deadline-increase", "{}", "POST");
         assertEquals(200, response.statusCode(), response.body());
@@ -33,7 +33,7 @@ class AdaptiveEndpointTests {
         assertEquals("apigateway", services.get(0).asString());
         assertEquals(0, json.readTree(request("/api/v2/intelligence/outbox", null, "GET").body()).size());
     }
-    // v2: intended behaviour change (see DEADLINE_V2_MIGRATION.md) - deadline-recovery is Case D: max(D* = 1150, ceil10(0.80 × 1440)) = 1160
+    // deadline-recovery is Case D: 80 percent of 1440 rounded up is 1160, which is above the target 1150
     @Test void deadlineRestorationExampleIs1296AndRequiresApproval() throws Exception {
         var response = request("/api/v2/intelligence/demo/deadline-recovery", "{}", "POST");
         assertEquals(200, response.statusCode(), response.body());
@@ -42,7 +42,7 @@ class AdaptiveEndpointTests {
         assertEquals("PENDING_APPROVAL", proposal.get("decision").asString());
         assertEquals("D_TIGHTEN", demo.get("deadlineEvidence").get(0).get("evidence").get("decisionCase").asString());
     }
-    // v2: intended behaviour change (see DEADLINE_V2_MIGRATION.md) - one chain is raised (A), one lowered under overload (B), one tightened (D)
+    // one chain is raised (A), one lowered under overload (B), one tightened (D)
     @Test void multipleChainsHaveIndependentEvidenceAndRecommendationsWithoutLiveDelivery() throws Exception {
         var response = request("/api/v2/intelligence/demo/multiple-chains", "{}", "POST");
         assertEquals(200, response.statusCode(), response.body());

@@ -6,7 +6,7 @@ import java.time.Duration;
 import java.util.*;
 import org.junit.jupiter.api.Test;
 
-/** Owner rule 7: POST /demo/joint-recovery and /demo/joint-capacity-drop always produce one joint card with C3's numbers. */
+/** POST /demo/joint-recovery and /demo/joint-capacity-drop always give one joint card with the example numbers. */
 class JointScenarioTests {
     /** The demo cluster's values (deploy/k8s/platform/intelligence.yaml): window 1 min, cycle 15 s, 5 baseline samples, cooldown 1 min. */
     static AdaptiveConfig.Settings clusterSettings() {

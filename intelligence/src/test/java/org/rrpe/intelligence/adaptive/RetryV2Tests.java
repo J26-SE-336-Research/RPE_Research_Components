@@ -5,7 +5,7 @@ import static org.junit.jupiter.api.Assertions.*;
 import java.util.*;
 import org.junit.jupiter.api.Test;
 
-/** Retry budget v2 (guide §5), with simulated retry data (Component 2 does not count retries yet). */
+/** The retry budget, with simulated retry data, since Component 2 does not count retries yet. */
 class RetryV2Tests {
     static final ServiceLoadSnapshot QUIET = AdaptiveEngineTests.quietQueue();
 
@@ -25,8 +25,8 @@ class RetryV2Tests {
     }
 
     @Test void aRetryStormFromOurOwnSheddingHoldsTheBudgetAndRaisesTheRate() {
-        // every shed 503 is retried once and only 10% succeed: the old rules cut the rate and set retry 0; v2 sees that the
-        // bucket is the bottleneck, raises the rate and does not punish retries for our own shedding
+        // every rejected 503 is retried once and only 10 percent succeed. The old rules cut the rate and set retry 0; now we
+        // see that the bucket is the bottleneck, raise the rate and do not punish retries for our own rejections
         var r = BucketV2Tests.run("retry-storm-rate");
         assertTrue(r.steps().stream().noneMatch(s -> s.action() == Action.RETRY_BUDGET), "hold: " + r.steps());
         assertTrue(BucketV2Tests.rate(r, null).stream().allMatch(s -> s.to() > s.from()), "only raises: " + r.steps());
@@ -49,7 +49,7 @@ class RetryV2Tests {
     }
 
     @Test void retriesThatOftenSucceedAreNeverCutForLowSuccess() {
-        // 30 of 100 succeed: the success rate is 0.30, the Wilson upper bound is above 0.20 → no step down
+        // 30 of 100 succeed: the Wilson upper bound is above 0.20, so no step down
         var c = new AdaptiveEngineTests.Context(); c.policy(120, .05, 1000); AdaptiveEngineTests.learnServiceWithLoad(c, false);
         for (int i = 0; i < 5; i++) { assertTrue(retry(c.engine.service(c.service(100, 120, 100, 30.0), QUIET)).isEmpty()); c.clock.next(60); }
     }

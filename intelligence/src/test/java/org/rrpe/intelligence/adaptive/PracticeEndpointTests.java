@@ -9,7 +9,7 @@ import org.springframework.boot.test.web.server.LocalServerPort;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
-/** POST /demo/{scenario}?to=queue → practice cards in the status list; review them; never in the outbox; clear removes them. */
+/** POST /demo/{scenario}?to=queue puts practice cards in the status list. They can be reviewed, never reach the outbox, and clear removes them. */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
         properties = {"logging.level.root=WARN", "debug=false", "rrpe.connections.collect=false", "rrpe.mock-enabled=true", "rrpe.control-token=test-secret"})
 class PracticeEndpointTests {

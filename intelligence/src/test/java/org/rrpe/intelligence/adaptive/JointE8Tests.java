@@ -6,7 +6,7 @@ import java.util.*;
 import org.junit.jupiter.api.Test;
 
 /**
- * C3 experiment E8 as a simulation: after a persistent healthy-rate change, does the joint card keep the deadline calibrated
+ * The joint experiment as a simulation: after a lasting healthy rate change, does the joint card keep the deadline right
  * better than the rate alone with later relearning? Writes intelligence/evaluation/joint-e8-simulation.md rows when
  * {@code -Djoint.e8.out=<file>} is set.
  */

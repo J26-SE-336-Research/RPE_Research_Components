@@ -8,7 +8,7 @@ import java.util.*;
 /**
  * Deterministic test bed for the joint healthy recalibration (C3 request): one chain {@code gateway > payment} analysed per
  * request, and payment's service window with its leaky-bucket queue, one window of each per cycle, in an isolated engine on a
- * virtual clock. Used by the joint demo scenarios, the E8 simulation and the tests.
+ * virtual clock. Used by the joint demo scenarios, the joint experiment and the tests.
  */
 public final class JointSimulation {
     private JointSimulation() {}
@@ -22,18 +22,18 @@ public final class JointSimulation {
      */
     public record Example(String id, String title, double rate, double newTarget, double demand, double depth, long deadlineMs,
                           ChainSimulation.Profile healthy, long expectedDeadlineMs, String expectation) {}
-    /** C3 example 1: T_h = 700 ms (slow requests 660 / 700 / 740 ms by window: m ≈ 0.25), Q = 8, payment 50 → 100/s, 875 → 780 ms. */
+    /** Example 1: healthy time 700 ms, Q = 8, payment rate from 50 to 100 req/s, deadline from 875 to 780 ms. */
     public static Example recovery() {
         return new Example("joint-recovery", "Joint recovery: payment's healthy target 50 → 100 req/s", 50, 100, 40, 8, 875,
                 ChainSimulation.profile(300, 640, 660, 700, 740), 780, "one joint card: payment 50 → 100 req/s with the deadline 875 → 780 ms");
     }
-    /** C3 example 2: T_h = 620 ms (585 / 620 / 655 ms: m ≈ 0.25), Q = 8, payment 100 → 60/s, 780 → 850 ms. */
+    /** Example 2: healthy time 620 ms, Q = 8, payment rate from 100 to 60 req/s, deadline from 780 to 850 ms. */
     public static Example capacityDrop() {
         return new Example("joint-capacity-drop", "Joint capacity drop: payment's healthy target 100 → 60 req/s", 100, 60, 48, 8, 780,
                 ChainSimulation.profile(300, 560, 585, 620, 655), 850, "one joint card: payment 100 → 60 req/s with the deadline 780 → 850 ms");
     }
     public static List<Example> examples() { return List.of(recovery(), capacityDrop()); }
-    /** E8 only: the capacity drop with bursty healthy traffic (healthy queue Q = 24), where the old deadline flags healthy requests. */
+    /** Only for the joint experiment: the capacity drop with bursty healthy traffic (healthy queue Q = 24), where the old deadline flags healthy requests. */
     public static Example capacityDropBursty() {
         var e = capacityDrop();
         return new Example("joint-capacity-drop-q24", "Joint capacity drop with a larger healthy queue (Q = 24)", e.rate(), e.newTarget(), e.demand(), 24, e.deadlineMs(),
@@ -117,14 +117,13 @@ public final class JointSimulation {
         }
     }
 
-    // ---------------------------------------------------------------- experiment E8 (simulation) ----------------------------------------------------------------
+    // ---------- joint experiment simulation ----------
 
     /**
-     * One arm of E8 for one example. {@code falseSignalRate}: healthy requests at or above the deadline in the healthy minutes
-     * after the change; {@code firstSignalMinutes}: minutes from the injected overload to the first window where at least the
-     * share threshold of requests is signalled (null: never); {@code minutesOutsideBand}: healthy minutes with the deadline
-     * outside [D*, (1 + deadband) × D*] of the true new healthy time; {@code proposals}: rate and deadline decisions a reviewer
-     * made (a joint card is one decision); {@code paymentCompletion}: payment's completed / offered requests.
+     * The result of one run of one example. falseSignalRate: healthy requests that reach the deadline after the change.
+     * firstSignalMinutes: minutes from the overload until enough requests get the signal (null if never).
+     * minutesOutsideBand: healthy minutes with the deadline outside the right band for the new healthy time.
+     * proposals: how many decisions a reviewer made (a joint card is one). paymentCompletion: payment's completed share.
      */
     public record E8Result(String example, String arm, double falseSignalRate, Integer firstSignalMinutes, int minutesOutsideBand, int proposals,
                            double paymentCompletion, long finalDeadlineMs, double finalRate) {}
@@ -136,9 +135,8 @@ public final class JointSimulation {
     }
 
     /**
-     * Runs E8 for one example: at t0 payment's healthy rate changes for good. Arm (a) {@code joint=false}: the rate change alone
-     * (approved and applied), the deadline left to deadline v2. Arm (b) {@code joint=true}: the joint card, approved and applied
-     * at once. Afterwards the chain's healthy requests are faster or slower by the change of the queue wait; a simulated
+     * Runs one example: at t0 the healthy rate of payment changes for good. With joint=false only the rate changes and
+     * the deadline is left to the normal deadline logic. With joint=true the joint card is approved and applied at once. Afterwards the chain's healthy requests are faster or slower by the change of the queue wait; a simulated
      * reviewer approves every further recommendation. With {@code overloadAt} the payment service is overloaded from that minute
      * on (requests {@code overloadMs} slower).
      */

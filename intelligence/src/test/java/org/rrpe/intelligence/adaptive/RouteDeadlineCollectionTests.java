@@ -59,7 +59,7 @@ class RouteDeadlineCollectionTests {
         assertFalse(TempoWindows.sufficientCoverage(100, Double.NaN));
         assertFalse(TempoWindows.sufficientCoverage(100, Double.POSITIVE_INFINITY));
     }
-    // v2: intended behaviour change (see DEADLINE_V2_MIGRATION.md) - the engine decides from the per-request samples (Case A), not the 10/20/30% bands
+    // the engine decides from the per-request samples (Case A), not the 10/20/30% bands
     @Test void poolsDifferentPathsOnceAndProducesOneEnforceableRouteDeadline() {
         var http = new FixtureHttp(); var tempo = http.tempo();
         var workflow = new PolicyWorkflow(connections, settings, clock);
@@ -88,7 +88,7 @@ class RouteDeadlineCollectionTests {
         assertEquals(1, workflow.list().size());
         var proposal = workflow.list().get(0);
         assertEquals("POST /api/orders", proposal.proposal().target());
-        // every learning request took 1000 ms = the 1000 ms budget, so the healthy time is censored: raise ×1.5
+        // every learning request took the whole 1000 ms budget, so the healthy time is hidden: raise by half
         assertEquals(1500, proposal.proposal().proposedValue());
         assertEquals(Decision.PENDING_APPROVAL, proposal.decision());
         assertTrue(workflow.deliverable().isEmpty());

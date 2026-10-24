@@ -10,7 +10,7 @@ import org.springframework.boot.test.web.server.LocalServerPort;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
-/** Deadline v2 in the API: additive evidence, load queries, the new and updated simulations (production settings). */
+/** The deadline logic in the API: evidence, load queries and the simulations, with production settings. */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
         properties = {"logging.level.root=WARN", "debug=false", "rrpe.connections.collect=false", "rrpe.mock-enabled=true", "rrpe.control-token=test-secret"})
 class DeadlineScenarioEndpointTests {

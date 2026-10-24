@@ -5,7 +5,7 @@ import static org.junit.jupiter.api.Assertions.*;
 import java.util.*;
 import org.junit.jupiter.api.Test;
 
-/** Rate/retry v2 demo scenarios (POST /demo/{scenario}) and the queue signals of the existing service scenarios (R1). */
+/** The rate and retry demo scenarios (POST /demo/{scenario}) and the queue data of the service scenarios. */
 class RateScenarioTests {
     final MockScenarios scenarios = new MockScenarios(AdaptiveConfig.Settings.defaults(), AdaptiveEngineTests.connections(""));
 
@@ -39,7 +39,7 @@ class RateScenarioTests {
     }
 
     @Test void theServiceScenariosNowProduceRateDecisions() {
-        // production settings: the health baseline is still learning, so the retry rule waits; rate v2 learns its own P0
+        // production settings: the health baseline is still learning, so the retry rule waits; the rate logic learns its own P0
         var overloaded = changes(scenarios.run("overloaded")).stream().filter(c -> c.proposal().action() == Action.LEAKY_BUCKET).toList();
         assertEquals(1, overloaded.size());
         assertEquals(120, overloaded.get(0).proposal().currentValue()); assertEquals(64, overloaded.get(0).proposal().proposedValue(), "max(floor 60, 0.8 × accepted 80)");

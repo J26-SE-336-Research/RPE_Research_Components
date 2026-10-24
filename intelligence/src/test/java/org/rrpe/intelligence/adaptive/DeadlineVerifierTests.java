@@ -6,7 +6,7 @@ import java.time.*;
 import java.util.*;
 import org.junit.jupiter.api.Test;
 
-/** DeadlineVerifier (guide §6.7), the pause rules (§6.6) and the end-to-end revert path. */
+/** DeadlineVerifier, the pause rules and the revert path end to end. */
 class DeadlineVerifierTests {
     private final AdaptiveConfig.DeadlineSettings cfg = AdaptiveConfig.DeadlineSettings.demo();
     private static Proportion p(int x, int n) { return RobustStatistics.wilsonOneSided(x, n, 1.645, 1); }

@@ -5,9 +5,9 @@ import java.util.OptionalLong;
 import java.util.function.DoubleUnaryOperator;
 
 /**
- * The v2 deadline decision table (guide §6.5), a pure function. Rows are evaluated in order and the first match wins.
- * The deadline is an <b>overload trigger</b>: quiet when healthy (≤ e_target of healthy requests expire), firing under
- * overload (≥ e_fire of overloaded requests expire). Every step moves D toward D* and never past it.
+ * The deadline decision table. Rows are checked in order and the first match wins.
+ * The deadline works as an <b>overload trigger</b>: almost no healthy requests should expire, but under overload
+ * enough of them should. Every step moves D toward D* and never past it.
  */
 public final class DeadlinePolicy {
     private DeadlinePolicy() {}
@@ -100,7 +100,7 @@ public final class DeadlinePolicy {
         return hold("IN_BAND", "the deadline is in the healthy band");
     }
 
-    /** Row 1: raise and lower conditions both true → hold and flag for review. */
+    /** Row 1: if both a raise and a lowering are needed, hold and flag it for review. */
     static DeadlineDecision inconsistent(boolean caseA, boolean caseB) {
         return caseA && caseB ? hold("INCONSISTENT", "raise and lower conditions both hold; flagged for review") : null;
     }

@@ -5,7 +5,7 @@ import static org.junit.jupiter.api.Assertions.*;
 import java.util.*;
 import org.junit.jupiter.api.Test;
 
-/** C3 J5: after APPLIED the joint's deadline part is settled, verified (case RECALIBRATE) and the healthy time is relearned. */
+/** After a joint card is applied, its deadline part settles, is checked as RECALIBRATE, and the healthy time is learned again. */
 class JointAfterAppliedTests {
     @Test void anAppliedJointDeadlineIsSettledVerifiedAndRelearned() {
         var e = JointSimulation.recovery();

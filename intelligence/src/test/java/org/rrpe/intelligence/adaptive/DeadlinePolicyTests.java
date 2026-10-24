@@ -5,7 +5,7 @@ import static org.junit.jupiter.api.Assertions.*;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 
-/** Every row of the v2 decision table (guide §6.5), including every guard. */
+/** Every row of the deadline decision table, including every guard. */
 class DeadlinePolicyTests {
     private final AdaptiveConfig.DeadlineSettings cfg = AdaptiveConfig.DeadlineSettings.demo(); // k = 2
 

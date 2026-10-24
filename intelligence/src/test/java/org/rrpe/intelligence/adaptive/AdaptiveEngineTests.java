@@ -56,9 +56,9 @@ class AdaptiveEngineTests {
         }
         PolicyChange action(Outcome outcome, Action action) { return outcome.changes().stream().filter(c -> c.proposal().action() == action).findFirst().orElseThrow(); }
     }
-    /** Rate v2 load signals for order-service: a quiet queue (20% full, empty on average, nothing shed). */
+    /** Load data for order-service: a quiet queue, 20 percent full at most, empty on average, nothing rejected. */
     static ServiceLoadSnapshot quietQueue() { return new ServiceLoadSnapshot("order-service", 20.0, 0.0, 0.0, 0.0, null, null, null, null, List.of(), 0.0); }
-    /** Like {@code Context.learnService}, with load signals, so rate v2 also learns its app-time baseline P0. */
+    /** Like {@code Context.learnService}, but with load data, so the rate logic also learns P0. */
     static void learnServiceWithLoad(Context c, boolean normalRetries) {
         double[] latencies = {80,90,100,110,120}; double[] throughputs = {90,105,120,135,150};
         for (int i = 0; i < 5; i++) {
@@ -71,7 +71,7 @@ class AdaptiveEngineTests {
     static boolean noRateCut(Outcome o) {
         return o.changes().stream().noneMatch(ch -> ch.proposal().action() == Action.LEAKY_BUCKET && ch.proposal().proposedValue() < ch.proposal().currentValue());
     }
-    // rate-retry v2: intended behaviour change (see RATE_RETRY_V2_MIGRATION.md) - a slower app is cut only when the app time is above 1.5 × P0 for 2 cycles; the cut uses the accepted (successful) throughput: max(floor, 0.8 × min(rate, accepted))
+    // a slower app is only cut when its app time stays above 1.5 times P0 for 2 cycles; the cut is 80 percent of what it accepted, not below the floor
     @Test void correctedMadExamplePersistsAndRateUsesSuccessfulCapacity() {
         var c = new Context(); c.policy(120, .05, 1000); learnServiceWithLoad(c, false);
         var pending = c.engine.service(c.service(125, 100, 0, 0.0), quietQueue());
@@ -108,7 +108,7 @@ class AdaptiveEngineTests {
         drop = c.engine.service(c.service(10, 1.0, 0, 0.0));
         assertNotEquals(Health.HEALTHY, drop.assessment().health(), "a real throughput collapse is still detected");
     }
-    // rate-retry v2: intended behaviour change (see RATE_RETRY_V2_MIGRATION.md) - the budget no longer follows 0.10 × effectiveness halved under stress; retries that rarely succeed (10 of 100: Wilson upper bound 0.16 < 0.20) for 2 cycles step the ratio down to 0.02 = 20 extra attempts per 1000 requests
+    // retries that rarely succeed (10 of 100) for 2 cycles step the ratio down to 0.02, which is 20 extra attempts per 1000 requests
     @Test void retryEffectivenessExampleProducesTwentyExtraAttempts() {
         var c = new Context(); c.policy(120, .05, 1000); c.learnService(false);
         c.engine.service(c.service(100, 120, 100, 10.0)); c.clock.next(60);
@@ -127,7 +127,8 @@ class AdaptiveEngineTests {
         c.clock.next(60); var second = c.engine.service(c.service(150, 80, 0, null));
         assertEquals(0, c.action(second, Action.RETRY_BUDGET).proposal().proposedValue());
     }
-    // rate-retry v2: intended behaviour change (see RATE_RETRY_V2_MIGRATION.md) - the rate rises toward demand + 25% headroom by a = 0.10 × goodRate after 3 healthy cycles (66 = 60 + 6); load signals are now part of the input; the retry ratio rises by +0.02 toward 0.10 (not +0.01), once per 5 min stabilisation period after the last applied change
+    // after 3 healthy cycles the rate goes up by 10 percent of the good rate, from 60 to 66, toward the demand plus headroom;
+    // the retry ratio goes up by 0.02 toward 0.10, at most once per 5 minutes after the last change
     @Test void recoveryRequiresHealthyWindowsAndAppliedPolicyThenHonoursCooldown() {
         var c = new Context(); c.policy(60, .02, 1000); learnServiceWithLoad(c, true);
         for (int i = 0; i < 2; i++) { assertTrue(c.engine.service(c.service(100, 120, 100, 40.0), quietQueue()).changes().isEmpty()); c.clock.next(60); }
@@ -142,7 +143,7 @@ class AdaptiveEngineTests {
         c.clock.next(120); var next = c.engine.service(c.service(100, 120, 100, 40.0), quietQueue());
         assertEquals(.06, c.action(next, Action.RETRY_BUDGET).proposal().proposedValue(), 1e-10);
     }
-    /** One window of per-request traffic for the Context chain (deadline v2). */
+    /** One window of requests for the Context chain. */
     static Outcome chainV2(Context c, ChainSimulation.Profile profile, int window, long deadline, Map<String, Health> guards, boolean complete) {
         var phase = new ChainSimulation.Phase("p", 1, List.of(new ChainSimulation.PathTraffic(1, profile, "api-gateway", "order-service")), guards, Map.of());
         var set = ChainSimulation.samples(phase, window, deadline, 300, c.clock.now, "POST", "/api/orders", "t");
@@ -157,7 +158,7 @@ class AdaptiveEngineTests {
     static final ChainSimulation.Profile HEALTHY_1000 = ChainSimulation.profile(500, 950, 980, 1000, 1020);
     static final ChainSimulation.Profile HEALTHY_400 = ChainSimulation.profile(150, 350, 380, 400, 420);
 
-    // v2: intended behaviour change (see DEADLINE_V2_MIGRATION.md) - Case A (raise) and Case D (tighten) replace the bands and the restoration formula
+    // Case A raises the deadline and Case D tightens it
     @Test void deadlineBandsAndRestorationRequireApproval() {
         var c = new Context(); c.policy(120, .05, 1000); c.engine.configureDeadline(AdaptiveConfig.DeadlineSettings.demo(), null, null);
         PolicyChange increase = null;
@@ -185,7 +186,7 @@ class AdaptiveEngineTests {
         assertEquals(0, restore.proposal().measurements().get("predictedHealthyExceed"), "impact preview");
         assertEquals(Decision.PENDING_APPROVAL, restore.decision());
     }
-    // v2: intended behaviour change (see DEADLINE_V2_MIGRATION.md) - overload no longer blocks every change: Case B lowers; a firing signal is kept (Case C)
+    // under overload Case B lowers the deadline, and Case C keeps a deadline whose signal already fires
     @Test void overloadBlocksDeadlineChangesAndLargeIncreasesAreBoundedSteps() {
         var c = new Context(); c.policy(120, .05, 600); c.engine.configureDeadline(AdaptiveConfig.DeadlineSettings.demo(), null, null);
         for (int i = 0; i < 15; i++) { assertTrue(chainV2(c, HEALTHY_400, i, 600, Map.of(), true).changes().isEmpty(), "600 ms is in the healthy band"); c.clock.next(60); }
@@ -218,7 +219,7 @@ class AdaptiveEngineTests {
                 w.successfulRetries(), w.rejections(), w.inFlight(), w.successfulThroughput(), true, true, 500.0, 100.0, List.of());
         assertEquals(Health.INSUFFICIENT_DATA, c.engine.service(low).assessment().health());
     }
-    // rate-retry v2: intended behaviour change (see RATE_RETRY_V2_MIGRATION.md) - per-request safety (retryable, safe operation, remaining deadline) is the sidecar's job; the budget holds while STRESSED, whatever those flags say, and a repeated window still changes nothing
+    // checks per request belong to the sidecar; the budget stays the same while STRESSED, and a repeated window changes nothing
     @Test void retrySafetyAndRepeatedWindowsPreventUnsafeChanges() {
         var c = new Context(); c.policy(120, .05, 1000); c.learnService(false);
         c.engine.service(c.service(100, 120, 100, 40.0));
@@ -238,7 +239,7 @@ class AdaptiveEngineTests {
         c.clock.next(300);
         assertEquals(Health.HEALTHY, c.engine.service(c.service(101,120,0,0.0)).assessment().health());
     }
-    // v2: intended behaviour change (see DEADLINE_V2_MIGRATION.md) - persistence counts disjoint windows, not consecutive cycles
+    // streaks count separate windows, not cycles
     @Test void deadlineFailuresMustPersistAcrossDistinctFreshCyclesAndGapsResetThem() {
         var c = new Context(); c.policy(120, .05, 1000); c.engine.configureDeadline(AdaptiveConfig.DeadlineSettings.demo(), null, null);
         assertTrue(chainV2(c, OVER_SIGNALLED, 0, 1000, Map.of(), true).changes().isEmpty(), "first counted window");

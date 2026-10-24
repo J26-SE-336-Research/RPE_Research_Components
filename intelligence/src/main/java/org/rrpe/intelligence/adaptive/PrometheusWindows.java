@@ -38,7 +38,7 @@ public class PrometheusWindows {
         return Map.copyOf(queries);
     }
     /**
-     * Per-service load signals used by deadline v2 (guide §5.2), with the real sidecar metric names. Each query
+     * The load data of each service, with the real sidecar metric names. Each query
      * aggregates to one series. CPU, throttling and memory come from cAdvisor / kube-state-metrics, which the RPE
      * Prometheus does not scrape today: they return no data and are treated as unavailable.
      */
@@ -50,12 +50,12 @@ public class PrometheusWindows {
         queries.put("loadOverloadRejections", "sum(increase(rpe_rejections_total" + selector.replace("}", ",reason=\"overload\"}") + range + "))");
         queries.put("loadBackpressureRejections", "sum(increase(rpe_backpressure_inbound_rejected_total" + selector + range + "))");
         queries.put("loadBreakerOpenPeers", "max(max_over_time(rpe_circuit_breaker_open_peers" + selector + range + "))");
-        // Rate v2: the most requests waiting in the leaky-bucket queue during the window (worst pod), for the queue wait
-        // Wq = depth / rate taken out of p95. The maximum, not the average: when the queue fills in bursts, p95 contains the
-        // full-queue waits, and an average depth would make the app look slow.
+        // The most requests waiting in the queue during the window, on the worst pod. We use it to take the queue wait
+        // out of p95. We use the maximum, not the average: when the queue fills in bursts, p95 includes those waits,
+        // and an average depth would make the app look slow.
         queries.put("loadQueueDepth", "max(max_over_time(rpe_backpressure_inbound_queue_depth" + selector + range + "))");
-        // Rate starting reference (owner decision 22 Oct): the inbound rate the sidecar enforces now, the starting reference for rate v2
-        // when Component 3 has no policy rate for the service (as the configured deadline is for deadline v2).
+        // The rate the sidecar uses right now. We start from it when Component 3 has no policy rate for the service,
+        // the same way we start from the configured deadline.
         queries.put("loadRatePerSecond", "max(rpe_backpressure_inbound_rate_per_second" + selector + ")");
         String app = selector.replace("}", ",container!=\"rpe-sidecar\"}");
         queries.put("loadCpuUtilisation", "sum(rate(container_cpu_usage_seconds_total" + app + range + ")) / sum(kube_pod_container_resource_limits"

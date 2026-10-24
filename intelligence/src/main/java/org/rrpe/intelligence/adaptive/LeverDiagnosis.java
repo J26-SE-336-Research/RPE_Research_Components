@@ -4,14 +4,14 @@ import static org.rrpe.intelligence.adaptive.AdaptiveModels.*;
 import java.util.*;
 
 /**
- * Which lever fits an overloaded service (guide §6.4). Queue wait counts against the deadline, so a full queue with idle CPU
- * is a rate problem, not a deadline problem:
+ * Which lever fits an overloaded service. Queue wait counts against the deadline, so a full queue with idle CPU is a
+ * rate problem, not a deadline problem:
  * <ul>
- *   <li>RATE if queue wait is ≥ 50% of the request time and CPU is low (unknown CPU never blocks);</li>
- *   <li>CAPACITY if CPU ≥ 0.85 or throttling ≥ 0.25 (only when those series exist);</li>
+ *   <li>RATE if the queue wait is at least half of the request time and CPU is low (unknown CPU never blocks);</li>
+ *   <li>CAPACITY if CPU is at least 0.85 or throttling at least 0.25 (only when we have that data);</li>
  *   <li>otherwise DEADLINE.</li>
  * </ul>
- * Without queue-wait data: queue pressure ≥ the overloaded threshold and low CPU → RATE, marked {@code inferred}.
+ * Without queue wait data, a queue at the overloaded level with low CPU is RATE too, marked as inferred.
  */
 public final class LeverDiagnosis {
     private LeverDiagnosis() {}

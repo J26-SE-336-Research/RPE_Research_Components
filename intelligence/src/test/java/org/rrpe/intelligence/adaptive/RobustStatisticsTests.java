@@ -4,7 +4,7 @@ import static org.junit.jupiter.api.Assertions.*;
 import java.util.*;
 import org.junit.jupiter.api.Test;
 
-/** Deadline v2 statistics: one-sided Wilson bounds, scaled MAD and the weighted nearest-rank quantile. */
+/** The statistics: one-sided Wilson bounds, scaled MAD and the weighted nearest-rank quantile. */
 class RobustStatisticsTests {
     private static final double Z = 1.645;
     @Test void zeroEventsInOneHundredStillAllowAboutTwoPointSixPercent() {

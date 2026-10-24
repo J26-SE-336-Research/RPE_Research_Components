@@ -7,15 +7,15 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Predicate;
 
 /**
- * The healthy time T_h of each chain (guide §6.4): the pooled, traffic-weighted p99 of requests whose own path touched
- * only healthy services, over the last N_learn eligible (disjoint, complete, uncut) windows.
+ * The healthy time T_h of each chain: the p99 of requests whose own path only touched healthy services, over the last
+ * learning windows that are separate, complete and not cut. Each path is weighted by its share of the traffic.
  * <ul>
- *   <li>Expired or cut requests are right-censored: they are placed at +∞ (we only know they took at least D).</li>
- *   <li>IDENTIFIED: T_h is below the smallest budget of any learning window that had a censored sample, so the p99 is
- *       exact. Otherwise CENSORED: the data only prove p99 ≥ D (the deadline is too short).</li>
- *   <li>Each path (stratum) is weighted by share(all requests) / share(healthy requests), so a fast path that stays
- *       healthy cannot pull T_h down while a slow path is stressed. A stratum with ≥ 5% of the traffic but too few healthy
- *       samples is a coverage gap: T_h keeps its last IDENTIFIED value and tightening is blocked.</li>
+ *   <li>Expired or cut requests count as endless, since we only know they took at least the deadline.</li>
+ *   <li>IDENTIFIED: T_h is below the smallest deadline of any learning window with such a request, so the p99 is
+ *       exact. Otherwise CENSORED: we only know the p99 is at least the deadline, so the deadline is too short.</li>
+ *   <li>Each path is weighted by its share of all requests over its share of healthy requests, so a fast path that
+ *       stays healthy cannot pull T_h down while a slow path is stressed. A path with 5 percent of the traffic or more
+ *       but too few healthy samples is a gap: T_h keeps its last known value and tightening is blocked.</li>
  *   <li>Learning tolerates deadline exceedances and is not reset when the deadline changes; only {@link #reset} clears it.</li>
  *   <li>Drift: if the healthy p99 of a window differs from T_h by more than 25% for k windows, older history is dropped.</li>
  * </ul>
@@ -49,7 +49,7 @@ public class HealthyLatencyModel {
                     var s = item.sample();
                     healthy.add(new Entry(s.expired() || s.cut() ? Double.POSITIVE_INFINITY : s.durationMs(), item.stratum()));
                 }
-                // The window's own healthy p99 (for σ̂ and drift) only when every busy path has enough healthy requests;
+                // The window's own healthy p99 (for the spread and drift) only when every busy path has enough healthy requests;
                 // otherwise a change in the path mix would look like a change in the healthy time.
                 var healthyByStratum = new HashMap<String, Integer>();
                 for (var e : healthy) healthyByStratum.merge(e.stratum(), 1, Integer::sum);
@@ -152,7 +152,7 @@ public class HealthyLatencyModel {
         double th = RobustStatistics.weightedNearestRank(samples, cfg.quantile());
         long smallestCensoredBudget = chain.windows.stream().filter(Window::hadCensored).mapToLong(Window::budget).min().orElse(Long.MAX_VALUE);
         String status = Double.isFinite(th) && th < smallestCensoredBudget ? "IDENTIFIED" : "CENSORED";
-        // Coverage gap: a stratum carrying ≥ coverage-min-share of the traffic with too few healthy samples.
+        // A gap: a path with a real share of the traffic but too few healthy samples.
         var healthyCount = new HashMap<String, Integer>();
         for (var w : chain.windows) for (var e : w.healthy()) healthyCount.merge(e.stratum(), 1, Integer::sum);
         boolean gap = allShares.entrySet().stream().anyMatch(e -> e.getValue() >= cfg.coverageMinShare()

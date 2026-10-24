@@ -5,7 +5,7 @@ import static org.junit.jupiter.api.Assertions.*;
 import java.util.*;
 import org.junit.jupiter.api.Test;
 
-/** C3's joint healthy recalibration: trigger and calculation (C3 request sections 3 and 4, examples 1–3). */
+/** Joint recalibration: when it starts and how it calculates, examples 1 to 3. */
 class HealthyRecalibrationTests {
     static final AdaptiveConfig.DeadlineSettings DEADLINE = AdaptiveConfig.DeadlineSettings.defaults();
     static final AdaptiveConfig.Settings SETTINGS = AdaptiveConfig.Settings.defaults();
@@ -37,14 +37,14 @@ class HealthyRecalibrationTests {
     @Test void example3AnEmptyHealthyQueueLetsTheRateGoAlone() {
         var p = plan(0, 50, 100, 700, 875);
         assertEquals(880, p.proposedMs(), "ceil10(700 × 1.25); 5 ms from D, below the threshold"); assertFalse(p.passes());
-        // a deadline elsewhere in its healthy band is deadline v2's job, not caused by the rate: still no joint
+        // a deadline elsewhere in its healthy band is a job for the normal deadline logic, not the rate: still no joint
         var inBand = HealthyRecalibration.plan(ready(700, .25, 940), new HealthyRecalibration.RateMove("payment-svc", 0, 50, 50, 100), DEADLINE, SETTINGS, JOINT);
         assertFalse(inBand.passes(), inBand.text());
         // a small queue: the change stays below the threshold
         assertFalse(plan(1, 90, 100, 700, 875).passes());
     }
     @Test void theStepLimitsClampTheNewDeadline() {
-        var p = plan(80, 20, 100, 700, 875); // T_h' = 700 + 800 − 4000 → far below
+        var p = plan(80, 20, 100, 700, 875); // new healthy time 700 + 800 - 4000, far below zero
         assertEquals(DeadlineMath.ceil10(.80 * 875), p.proposedMs(), "not below ceil10(stepDownHealthy × D)");
         var up = plan(80, 100, 20, 700, 875);
         assertEquals(DeadlineMath.ceil10(1.5 * 875), up.proposedMs(), "not above ceil10(stepUp × D)");

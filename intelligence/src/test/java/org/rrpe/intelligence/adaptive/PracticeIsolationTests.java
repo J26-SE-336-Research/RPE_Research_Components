@@ -8,8 +8,8 @@ import org.junit.jupiter.api.Test;
 /**
  * Practice (MOCK) cards never affect live decisions: the same live run, without and with practice cards on the SAME target
  * names (approved and rejected while it runs), gives exactly the same live recommendations. That covers the pending-proposal
- * locks, deadline v2's proposals per hour and safety counters, the cross-lever lock, the automatic-approval guard and pause,
- * the "reviewer change → INCONCLUSIVE" rule and delivery.
+ * locks, the deadline proposals per hour and safety counters, the settled-deadline lock, the automatic-approval guard and
+ * pause, the rule that a reviewer change makes a check INCONCLUSIVE, and delivery.
  */
 class PracticeIsolationTests {
     static final String CHAIN = DeadlineSettledLockTests.CHAIN;
@@ -45,7 +45,7 @@ class PracticeIsolationTests {
         live.policies("op-v2", 100, .1, 100);                                      // the operator's tight deadline (e2e 95)
         for (int i = 0; i < 40; i++) live.cycle(100, 60, 100.0, 10.0);              // deadline case A, retry step down
         if (withPractice) assertTrue(PracticeCards.clear(live.workflow) > 0);
-        // rates never wait for a person (owner rule, 22 Oct): held changes are part of the live decisions compared below
+        // rates never wait for a person: held changes are part of the live decisions compared below
         var out = new java.util.ArrayList<String>(live.workflow.list().stream().filter(c -> c.proposal().source() != Source.MOCK)
                 .sorted(Comparator.comparing((PolicyChange c) -> c.proposal().generatedAt()).thenComparing(c -> c.proposal().action()))
                 .map(c -> c.proposal().generatedAt() + " " + c.proposal().action() + " " + c.proposal().target() + " " + c.proposal().currentValue() + "->"

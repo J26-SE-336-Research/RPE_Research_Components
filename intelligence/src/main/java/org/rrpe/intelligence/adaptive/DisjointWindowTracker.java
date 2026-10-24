@@ -7,7 +7,7 @@ import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Overlapping windows are not independent evidence. A window counts for persistence, learning and verification only
- * when it does not overlap the last counted window of the same chain: {@code windowEnd − lastCountedEnd ≥ window}.
+ * when it does not overlap the last counted window of the same chain, so it ends at least one window length later.
  * With a 5 min window and a 1 min cycle that is once every 5 cycles; with 1 min / 15 s, once every 4.
  */
 public class DisjointWindowTracker {

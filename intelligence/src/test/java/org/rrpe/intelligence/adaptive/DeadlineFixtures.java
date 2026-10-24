@@ -4,7 +4,7 @@ import static org.rrpe.intelligence.adaptive.AdaptiveModels.*;
 import java.time.Instant;
 import java.util.*;
 
-/** Small builders for deadline v2 tests. */
+/** Small builders for the deadline tests. */
 final class DeadlineFixtures {
     private DeadlineFixtures() {}
     static final Instant T0 = Instant.parse("2026-10-13T00:00:00Z");
@@ -16,7 +16,7 @@ final class DeadlineFixtures {
     static LabelledSample labelled(double ms, long budget, RequestLabel label, String... path) {
         var s = sample(ms, budget, path); return new LabelledSample(s, label, s.stratum());
     }
-    /** n healthy samples: (n − tops) spread between lo and hi, then {@code tops} at {@code top}. */
+    /** n healthy samples: most spread between lo and hi, and the last {@code tops} of them at {@code top}. */
     static List<LabelledSample> healthy(int n, double lo, double hi, int tops, double top, long budget, String... path) {
         var out = new ArrayList<LabelledSample>();
         int body = n - tops;

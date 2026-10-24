@@ -6,7 +6,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Pause rules of a chain (guide §6.6), all within one hour: two reversals (applied changes in opposite directions), two
+ * When to pause a chain, all within one hour: two reversals (applied changes in opposite directions), two
  * failed verifications, or requests cut by a rejecting middleware in two counted windows. Each method returns the pause
  * reason, or null.
  */

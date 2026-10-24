@@ -14,7 +14,7 @@ import org.junit.jupiter.api.Test;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
-/** C3 J4: an approved joint recommendation is delivered as ONE policy version with parts and ONE two-phase rollout. */
+/** An approved joint recommendation is delivered as one policy version with all its parts and one two-phase rollout. */
 class JointBridgeTests {
     private final JsonMapper json = JsonMapper.builder().build();
     private final List<JsonNode> policies = new CopyOnWriteArrayList<>(), rollouts = new CopyOnWriteArrayList<>();
