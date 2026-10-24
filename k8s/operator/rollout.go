@@ -33,10 +33,9 @@ func serviceOf(p corev1.Pod) string {
 	return ""
 }
 
-// gatewayService is the RPE service name of the API gateway. A policy scoped to it (the chain deadline, which only
-// the gateway applies) reaches the gateway proxies; a policy scoped to any other service reaches only that
-// service's proxies. The gateway is never a target of a service-scoped policy: activating one on the gateway
-// would replace the chain deadlines it enforces.
+// gatewayService is the service name of the API gateway. A policy scoped to it (the chain deadline) goes to the
+// gateway sidecars only, and a policy scoped to another service goes to that service's sidecars only. The gateway
+// is never a target of a service policy, because activating one there would replace its chain deadlines.
 var gatewayService = env("GATEWAY_SERVICE", "gateway")
 
 // resolveTargets returns the proxies a policy for `service` must reach: the ready proxies of that service (the
@@ -128,21 +127,20 @@ type eventBus interface {
 	setEffective(ctx context.Context, p Policy)
 }
 
-// RolloutReconciler drives an RPERollout through its phases.
+// RolloutReconciler moves an RPERollout through its phases.
 //
-// two-phase (per-request consistent): Staging (every target holds the new epoch inactive, verified by its content
-// hash) → Activating (gateways flip first and stamp the new epoch into new requests; then services) → Draining
-// (until no request pinned to the previous epoch is in flight on any target) → Complete (previous epoch retired).
-// Every proxy serves a request under the epoch the request carries, so one request never sees two versions.
-// A joint policy (parts for several services under one epoch) is activated in two steps: the loosening parts
-// first, then, once no request stamped with the previous version is in flight any more, the tightening parts
-// (planJoint). A limit that is a property of the proxy (the leaky-bucket rate) cannot be chosen per request, so this
-// order is what keeps a request of the old version from meeting a tightened limit.
-// naive: every target switches to the new version at once and drops the previous one, as a proxy holding a
-// single configuration does (the baseline). Requests in flight during the switch can see both versions.
+// two-phase: Staging (every target holds the new epoch inactive, checked by its content hash), Activating (the
+// gateway switches first and starts stamping the new epoch, then the services), Draining (wait until no request of
+// the previous epoch is still running), Complete (the previous epoch is retired). A sidecar serves a request under
+// the epoch the request carries, so one request does not see two versions.
+// A joint policy is activated in two steps, loosening parts first and tightening parts second (see planJoint), with a
+// wait for the old version's requests in between. The leaky-bucket rate belongs to the sidecar and cannot be chosen per
+// request, so this order is what keeps an old request away from a stricter limit.
+// naive: every target switches to the new version at once and drops the old one. This is the baseline; requests
+// running during the switch can see both versions.
 //
-// Rollouts run one at a time (the gateway stamps one epoch). The mixed-policy count is read from the proxies'
-// counters (relative to the start) during the rollout and once more after it settled.
+// Rollouts run one at a time, because the gateway stamps a single epoch. The mixed-policy count is read from the
+// sidecars' counters relative to the start, during the rollout and once more after it has settled.
 type RolloutReconciler struct {
 	client.Client
 	reader   client.Reader
@@ -383,9 +381,9 @@ func (r *RolloutReconciler) activate(ctx context.Context, ro *RPERollout, p Poli
 		// started this reconcile early)
 		return time.Until(at), nil
 	}
-	// inStep selects the proxies the current step activates: every proxy, except for a joint policy (the
-	// loosening parts in step 1, the tightening parts in step 2) and a naive rollout with a fixed arrival order (one
-	// group in step 1, the other SkewMs later in step 2).
+	// inStep picks the sidecars this step activates. Normally all of them. For a joint policy it is the loosening
+	// parts in step 1 and the tightening parts in step 2. For a naive rollout with an arrival order it is one group
+	// in step 1 and the other group SkewMs later in step 2.
 	inStep := func(role, part string) bool { return true }
 	switch {
 	case naive && ro.Spec.Order != "":
@@ -481,9 +479,9 @@ func (r *RolloutReconciler) activate(ctx context.Context, ro *RPERollout, p Poli
 // gating reports whether a joint rollout waits between its loosening and its tightening step.
 func gating(ro *RPERollout) bool { return ro.Status.GateStartedAt != "" && ro.Status.Step <= 1 }
 
-// finishDrain waits until no target proxy has a request pinned to the previous epoch in flight (at most r.drain).
-// Between the two steps of a joint rollout it is the gate before the tightening step; after the last step it is
-// the drain before the previous epoch is retired.
+// finishDrain waits until no target sidecar is still running a request of the previous epoch (at most r.drain).
+// Between the two steps of a joint rollout this is the wait before the tightening step. After the last step it is
+// the wait before the previous epoch is removed.
 func (r *RolloutReconciler) finishDrain(ctx context.Context, ro *RPERollout, p Policy) (time.Duration, error) {
 	prev := ro.Spec.PreviousEpoch
 	targets, err := r.targets(ctx, ro)
@@ -566,9 +564,9 @@ func (r *RolloutReconciler) governing(ctx context.Context, ro *RPERollout, p Pol
 	return governing(p, prev, active)
 }
 
-// takeOver retires the other policies a completed joint version replaces: each was the policy of a service that is
-// now a part of p (the first joint version over separate policies). It is marked superseded, so drift repair no longer
-// expects it, and removed from its proxies, so each proxy holds one policy for its service.
+// takeOver retires the other policies that a finished joint version replaces (the first joint version over separate
+// policies). Each is marked superseded, so drift repair stops expecting it, and removed from its sidecars, so a
+// sidecar ends up with one policy for its service.
 func (r *RolloutReconciler) takeOver(ctx context.Context, ro *RPERollout, p Policy) {
 	if !p.joint() || ro.Spec.Mode == "naive" {
 		return
@@ -759,9 +757,9 @@ func allActive(ro *RPERollout, which func(PodStatus) bool) bool {
 	return true
 }
 
-// stepChangesGateway reports whether a gateway proxy whose part really changes is activated in the given step of a
-// joint rollout. Only then can a request of the previous version carry a setting the next step depends on (the old
-// deadline); a gateway part that is unchanged needs no wait before the tightening.
+// stepChangesGateway reports whether the gateway's part is activated in this step and really changes. Only then can
+// an old request still carry a setting the next step depends on (the old deadline). If the gateway's part is
+// unchanged, there is nothing to wait for before tightening.
 func stepChangesGateway(ro *RPERollout, step int) bool {
 	for _, p := range ro.Status.Pods {
 		if p.Role == "gateway" && stepOf(ro.Status.Plan, p.Part) == step && kindOf(ro.Status.Plan, p.Part) != changeUnchanged {
