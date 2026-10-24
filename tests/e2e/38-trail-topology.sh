@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
-# C1 novelty, the self-describing request (X-RPE-Trail, rules R-P01..R-P05) and interoperability. Every RPE hop adds
-# one bounded entry to the trail; the gateway reports the finished trail to the protocol service and removes it from
-# its response. From trails alone the protocol service rebuilds the service graph (no tracing backend, no sampling)
-# and shows which hop used the deadline. The hop that does not speak RPE (partner-svc, an outside system called by
-# shipping-svc) is an unknown edge and marks the trail incomplete. rpe-go and rpe-java decode headers identically and
-# pass every conformance case, live.
+# C1 trail and Go/Java checks. Every RPE hop adds one small entry to X-RPE-Trail. The gateway sends the finished
+# trail to the protocol service and removes it from the response. From the trails alone the protocol service
+# rebuilds the service graph, without any tracing backend, and shows which hop used the deadline. partner-svc,
+# an outside system called by shipping-svc, has no RPE, so it shows up as an unknown edge and the trail is marked
+# incomplete. rpe-go and rpe-java read headers the same way and pass every conformance case.
 source "$(dirname "$0")/lib.sh"
 hub_login admin >/dev/null
 gateway_policy
@@ -48,7 +47,7 @@ sub=$(header X-RPE-Trail)
 assert_contains "${sub}" 'h="2:0:' "order-svc returns its own subtree, rooted at its registry id (2)"
 assert_contains "${sub}" ":U:" "with the unknown partner-svc hop inside it"
 
-# --- 3. topology rebuilt from trails, scored against the declared call graph ----------------------------------------
+# --- 3. topology rebuilt from trails and compared with the real call graph ------------------------------------------
 hub GET "/api/hub/protocol/topology?window=300"
 assert_eq "${CODE}" 200 "the topology is available"
 edges=$(echo "${BODY}" | jq -r '[.topology.edges[] | "\(.from)>\(.to)"] | sort | join(",")')
@@ -62,7 +61,7 @@ assert_eq "$(echo "${BODY}" | jq -r '.comparison.recall | floor')" 100 "recall 1
 assert_eq "$(echo "${BODY}" | jq -r '.comparison.missing | length')" 0 "no declared edge is missing"
 assert_contains "$(echo "${BODY}" | jq -r .comparison.source)" "deployments" "the declared call graph is read from the deployments, not typed in"
 
-# --- 4. interoperability: rpe-go and rpe-java ---------------------------------------------------------------------
+# --- 4. rpe-go and rpe-java give the same answers -----------------------------------------------------------------
 trail=$(echo "${A}" | jq -r .trail)
 hub POST /api/hub/protocol/compare "$(jq -nc --arg v "${trail}" '{kind:"trail", value:$v}')"
 assert_eq "$(echo "${BODY}" | jq -r .agree)" true "rpe-go and rpe-java decode the reported trail identically"

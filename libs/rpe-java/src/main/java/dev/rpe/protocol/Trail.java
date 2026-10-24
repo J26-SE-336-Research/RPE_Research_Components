@@ -5,18 +5,18 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * The in-band per-hop trail {@code X-RPE-Trail} (spec §12, rules R-P01..R-P05), verbose v1 encoding:
+ * The {@code X-RPE-Trail} header, the list of hops a request went through. For example
  * {@code rv=1, inc=?0, h="1:0:41250:F:0;2:1:39870:F:2"}. Each entry is
- * {@code svcId:parent:elapsedMicros:decision:consumedMs}: the service's registry id, the 1-based index of the calling
- * hop's entry (0 for a root), the time the hop spent including its callees (-1 while active), the decision code and
- * the part of the chain budget already used when the hop received the request.
+ * {@code svcId:parent:elapsedMicros:decision:consumedMs}: the service id, the position of the calling hop's entry
+ * starting at 1 (0 for the root), how long the hop took including its callees (-1 while running), what it did, and
+ * how much of the budget was already used when it got the request.
  *
- * @param registryVersion service-registry version ({@code rv}) the ids belong to
- * @param incomplete      the trail is known to miss hops ({@code inc}): a hop without RPE, truncation, registry mismatch
+ * @param registryVersion registry version ({@code rv}) the ids come from
+ * @param incomplete      {@code inc}, the trail is missing hops, for example a hop without RPE or a cut off trail
  * @param entries         the entries in order
  */
 public record Trail(long registryVersion, boolean incomplete, List<Entry> entries) {
-    /** Decision codes: forward, early-reject, expired, cancelled, retry, active, partial, overload, unknown hop. */
+    /** What a hop did: forward, early answer, expired, cancelled, retry, active, partial, overload, unknown hop. */
     public static final String DECISIONS = "FEXCRAPOU";
     public static final int MAX_ENTRIES = 16;
     public static final int MAX_BYTES = 1400;
@@ -130,9 +130,10 @@ public record Trail(long registryVersion, boolean incomplete, List<Entry> entrie
     }
 
     /**
-     * Appends {@code sub} under the entry at 1-based index {@code parent} (0 adds it as a new root), re-indexing its
-     * parents. Entries beyond the bounds are dropped with their descendants and the result is marked incomplete
-     * (R-P02); a subtree of another registry version is not merged and only marks the result incomplete (R-P03).
+     * Puts {@code sub} under the entry at position {@code parent}, counting from 1, or as a new root when it is 0.
+     * The parent numbers in sub are shifted to match. Entries that don't fit in the size limits are dropped with
+     * everything below them and the trail is marked incomplete. A sub from another registry version is not merged,
+     * it only marks the trail incomplete.
      */
     public Trail append(Trail sub, int parent) {
         List<Entry> out = new ArrayList<>(entries);

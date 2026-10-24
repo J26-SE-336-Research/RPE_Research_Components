@@ -19,12 +19,12 @@ import java.util.Map;
 import java.util.concurrent.Executors;
 
 /**
- * The rpe-java side of the C1 protocol service. It runs next to the Go service and answers with the same JSON shape,
- * so header validation and the conformance vectors can be shown for both reference implementations side by side.
+ * The Java part of the C1 protocol service. It runs next to the Go service and answers with the same JSON, so the
+ * admin panel can show header checks and conformance results from both libraries side by side.
  *
  * <pre>
  * POST /validate     {"kind": "context|result|hop|trail", "value": "..."}  -> verdict
- * GET  /conformance  every vector file, evaluated with rpe-java              -> [{file, description, cases}]
+ * GET  /conformance  every case file, run with rpe-java                       -> [{file, description, cases}]
  * GET  /healthz
  * </pre>
  */
@@ -56,7 +56,7 @@ public final class Main {
         System.out.println("rpe-protocol-java listening on :" + port);
     }
 
-    /** Decodes a value with rpe-java; the fields are formatted exactly as the Go service formats them. */
+    /** Decodes a value with rpe-java, formatting the fields the same way the Go service does. */
     static ObjectNode validate(String kind, String value) {
         ObjectNode out = JSON.createObjectNode().put("impl", "java");
         Map<String, String> fields = new LinkedHashMap<>();

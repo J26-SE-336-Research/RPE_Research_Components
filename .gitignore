@@ -33,5 +33,7 @@
 /conformance-kit/generated/
 /services/protocol-service/protocol-service
 
-# Claude Code design rules (CLAUDE.md is tracked: this line only takes effect if the file is ever removed from the repo)
+#  design rules file removed since the design is changed according to the poc
 CLAUDE.md
+
+

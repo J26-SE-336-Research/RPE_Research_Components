@@ -1,5 +1,5 @@
-# C3: RPE Mutating Admission Webhook. The MutatingWebhookConfiguration (with the generated CA bundle)
-# is rendered by scripts/deploy.sh into deploy/k8s/generated/.
+# C3: the mutating admission webhook that injects the sidecar. scripts/deploy.sh renders its
+# MutatingWebhookConfiguration (with the generated CA bundle) into deploy/k8s/generated/.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -25,9 +25,9 @@ spec:
             - {name: DEFAULT_INBOUND_MODE, value: redirect}
             - {name: DEFAULT_OUTBOUND_PORTS, value: "80,8080"}
             - {name: DEFAULT_DEADLINE_MS, value: "1000"}
-            # every injected sidecar exports its spans to Tempo (the services themselves do not trace)
+            # each injected sidecar sends its spans to Tempo (the services don't trace themselves)
             - {name: OTEL_EXPORTER_OTLP_ENDPOINT, value: "http://rpe-tempo.rpe-system:4318"}
-            # sidecars acknowledge every policy delivery to the C3 policy API (POST /api/k8s/acks)
+            # sidecars confirm each policy delivery to the C3 policy API (POST /api/k8s/acks)
             - {name: POLICY_API_URL, value: "http://rpe-policy-api.rpe-system"}
           readinessProbe:
             httpGet: {path: /healthz, port: 8443, scheme: HTTPS}

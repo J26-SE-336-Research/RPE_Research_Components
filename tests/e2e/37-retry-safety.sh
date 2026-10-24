@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
-# C1 novelty, retry safety (rule R-R02). RPE never rejects an original request because its deadline passed (the
-# sidecars only signal cs=expired); it refuses a RETRY of a chain that can no longer finish in time, because that retry
-# repeats side effects. payment-svc is made slower than the chain deadline and order-svc gives up on an attempt after
-# 600 ms and retries once: a plain retry charges the card twice, the same policy through the RPE retry gate once.
-# Counters are read per request id, so the background traffic keeps running.
+# C1 retry safety. A late original request is never rejected, the sidecars only mark it cs=expired. But a retry of a
+# chain that can't finish in time is refused, because it would repeat side effects. payment-svc is made slower than
+# the deadline and order-svc gives up after 600 ms and retries once. A plain retry charges the card twice, the same
+# retry through the RPE gate only once. Counters are read per request id so the background traffic can keep running.
 source "$(dirname "$0")/lib.sh"
 hub_login admin >/dev/null
 
-# --- 1. plain retry: the abandoned attempt still completes, the retry charges again ----------------------------------
+# --- 1. plain retry: the first attempt still finishes and the retry charges again ----------------------------------
 hub POST /api/hub/demos/retry '{"mode":"plain","latencyMs":1200,"attemptTimeoutMs":600}'
 assert_eq "${CODE}" 200 "the retry experiment runs (plain)"
 assert_eq "$(echo "${BODY}" | jq -r .attempts)" 2 "plain: order-svc sent a second payment attempt"
@@ -25,7 +24,7 @@ assert_eq "$(echo "${BODY}" | jq -r '.chain.result.term')" "?1" "rpe: the failur
 client GET "http://order-svc.rpe-demo:8080/admin/retry"
 assert_eq "$(echo "${BODY}" | jq -r .mode)" off "the experiment turns order-svc's retry knob off again"
 
-# --- 3. the receiver refuses an expired retry, and serves an expired original -------------------------------------
+# --- 3. the receiver refuses a late retry but still serves a late original ----------------------------------------
 rid=$(openssl rand -hex 16)
 expired="v=1, rid=\"${rid}\", iid=\"00f067aa0ba902b7\", pid=\"0000000000000000\", ttl=500, bud=1000, rb=1, cs=expired, rt=\"GET /api/orders\""
 client GET "http://payment-svc.rpe-demo:8080/pay" "" -H "X-RPE-Context: ${expired}" -H "X-RPE-Hop: att=2"

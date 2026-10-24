@@ -23,7 +23,7 @@ class AdmissionAndClientTest {
             + "ttl=287, bud=300, rb=3, cs=none, pe=\"e42\", rt=\"POST /api/orders\"";
 
     @Test
-    void gatewayIgnoresClientContextAndCreatesRoot() { // R-S01
+    void gatewayIgnoresClientContextAndCreatesRoot() {
         var cfg = Admission.Config.gateway((m, p) -> new Admission.RouteBudget.Budget(m + " " + p, 1000), 3, () -> "e7");
         var d = Admission.admit(cfg, "GET", "/api/orders",
                 Map.of(RpeHeaders.CONTEXT, List.of(CTX.replace("ttl=287, bud=300", "ttl=99999, bud=99999")),
@@ -38,7 +38,7 @@ class AdmissionAndClientTest {
     }
 
     @Test
-    void expiredOriginalsAreSignalledAndAdmitted() { // R-D02 (signal mode), R-T04
+    void expiredOriginalsAreSignalledAndAdmitted() {
         var svc = Admission.Config.service();
         var expired = Admission.admit(svc, "GET", "/x", Map.of("x-rpe-context", List.of(CTX.replace("ttl=287", "ttl=0"))));
         assertTrue(expired.admitted(), "an expired original request is never rejected");
@@ -55,7 +55,7 @@ class AdmissionAndClientTest {
     }
 
     @Test
-    void expiredRetriesAreRefused() { // R-R02
+    void expiredRetriesAreRefused() {
         var svc = Admission.Config.service();
         for (String ctx : List.of(CTX.replace("ttl=287", "ttl=0"), CTX.replace("cs=none", "cs=expired"), CTX.replace("cs=none", "cs=cancel"))) {
             var d = Admission.admit(svc, "GET", "/x", Map.of(RpeHeaders.CONTEXT, List.of(ctx), RpeHeaders.HOP, List.of("att=2")));
@@ -101,7 +101,7 @@ class AdmissionAndClientTest {
             assertTrue(child.ttlMillis() <= 287 - 5);
             assertNull(seenHop.get(), "a first attempt carries no attempt number");
 
-            // a call slower than the remaining deadline completes: the library never cuts it off
+            // a call slower than the time left still finishes, the library never cuts it off
             assertEquals(204, client.send(HttpRequest.newBuilder(URI.create(base + "/slow")), parent, 0, HttpResponse.BodyHandlers.discarding()).statusCode());
 
             var expired = new Inbound(parent.context(), parent.hop(), System.nanoTime() - 1_000_000_000L);

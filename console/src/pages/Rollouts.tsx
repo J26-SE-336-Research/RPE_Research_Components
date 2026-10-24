@@ -103,8 +103,8 @@ export function enforcedAfter(r: Rollout) {
 }
 
 /**
- * The real delivery path: every approved Component 4 recommendation is delivered as soon as it is approved, two-phase,
- * with no choice of mechanism and no waiting for an operator. Experiment runs (simulated naive deliveries) are left out.
+ * The real delivery path: every approved C4 recommendation is delivered as soon as it is approved, two-phase, with no
+ * choice of mechanism and nobody pressing Run. Experiment runs (simulated naive deliveries) are not listed here.
  */
 function LatestDeliveries({ data }: { data?: Rollout[] }) {
   const rows = (data ?? []).filter((r) => r.spec.mode !== "naive").slice(0, 6);

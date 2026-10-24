@@ -9,16 +9,16 @@ import (
 	"time"
 )
 
-// RetryPolicy is the caller's own retry policy for one logical call. RPE does not invent retries: it decides,
-// between the attempts the caller wants, whether one more attempt is still allowed (R-R02).
+// RetryPolicy is the caller's own retry settings for one call. RPE doesn't add retries of its own, it only decides
+// between attempts whether one more is still allowed.
 type RetryPolicy struct {
-	MaxAttempts    int64         // including the first attempt; 0 means the retry budget is the only limit
-	AttemptTimeout time.Duration // the caller gives up on one attempt after this long (0: no per-attempt timeout)
+	MaxAttempts    int64         // counts the first attempt too, 0 means only the retry budget limits it
+	AttemptTimeout time.Duration // give up on one attempt after this long, 0 means no limit
 	Backoff        time.Duration // wait before each retry
-	AttemptCost    time.Duration // time one attempt is expected to need; defaults to AttemptTimeout
-	ReplaySafe     bool          // the operation may be repeated
-	// Retryable reports whether a failed attempt is worth retrying. Default: a transport error or timeout, and
-	// 502/503/504 responses.
+	AttemptCost    time.Duration // how long one attempt usually takes, defaults to AttemptTimeout
+	ReplaySafe     bool          // true if it is safe to do the operation twice
+	// Retryable says if a failed attempt is worth retrying. By default that is a network error, a timeout or a
+	// 502, 503 or 504.
 	Retryable func(resp *http.Response, err error) bool
 }
 
@@ -30,8 +30,8 @@ type RetryAttempt struct {
 	Millis  int64  `json:"ms"`
 }
 
-// RetryOutcome is the result of DoWithRetry. Response is the last response received (its body fully read and
-// replayable), Refused the gate's verdict when it stopped a retry.
+// RetryOutcome is what DoWithRetry returns. Response is the last response we got, with the body already read so
+// it can be read again. Refused is set when the gate stopped a retry.
 type RetryOutcome struct {
 	Response *http.Response
 	Err      error
@@ -50,12 +50,11 @@ func defaultRetryable(resp *http.Response, err error) bool {
 	return false
 }
 
-// DoWithRetry runs a logical call with the caller's retry policy and the RPE retry gate between attempts. newRequest
-// builds a fresh request for each attempt (with the given context). Attempts after the first are marked as retries
-// (X-RPE-Hop att=n) and spend one unit of the retry budget; a retry is never sent once the chain is cancelled or
-// expired, after a terminal response, for an operation that is not replay-safe, when the time left is less than the
-// backoff plus one attempt, or when the budget is used up. Without an RPE context only MaxAttempts and ReplaySafe
-// apply.
+// DoWithRetry makes a call using the caller's retry policy and asks the retry gate before every retry. newRequest
+// builds a new request for each attempt. Every attempt after the first is marked as a retry and uses one unit of
+// the retry budget. No retry is sent if the chain is cancelled or expired, the last answer said not to retry, the
+// operation isn't safe to repeat, there isn't enough time for the backoff plus one more attempt, or the budget is
+// gone. Without an RPE context only MaxAttempts and ReplaySafe are used.
 func DoWithRetry(ctx context.Context, client *http.Client, newRequest func(ctx context.Context) (*http.Request, error), p RetryPolicy) RetryOutcome {
 	if client == nil {
 		client = http.DefaultClient
@@ -120,7 +119,7 @@ func DoWithRetry(ctx context.Context, client *http.Client, newRequest func(ctx c
 	}
 }
 
-// doAttempt sends one attempt; a response body is read fully so the attempt's timeout can be released.
+// doAttempt sends one attempt. The body is read fully so the attempt timeout can be cancelled.
 func doAttempt(ctx context.Context, client *http.Client, newRequest func(ctx context.Context) (*http.Request, error), timeout time.Duration) (*http.Response, error, int64) {
 	start := time.Now()
 	actx, cancel := ctx, context.CancelFunc(func() {})

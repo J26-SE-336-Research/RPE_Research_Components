@@ -174,10 +174,10 @@ function RunDetail({ r }: { r: ConsistencyRun }) {
 }
 
 /**
- * Experiment E4, not the delivery path. RPE always delivers an approved change automatically and two-phase (see
- * "Latest deliveries" on the Rollouts page). This experiment simulates what a system without C3 would do with one
- * joint decision (a longer chain deadline at the gateway and a lower rate at payment-svc) and compares it with C3
- * under the same traffic. The naive deliveries and their network delay exist only in the simulation.
+ * Experiment E4, not the real delivery path. RPE always delivers an approved change automatically and two-phase (see
+ * "Latest deliveries" on the Rollouts page). This card simulates a system without C3 handling one joint decision
+ * (a longer chain deadline at the gateway and a lower rate at payment-svc) and compares it with C3 under the same
+ * traffic. The naive deliveries and their network delay exist only here.
  */
 export function ConsistencyDemo() {
   const [open, setOpen] = useState(false);

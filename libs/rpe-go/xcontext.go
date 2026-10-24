@@ -8,16 +8,15 @@ import (
 	"time"
 )
 
-// Header names of the RPE v1 header set (spec §2). Field semantics are stable;
-// the wire encoding defaults to an RFC 8941 dictionary until the wire-format study decides.
+// RPE header names. The values use the RFC 8941 dictionary format for now, the wire format study may change that.
 const (
-	HeaderContext = "X-RPE-Context" // end-to-end request context
-	HeaderHop     = "X-RPE-Hop"     // hop-scoped, rewritten at every hop, never reaches the application
-	HeaderTrail   = "X-RPE-Trail"   // optional in-band per-hop trail
+	HeaderContext = "X-RPE-Context" // request context, travels the whole chain
+	HeaderHop     = "X-RPE-Hop"     // only for one hop, rewritten each time and never given to the app
+	HeaderTrail   = "X-RPE-Trail"   // optional list of hops
 	HeaderResult  = "X-RPE-Result"  // response context
 )
 
-// CancelState is the cancellation state carried in the context (R-C01: terminal once set).
+// CancelState is the cancel state in the context. Once set it never goes back to none.
 type CancelState string
 
 const (
@@ -26,26 +25,26 @@ const (
 	CancelExpired CancelState = "expired"
 )
 
-// Context is the end-to-end X-RPE-Context.
+// Context is the X-RPE-Context header.
 type Context struct {
 	Version      int64
 	RID          string // 32 lowercase hex, equals the W3C trace-id
-	IID          string // 16 lowercase hex, this invocation / attempt
-	PID          string // 16 lowercase hex, parent invocation (RootParentID at the gateway)
-	TTLMillis    int64  // remaining deadline when the message was sent (relative, skew-tolerant)
-	BudgetMillis int64  // original end-to-end budget (immutable)
-	RetryBudget  int64  // retry budget remaining for this subtree
+	IID          string // 16 lowercase hex, this call or attempt
+	PID          string // 16 lowercase hex, the parent call, RootParentID at the gateway
+	TTLMillis    int64  // time left when the message was sent, relative so clocks don't need to agree
+	BudgetMillis int64  // the full budget from the gateway, never changes
+	RetryBudget  int64  // retries left for this part of the chain
 	Cancel       CancelState
-	PolicyEpoch  string // policy epoch the request is pinned to (immutable)
-	Route        string // route key "METHOD /template" (immutable)
-	// Unknown holds members this implementation does not understand; they are forwarded unchanged (R-V01).
+	PolicyEpoch  string // policy epoch the request sticks to, never changes
+	Route        string // route key like "GET /api/orders", never changes
+	// Unknown keeps members we don't understand so they can be passed on as they are.
 	Unknown map[string]string
 }
 
-// ErrNoContext reports that the request carries no X-RPE-Context.
+// ErrNoContext means the request has no X-RPE-Context.
 var ErrNoContext = problem(CodeMissingHeader, HeaderContext, "header absent")
 
-// ParseContext reads and validates X-RPE-Context from headers.
+// ParseContext reads and checks X-RPE-Context from the headers.
 func ParseContext(h http.Header) (Context, error) {
 	raw, err := single(h, HeaderContext, false)
 	if err != nil {
@@ -57,7 +56,7 @@ func ParseContext(h http.Header) (Context, error) {
 	return DecodeContext(raw)
 }
 
-// DecodeContext parses the serialized X-RPE-Context value.
+// DecodeContext parses an X-RPE-Context value.
 func DecodeContext(raw string) (Context, error) {
 	if len(raw) > MaxHeaderValueBytes {
 		return Context{}, problem(CodeContextTooLarge, HeaderContext, "value exceeds 256 bytes")
@@ -110,7 +109,7 @@ func DecodeContext(raw string) (Context, error) {
 	return c, c.Validate()
 }
 
-// Validate checks required members and version support (R-V02).
+// Validate checks the required members and that we support the version.
 func (c Context) Validate() error {
 	if c.Version == 0 || c.RID == "" || c.IID == "" || c.PID == "" || c.BudgetMillis == 0 || c.Route == "" {
 		return problem(CodeMissingHeader, HeaderContext, "v, rid, iid, pid, bud and rt are required")
@@ -124,7 +123,7 @@ func (c Context) Validate() error {
 	return nil
 }
 
-// Encode serializes the context as an RFC 8941 dictionary.
+// Encode writes the context as an RFC 8941 dictionary.
 func (c Context) Encode() string {
 	var w dictWriter
 	w.int("v", c.Version)
@@ -147,8 +146,8 @@ func (c Context) Encode() string {
 	return w.String()
 }
 
-// NewRoot creates the context at the gateway trust boundary (R-S01).
-// traceID may be an existing W3C trace-id to bind rid to (trace binding); empty creates one.
+// NewRoot creates the first context at the gateway. traceID can be an existing W3C trace-id to use as rid,
+// if it's empty a new one is made.
 func NewRoot(route string, budget time.Duration, retryBudget int64, epoch, traceID string) (Context, error) {
 	budgetMs := budget.Milliseconds()
 	rid := traceID
@@ -168,8 +167,8 @@ func NewRoot(route string, budget time.Duration, retryBudget int64, epoch, trace
 	return c, c.Validate()
 }
 
-// Child derives the context for an outbound call: a fresh iid, pid set to the parent's iid,
-// ttl reduced by the locally measured elapsed time (R-T02, R-D07) and the given retry-budget grant (R-T03).
+// Child makes the context for an outbound call: a new iid, pid set to our iid, ttl minus the time we spent
+// here, and the retry budget we give this child.
 func (c Context) Child(elapsed, reserve time.Duration, grant int64) (Context, error) {
 	if grant < 0 || grant > c.RetryBudget {
 		return Context{}, ruleProblem("R-T03", CodeInvalidTransition, HeaderContext, "child grant exceeds parent retry budget")
@@ -187,8 +186,8 @@ func (c Context) Child(elapsed, reserve time.Duration, grant int64) (Context, er
 	return child, nil
 }
 
-// ValidateContextTransition is the context guard (R-T01..R-T06) for a parent → child step.
-// elapsed is the time the parent spent locally before sending the child request.
+// ValidateContextTransition checks that a child context follows the rules from its parent.
+// elapsed is how long the parent spent before sending the child request.
 func ValidateContextTransition(in, out Context, elapsed time.Duration) []error {
 	var v []error
 	if in.RID != out.RID || in.BudgetMillis != out.BudgetMillis || in.Route != out.Route || in.PolicyEpoch != out.PolicyEpoch {
@@ -212,10 +211,10 @@ func ValidateContextTransition(in, out Context, elapsed time.Duration) []error {
 	return v
 }
 
-// Hop is the hop-scoped X-RPE-Hop header.
+// Hop is the X-RPE-Hop header, only valid for one hop.
 type Hop struct {
-	CallerToken string // cb: backpressure caller token
-	Attempt     int64  // att: attempt number, 1 = first attempt
+	CallerToken string // cb, the backpressure caller token
+	Attempt     int64  // att, 1 is the first attempt
 }
 
 func ParseHop(h http.Header) (Hop, error) {
@@ -253,21 +252,21 @@ func (h Hop) Encode() string {
 	return w.String()
 }
 
-// StripHop removes hop-scoped headers before a request reaches the application (spec §2).
+// StripHop removes the per-hop headers before the request reaches the app.
 func StripHop(h http.Header) { h.Del(HeaderHop) }
 
-// Result is the response context X-RPE-Result.
+// Result is the X-RPE-Result response header.
 type Result struct {
 	Version     int64
 	Outcome     Outcome
 	Reason      Reason
-	Terminal    bool  // term: MUST NOT be retried (R-R02)
+	Terminal    bool  // term, don't retry this
 	BPLevel     int64 // 0..3
 	BPUtil      int64 // 0..100
 	BudgetUsed  int64 // rbu
 	PolicyEpoch string
 	Late        bool
-	Children    string // kids annotation "name:outcome:ms;..."
+	Children    string // kids, like "name:outcome:ms;..."
 }
 
 func ParseResult(h http.Header) (Result, bool, error) {
@@ -329,7 +328,7 @@ func (r Result) Encode() string {
 	return w.String()
 }
 
-// ReasonInsufficientTime is the R-D03 reason (not enough time left for this hop).
+// ReasonInsufficientTime means there wasn't enough time left for this hop.
 const ReasonInsufficientTime Reason = "insufficient-time"
 
 func wantInt(m sfMember, lo, hi int64) (int64, error) {
@@ -371,7 +370,7 @@ func cloneMap(m map[string]string) map[string]string {
 	return out
 }
 
-// TraceIDFromTraceparent extracts the trace-id of a W3C traceparent header, or "".
+// TraceIDFromTraceparent gets the trace-id from a W3C traceparent header, or "".
 func TraceIDFromTraceparent(tp string) string {
 	parts := strings.Split(tp, "-")
 	if len(parts) != 4 || len(parts[1]) != 32 {

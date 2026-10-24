@@ -21,8 +21,8 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * Evaluates the shared conformance vectors with rpe-java at run time (the same checks as the library's
- * {@code ConformanceTest}), so the admin panel can show the Go and Java verdicts of every case side by side.
+ * Runs the shared conformance cases with rpe-java while the service is running, the same checks as
+ * {@code ConformanceTest}, so the admin panel can show the Go and Java results for every case.
  */
 final class ConformanceRunner {
     record CaseResult(String name, boolean pass, String detail) {}
@@ -31,7 +31,7 @@ final class ConformanceRunner {
 
     @FunctionalInterface
     interface Check {
-        /** Returns null when the case passes, otherwise what rpe-java produced. */
+        /** Returns null if the case passes, otherwise what rpe-java gave instead. */
         String run(JsonNode c) throws Exception;
     }
 
@@ -146,7 +146,7 @@ final class ConformanceRunner {
         void run();
     }
 
-    /** Null when the action fails with the expected code and rule. */
+    /** Null if the action fails with the expected code and rule. */
     private static String failure(JsonNode expected, Action action) {
         try {
             action.run();

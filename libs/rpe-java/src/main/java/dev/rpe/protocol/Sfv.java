@@ -8,14 +8,14 @@ import java.util.Set;
 import java.util.TreeMap;
 
 /**
- * The RFC 8941 dictionary subset used by the RPE headers: integer, string, token and boolean bare items, without
- * parameters or inner lists. Duplicate keys are rejected (stricter than RFC 8941) because a duplicated resilience
- * field is ambiguous. Behaviour matches the Go reference implementation byte for byte (conformance kit).
+ * The part of RFC 8941 dictionaries our headers use: integers, strings, tokens and booleans, with no parameters or
+ * inner lists. Duplicate keys are an error, which is stricter than the RFC, because two values for the same field
+ * would be confusing. It behaves exactly like the Go version, the conformance kit checks that.
  */
 final class Sfv {
     enum Kind { INTEGER, STRING, TOKEN, BOOLEAN }
 
-    /** One bare item; {@code raw} is its serialized form, kept so unknown members are forwarded unchanged (R-V01). */
+    /** One value. {@code raw} is the original text, kept so unknown members can be passed on unchanged. */
     record Item(Kind kind, long integer, String string, boolean bool, String raw) {}
 
     record Member(String key, Item item) {}
@@ -133,7 +133,7 @@ final class Sfv {
         throw new ProtocolException(ErrorCode.INVALID_SYNTAX, header, "unsupported value type");
     }
 
-    /** Serializes members in a stable order: known keys in the order written, then unknown members sorted by key. */
+    /** Writes members in a fixed order: known keys in the order written, then unknown ones sorted by key. */
     static final class Writer {
         private final List<String> parts = new ArrayList<>();
 
@@ -174,7 +174,7 @@ final class Sfv {
     static boolean isDigit(char c) { return c >= '0' && c <= '9'; }
     static boolean isTokenChar(char c) { return isAlpha(c) || isDigit(c) || "!#$%&'*+-.^_`|~:/".indexOf(c) >= 0; }
 
-    // ---------- typed member accessors (shared by the header codecs) ----------
+    // helpers to read typed members, used by the header classes
 
     static long wantInt(Member m, long lo, long hi) {
         if (m.item().kind() != Kind.INTEGER) {

@@ -1,6 +1,7 @@
-# C3: RPE Operator + policy API. Least privilege: RPE custom resources in rpe-system; pods and namespaces read
-# cluster-wide for the coverage audit (namespaces labelled rpe-injection=enabled), and pod delete only for the
-# admin "re-inject" action that recreates a pod which runs without the sidecar.
+# C3: the Operator and the policy API. It only gets the access it needs: the RPE custom resources in rpe-system,
+# read access to pods and namespaces for the coverage audit (namespaces labelled rpe-injection=enabled), and pod
+# delete only for the admin "re-inject" action, which recreates a pod that is running without the sidecar.
+#kustomization means packaging all files as one then deployment is easy
 apiVersion: v1
 kind: ServiceAccount
 metadata:

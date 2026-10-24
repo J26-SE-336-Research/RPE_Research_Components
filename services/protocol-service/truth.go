@@ -16,9 +16,9 @@ import (
 	"time"
 )
 
-// groundTruth is the declared call graph the rebuilt topology is scored against. It must not come from the trails
-// themselves, otherwise the comparison would be circular. It is either set by hand (GROUND_TRUTH) or read from the
-// demo deployments: each service declares the services it calls in its CHILDREN setting ("name=url,...").
+// groundTruth is the real call graph we compare the rebuilt topology with. It can't come from the trails, or we
+// would be comparing the trails with themselves. It is either set by hand in GROUND_TRUTH or read from the demo
+// deployments, where each service lists the services it calls in CHILDREN.
 type groundTruth struct {
 	mu     sync.RWMutex
 	edges  [][2]string
@@ -37,7 +37,7 @@ func (g *groundTruth) set(edges [][2]string, source string) {
 	g.mu.Unlock()
 }
 
-// deployment is the part of a Kubernetes Deployment the call graph is read from.
+// deployment is the part of a Kubernetes Deployment we need for the call graph.
 type deployment struct {
 	Metadata struct {
 		Name string `json:"name"`
@@ -57,8 +57,8 @@ type deployment struct {
 	} `json:"spec"`
 }
 
-// edgesFromDeployments reads the declared calls: SERVICE_NAME (or the deployment name) calls the host of every
-// CHILDREN url. The sidecar container is skipped.
+// edgesFromDeployments reads the calls each service declares: SERVICE_NAME, or the deployment name, calls the host
+// of every CHILDREN url. The sidecar container is skipped.
 func edgesFromDeployments(items []deployment) [][2]string {
 	seen := map[[2]string]bool{}
 	var out [][2]string
@@ -100,8 +100,8 @@ func edgesFromDeployments(items []deployment) [][2]string {
 	return out
 }
 
-// kubeReader is a minimal in-cluster client for one read: the deployments of a namespace (RBAC in
-// deploy/k8s/platform/protocol.yaml: get and list deployments in rpe-demo, nothing else).
+// kubeReader is a very small in-cluster client that only lists the deployments of one namespace. The permissions
+// for that are in deploy/k8s/platform/protocol.yaml.
 type kubeReader struct {
 	base, token string
 	client      *http.Client
@@ -145,8 +145,8 @@ func (k *kubeReader) deployments(ctx context.Context, namespace string) ([]deplo
 	return list.Items, nil
 }
 
-// followDeployments refreshes the ground truth from the deployments every interval. On an error the last known graph is
-// kept.
+// followDeployments reloads the call graph from the deployments every interval. If a read fails we keep the last
+// one.
 func (g *groundTruth) followDeployments(ctx context.Context, k *kubeReader, namespace string, interval time.Duration) {
 	for {
 		if items, err := k.deployments(ctx, namespace); err != nil {

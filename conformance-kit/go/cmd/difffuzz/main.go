@@ -1,6 +1,6 @@
-// difffuzz writes a differential corpus: deterministic random mutations of valid RPE headers together with the
-// verdict of the reference implementation (canonical re-encoding, or the error code and rule). The rpe-java test
-// suite replays the corpus and must reach the same verdict for every input.
+// difffuzz makes a lot of randomly changed RPE headers, always the same ones for a given seed, and saves what
+// rpe-go says about each one: the encoded value or the error code and rule. The rpe-java tests replay them and
+// have to give the same answer every time.
 //
 //	go run ./cmd/difffuzz -n 5000 -seed 1 ../generated/differential.json
 package main
@@ -100,7 +100,7 @@ func main() {
 		s := seeds[h][r.Intn(len(seeds[h]))]
 		in := mutate(r, s)
 		if strings.TrimSpace(in) == "" && h != "context" {
-			continue // an empty hop/result header means "absent", which is not a codec question
+			continue // an empty hop or result header just means it is missing, nothing to compare
 		}
 		e := verdict(h, in)
 		if e.Code == "" {

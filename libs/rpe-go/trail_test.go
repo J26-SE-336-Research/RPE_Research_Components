@@ -77,9 +77,9 @@ func TestTrailAppendReindexesAndBounds(t *testing.T) {
 	}
 }
 
-// TestTrailThroughAChain runs gateway -> order -> {inventory, legacy (no RPE)} and checks the trail the gateway
-// reports: every RPE hop appends one entry, the hop without RPE becomes an unknown entry and the trail is marked
-// incomplete; the trail is removed from the gateway's response (R-P04).
+// TestTrailThroughAChain runs gateway -> order -> inventory and legacy, where legacy has no RPE. Every RPE hop
+// should add one entry, legacy should show up as unknown and mark the trail incomplete, and the gateway should
+// not send the trail back to the client.
 func TestTrailThroughAChain(t *testing.T) {
 	reg := StaticRegistry{Version: 3, IDs: map[string]int64{"gateway": 1, "order": 2, "inventory": 3, "legacy": 4}}
 	client := &http.Client{Transport: &SignalTransport{}}
@@ -102,7 +102,7 @@ func TestTrailThroughAChain(t *testing.T) {
 	defer legacy.Close()
 	order := httptest.NewServer(SignalMiddleware(SignalConfig{Trail: &TrailConfig{Service: "order", Registry: reg}},
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			for _, u := range []string{inventory.URL, legacy.URL} { // legacy's host is not in the registry: id 0
+			for _, u := range []string{inventory.URL, legacy.URL} { // legacy isn't in the registry, so its id is 0
 				req, _ := http.NewRequestWithContext(r.Context(), "GET", u, nil)
 				if resp, err := client.Do(req); err == nil {
 					resp.Body.Close()

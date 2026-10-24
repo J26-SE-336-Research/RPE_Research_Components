@@ -7,8 +7,8 @@ import (
 	"time"
 )
 
-// Inbound is the validated context of the request being served, with its local receive time.
-// All later deadline checks use the local monotonic clock (R-D01).
+// Inbound is the checked context of the request being served, plus the time we received it.
+// Later deadline checks use the local clock, so other machines' clocks don't matter.
 type Inbound struct {
 	Ctx      Context
 	Hop      Hop
@@ -23,47 +23,45 @@ func (in Inbound) Remaining(now time.Time) time.Duration {
 type inboundKey struct{}
 type grantKey struct{}
 
-// FromContext returns the inbound RPE context stored by Middleware.
+// FromContext returns the inbound RPE context saved by the middleware.
 func FromContext(ctx context.Context) (Inbound, bool) {
 	in, ok := ctx.Value(inboundKey{}).(Inbound)
 	return in, ok
 }
 
-// WithInbound stores an inbound context (used by Middleware and by tests).
+// WithInbound saves an inbound context. Used by the middleware and in tests.
 func WithInbound(ctx context.Context, in Inbound) context.Context {
 	return context.WithValue(ctx, inboundKey{}, in)
 }
 
-// WithChildGrant sets the retry-budget grant for the next outbound call made with ctx
-// (use SplitBudget for fan-out so that grants are conserved, R-T03/R-F05).
+// WithChildGrant sets how much retry budget the next outbound call gets. For fan-out use SplitBudget so the
+// children never get more than the parent had.
 func WithChildGrant(ctx context.Context, grant int64) context.Context {
 	return context.WithValue(ctx, grantKey{}, grant)
 }
 
 // MiddlewareConfig configures the inbound middleware.
 type MiddlewareConfig struct {
-	// Gateway makes this the trust boundary (R-S01): a fresh root context is always created.
+	// Gateway means this service is the entry point, so it always starts a new root context.
 	Gateway bool
 	// RouteBudget returns the route key and deadline budget for a gateway request.
 	RouteBudget func(r *http.Request) (route string, budget time.Duration)
 	// RetryBudget is the root retry budget for gateway requests.
 	RetryBudget int64
-	// Epoch returns the active policy epoch stamped by the gateway ("" if none).
+	// Epoch returns the active policy epoch, or "" if there is none.
 	Epoch func() string
-	// Required rejects non-gateway requests that carry no context (400) instead of passing them through.
+	// Required answers 400 to requests with no context instead of letting them through. Ignored at the gateway.
 	Required bool
-	// Now is the clock (tests); defaults to time.Now.
+	// Now is the clock, mainly for tests. Defaults to time.Now.
 	Now func() time.Time
-	// Trail enables the in-band trail (X-RPE-Trail); nil disables it.
+	// Trail turns on the X-RPE-Trail recording. Leave it nil to turn it off.
 	Trail *TrailConfig
 }
 
-// Middleware is the standalone variant of SignalMiddleware, for services that run without the RPE sidecar: the
-// library itself is the point that detects expiry. It validates or creates the context, strips hop-scoped headers,
-// binds traceparent to rid and stores the context. Signal mode (R-D02): an original request that arrives with no
-// time left is served with cs=expired set in its context, never rejected; only a retry (X-RPE-Hop att >= 2) of a
-// cancelled or expired chain is refused with a terminal 504 (R-R02). The application decides what an expired
-// request means (Cancelled, NonCritical, CallIfNotCancelled).
+// Middleware is SignalMiddleware for services that run without the sidecar, so the library itself has to notice
+// when the deadline has passed. It checks or creates the context, removes the per-hop headers, ties traceparent to
+// rid and saves the context. A request that arrives late is still served, with cs=expired in its context. Only a
+// retry of a cancelled or expired chain gets a 504. The app decides what to do with a late request.
 func Middleware(cfg MiddlewareConfig, next http.Handler) http.Handler {
 	return inbound{gateway: cfg.Gateway, routeBudget: cfg.RouteBudget, retryBudget: cfg.RetryBudget, epoch: cfg.Epoch,
 		now: cfg.Now, trail: cfg.Trail, required: cfg.Required, detect: true, bindTrace: true}.handler(next)
@@ -77,13 +75,13 @@ func WriteResult(w http.ResponseWriter, status int, res Result, msg string) {
 	_, _ = io.WriteString(w, msg+"\n")
 }
 
-// Transport is the standalone variant of SignalTransport: it propagates the inbound context to outbound calls (fresh
-// iid, pid, ttl reduced by elapsed time and reserve) and, without a sidecar to do it, marks a child that has no time
-// left cs=expired. It never refuses a first attempt and never cuts a slow call off; only a retry (WithAttempt >= 2)
-// of a cancelled or expired chain is answered locally with a terminal 504 instead of being sent (R-R02).
+// Transport is SignalTransport for services without the sidecar. It passes the context on to outbound calls with a
+// new iid and pid and a smaller ttl, and since there is no sidecar it marks a child with no time left as
+// cs=expired itself. First attempts always go out and slow calls are never cut off. Only a retry of a cancelled or
+// expired chain is answered locally with a 504 instead of being sent.
 type Transport struct {
 	Base    http.RoundTripper
-	Reserve time.Duration // parent post-processing allowance subtracted from the child ttl (R-D07)
+	Reserve time.Duration // time kept back for our own work after the call, taken off the child ttl
 	Now     func() time.Time
 }
 
@@ -91,7 +89,7 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	return outbound{base: t.Base, reserve: t.Reserve, now: t.Now, detect: true}.roundTrip(req)
 }
 
-// SplitMode is the fan-out split mode (R-D07, R-F05).
+// SplitMode says how the budget is split when a service calls several children.
 type SplitMode string
 
 const (
@@ -99,9 +97,9 @@ const (
 	SplitSequential SplitMode = "sequential"
 )
 
-// SplitBudget divides a retry budget across n children (R-F05). In parallel mode each child gets
-// floor((rb-reserve)/n) and the remainder goes to the first children; in sequential mode every child
-// may use the whole unallocated budget at dispatch and the parent deducts the reported rbu afterwards.
+// SplitBudget splits a retry budget over n children. In parallel mode each child gets (rb-reserve)/n and the
+// leftover goes to the first ones. In sequential mode each child can use all of what is left when it is called,
+// and the parent takes off what the child reports it used.
 func SplitBudget(mode SplitMode, rb, reserve int64, n int) []int64 {
 	out := make([]int64, n)
 	if n <= 0 {

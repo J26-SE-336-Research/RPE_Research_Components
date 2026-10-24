@@ -1,6 +1,6 @@
--- RPE policy store (C3). PostgreSQL 16. Contract A3.4.
--- Governance (C3 FR10): a policy row cannot exist without a human approval record, and specs are
--- append-only (a change is a new version, never an in-place update).
+-- Policy store for C3 (PostgreSQL 16, contract A3.4).
+-- A policy row must have a human approval, and specs are append-only: a change is always a new version,
+-- never an update of an existing row.
 
 create schema if not exists policy;
 
@@ -54,7 +54,7 @@ create table if not exists policy.policy_events (
     at        timestamptz not null default now()
 );
 
--- Specs are immutable once approved.
+-- An approved spec can't be changed.
 create or replace function policy.forbid_spec_update() returns trigger language plpgsql as $$
 begin
     if new.spec is distinct from old.spec or new.scope is distinct from old.scope
@@ -68,8 +68,8 @@ drop trigger if exists policies_immutable on policy.policies;
 create trigger policies_immutable before update on policy.policies
     for each row execute function policy.forbid_spec_update();
 
--- Event-driven change detection: the Operator LISTENs on rpe_policy_approved, and catches up from
--- policy_events after downtime.
+-- The Operator listens on rpe_policy_approved to see new approvals, and reads policy_events to catch up after
+-- it has been down.
 create or replace function policy.notify_approved() returns trigger language plpgsql as $$
 begin
     insert into policy.policy_events (policy_id, version, kind, payload)

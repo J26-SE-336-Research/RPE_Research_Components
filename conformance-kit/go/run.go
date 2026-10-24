@@ -6,14 +6,14 @@ import (
 	"reflect"
 )
 
-// CaseResult is the verdict of one vector for one implementation.
+// CaseResult is the result of one case.
 type CaseResult struct {
 	Name   string `json:"name"`
 	Pass   bool   `json:"pass"`
-	Detail string `json:"detail,omitempty"` // what the implementation produced when it failed
+	Detail string `json:"detail,omitempty"` // what we got instead, when it failed
 }
 
-// FileResult is the verdict of one vector file.
+// FileResult is the result of one case file.
 type FileResult struct {
 	File        string       `json:"file"`
 	Description string       `json:"description"`
@@ -21,7 +21,7 @@ type FileResult struct {
 	Error       string       `json:"error,omitempty"`
 }
 
-// Files lists the vector files in a stable order.
+// Files lists the case files, always in the same order.
 var Files = []string{"context-decode.json", "context-encode.json", "context-transition.json", "context-child.json",
 	"budget-split.json", "result.json", "hop.json", "traceparent.json", "retry-gate.json", "trail.json", "trail-merge.json"}
 
@@ -54,7 +54,7 @@ func run[T any](dir, file string, check func(T) (string, bool, string)) FileResu
 	return r
 }
 
-// RunAll evaluates every vector file in dir with rpe-go (the same checks as the Go test runner).
+// RunAll runs every case file in dir with rpe-go, the same checks the Go tests do.
 func RunAll(dir string) []FileResult {
 	return []FileResult{
 		run(dir, "context-decode.json", func(c DecodeCase) (string, bool, string) {
