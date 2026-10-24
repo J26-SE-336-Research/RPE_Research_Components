@@ -127,8 +127,14 @@ func (h *hub) demoDeadline(w http.ResponseWriter, r *http.Request) {
 	res := h.runChain(r.Context(), http.MethodGet, "/api/orders")
 	time.Sleep(300 * time.Millisecond) // let the counters settle
 	pay, inv := delta(h.counters(r, "payment-svc"), payBefore), delta(h.counters(r, "inventory-svc"), invBefore)
+	// this request only (by request id): what each service did for it, unaffected by background traffic
+	request := map[string]map[string]int64{}
+	for _, svc := range []string{"payment-svc", "inventory-svc", "loyalty-svc"} {
+		request[svc] = h.requestCounters(r, svc, res.RID)
+	}
 	_, _, _, _, _ = h.call(r.Context(), http.MethodPost, svcURL("payment-svc", "/admin/faults"), map[string]any{})
-	writeJSON(w, 200, map[string]any{"latencyMs": in.LatencyMs, "chain": res, "payment": pay, "inventory": inv})
+	writeJSON(w, 200, map[string]any{"latencyMs": in.LatencyMs, "chain": res, "payment": pay, "inventory": inv,
+		"rid": res.RID, "request": request, "signal": signalSummary(res.Raw)})
 }
 
 // demoFanout: make one child fail and show partial (optional child) vs failed (required child).
@@ -651,7 +657,13 @@ func (h *hub) intel(w http.ResponseWriter, r *http.Request) {
 }
 
 var intelScenarios = map[string]bool{"healthy": true, "stressed": true, "overloaded": true, "retry-stressed": true,
-	"recovery": true, "deadline-increase": true, "deadline-recovery": true, "multiple-chains": true}
+	"recovery": true, "deadline-increase": true, "deadline-recovery": true, "multiple-chains": true,
+	// C4: deadline v2 examples, rate and retry v2, joint healthy recalibration
+	"deadline-too-long-under-overload": true, "deadline-too-short-day-one": true, "services-slowing": true,
+	"queue-rate-not-deadline": true, "mixed-paths": true, "rejecting-middleware-504": true,
+	"rate-too-low": true, "rate-too-low-day-one": true, "rate-real-overload": true, "rate-recovery": true,
+	"rate-short-burst": true, "rate-bursts": true, "retry-storm-rate": true,
+	"joint-recovery": true, "joint-capacity-drop": true}
 
 func (h *hub) intelDemo(w http.ResponseWriter, r *http.Request) {
 	s := r.PathValue("scenario")
@@ -659,7 +671,12 @@ func (h *hub) intelDemo(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, "unknown scenario")
 		return
 	}
-	code, _, b, _, err := h.call(r.Context(), http.MethodPost, h.cfg.intelligenceURL+"/api/v2/intelligence/demo/"+s, nil)
+	path := "/api/v2/intelligence/demo/" + s
+	// practice cards: the scenario's recommendations as reviewable simulation cards (never applied)
+	if r.URL.Query().Get("to") == "queue" {
+		path += "?to=queue"
+	}
+	code, _, b, _, err := h.call(r.Context(), http.MethodPost, h.cfg.intelligenceURL+path, nil)
 	if err != nil {
 		writeErr(w, 502, err.Error())
 		return
@@ -667,6 +684,11 @@ func (h *hub) intelDemo(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	_, _ = w.Write(b)
+}
+
+// intelPracticeClear removes the simulation (practice) cards from C4's list; real recommendations are untouched.
+func (h *hub) intelPracticeClear(w http.ResponseWriter, r *http.Request) {
+	h.relayIntel(w, r, http.MethodPost, "/api/v2/intelligence/practice/clear", nil)
 }
 
 // relayIntel forwards a C4 response unchanged.

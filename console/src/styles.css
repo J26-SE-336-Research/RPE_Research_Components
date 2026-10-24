@@ -199,3 +199,29 @@ pre.code { background: var(--surface-2); border: 1px solid var(--border); border
 /* Hop tree */
 .hop-cell { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
 .hop-branch { color: var(--muted); font-family: var(--mono); font-size: 14px; }
+
+/* Deadline waterfall (C1 trail attribution) */
+.wf { display: grid; grid-template-columns: minmax(150px, 220px) 1fr 132px; gap: 6px 14px; align-items: center; font-size: 14px; }
+.wf-head { color: var(--muted); font-size: 13px; }
+.wf-name { display: flex; align-items: center; gap: 6px; white-space: nowrap; overflow: hidden; }
+.wf-track { position: relative; height: 22px; background: var(--surface-2); border-radius: 4px; }
+.wf-bar { position: absolute; top: 3px; bottom: 3px; border-radius: 3px; background: var(--primary-soft); border: 1px solid var(--primary); min-width: 2px; }
+.wf-bar.late { background: var(--amber-soft); border-color: var(--amber); }
+.wf-bar.unknown { background: transparent; border-style: dashed; border-color: var(--muted); }
+.wf-bar.hot { box-shadow: 0 0 0 2px var(--red-soft); border-color: var(--red); }
+.wf-deadline { position: absolute; top: -4px; bottom: -4px; width: 0; border-left: 2px dashed var(--red); }
+.wf-num { text-align: right; font-variant-numeric: tabular-nums; color: var(--text-2); white-space: nowrap; }
+
+/* Trail topology graph */
+.tgraph text { font-size: 13px; fill: var(--text); }
+.tgraph .edge { stroke: var(--border-strong); stroke-width: 1.6; fill: none; }
+.tgraph .edge.unknown { stroke: var(--amber); stroke-dasharray: 5 4; }
+.tgraph .node rect { fill: var(--surface); stroke: var(--border-strong); }
+.tgraph .node.unknown rect { stroke: var(--amber); stroke-dasharray: 5 4; fill: var(--amber-soft); }
+.tgraph .elabel { font-size: 12px; fill: var(--muted); }
+
+/* Conformance matrix */
+.matrix td.cell { text-align: center; width: 72px; }
+.matrix tr.file td { background: var(--surface-2); font-weight: 600; }
+.cmp { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.diff { background: var(--amber-soft); }

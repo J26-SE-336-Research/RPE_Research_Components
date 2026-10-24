@@ -5,9 +5,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"math/rand/v2"
 	"net/http"
@@ -45,6 +47,10 @@ type ChildResult struct {
 	Terminal bool   `json:"terminal"`
 	Millis   int64  `json:"ms"`
 	Error    string `json:"error,omitempty"`
+	// Attempts and RetryRefused describe a call made with the retry knob (POST /admin/retry): how many attempts were
+	// sent and, when the RPE retry gate stopped a retry, why (rule R-R02).
+	Attempts     int    `json:"attempts,omitempty"`
+	RetryRefused string `json:"retryRefused,omitempty"`
 	// Downstream is the child's own response body, so one request shows the context seen at every hop.
 	Downstream *Response `json:"downstream,omitempty"`
 }
@@ -71,7 +77,14 @@ type service struct {
 	mu          sync.Mutex
 	faults      Faults
 	counters    map[string]int64
+	// perRequest counts side effects per request id (rid), so one demo request can be measured while other traffic
+	// runs; ridOrder bounds it to the most recent requests.
+	perRequest map[string]map[string]int64
+	ridOrder   []string
+	retry      RetrySettings
 }
+
+const maxTrackedRequests = 5000
 
 func main() {
 	s := newService()
@@ -80,6 +93,7 @@ func main() {
 	mux.HandleFunc("/admin/faults", s.handleFaults)
 	mux.HandleFunc("/admin/counters", s.handleCounters)
 	mux.HandleFunc("/admin/reset", s.handleReset)
+	mux.HandleFunc("/admin/retry", s.handleRetry)
 	var app http.Handler = http.HandlerFunc(s.handle)
 	if s.rpeEnabled {
 		budgets := routeBudgets(env("ROUTE_BUDGETS", ""), envInt("DEFAULT_BUDGET_MS", 1000))
@@ -99,6 +113,7 @@ func main() {
 			RetryBudget: int64(envInt("RETRY_BUDGET", 3)),
 			Epoch:       epoch,
 			Now:         s.now,
+			Trail:       trailConfig(s.name, env("ROLE", "service") == "gateway"),
 		}
 		if cfg.Gateway {
 			app = stampedEpoch(cfg, app)
@@ -124,6 +139,26 @@ func main() {
 	_ = srv.Shutdown(ctx)
 }
 
+// trailConfig enables the in-band trail (X-RPE-Trail) when the protocol service's registry is configured. The
+// gateway also reports each completed trail to the protocol service's collector. Both are done by the rpe-go
+// adapters; this service only passes the addresses on.
+func trailConfig(name string, gateway bool) *rpe.TrailConfig {
+	url := env("RPE_TRAIL_REGISTRY_URL", "")
+	if url == "" {
+		return nil
+	}
+	// a service the registry does not list yet registers itself (it gets the next free id)
+	reg := rpe.NewRegistryClient(url).RegisterAs(name)
+	go reg.Run(context.Background(), 30*time.Second)
+	cfg := &rpe.TrailConfig{Service: name, Registry: reg}
+	if collector := env("RPE_TRAIL_COLLECTOR_URL", ""); gateway && collector != "" {
+		c := rpe.NewTrailCollector(collector, 2000)
+		go c.Run(context.Background(), 500*time.Millisecond)
+		cfg.Sink = c.Add
+	}
+	return cfg
+}
+
 func newService() *service {
 	s := &service{
 		name:        env("SERVICE_NAME", "demo-svc"),
@@ -133,6 +168,8 @@ func newService() *service {
 		sideEffect:  env("SIDE_EFFECT", ""),
 		nonCritical: env("NON_CRITICAL", "false") == "true",
 		counters:    map[string]int64{},
+		perRequest:  map[string]map[string]int64{},
+		retry:       RetrySettings{}.normalized(),
 		baseLatency: time.Duration(envInt("BASE_LATENCY_MS", 0)) * time.Millisecond,
 		baseJitter:  time.Duration(envInt("BASE_JITTER_MS", 0)) * time.Millisecond,
 	}
@@ -175,6 +212,7 @@ func (s *service) handle(w http.ResponseWriter, r *http.Request) {
 	// work (for example charging the card) always completes. The request is answered either way.
 	if hasCtx && s.nonCritical && rpe.Cancelled(r.Context()) {
 		s.count("work_skipped", 1)
+		s.countRequest(in.Ctx.RID, "work_skipped")
 		resp.Outcome = string(rpe.OutcomeStopped)
 		w.Header().Set(rpe.HeaderResult, rpe.Result{Outcome: rpe.OutcomeStopped, Reason: rpe.ReasonCancelled,
 			PolicyEpoch: in.Ctx.PolicyEpoch}.Encode())
@@ -205,6 +243,10 @@ func (s *service) handle(w http.ResponseWriter, r *http.Request) {
 		resp.Children = results
 		status, outcome, terminal := s.combine(results)
 		resp.Outcome = outcome
+		for _, c := range results {
+			// the RPE retry gate refused a retry: the caller must not retry this request either (R-R02)
+			terminal = terminal || c.RetryRefused != ""
+		}
 		if status != http.StatusOK {
 			if hasCtx {
 				reason := rpe.ReasonBusiness
@@ -222,6 +264,9 @@ func (s *service) handle(w http.ResponseWriter, r *http.Request) {
 	// Commit: a critical side effect completes even when the request is late (the developer's decision).
 	if s.sideEffect != "" {
 		s.count(s.sideEffect, 1)
+		if hasCtx {
+			s.countRequest(in.Ctx.RID, s.sideEffect)
+		}
 	}
 	if hasCtx {
 		resp.RemainingMs = in.Remaining(s.now()).Milliseconds()
@@ -244,6 +289,7 @@ func (s *service) callChildren(r *http.Request) []ChildResult {
 	if hasCtx {
 		grants = rpe.SplitBudget(s.split, in.Ctx.RetryBudget, 0, len(s.children))
 	}
+	retry := s.retrySettings()
 	call := func(i int) {
 		c := s.children[i]
 		ctx := r.Context()
@@ -257,7 +303,14 @@ func (s *service) callChildren(r *http.Request) []ChildResult {
 			return
 		}
 		var res *http.Response
-		if c.Optional && s.fanout == "partial" {
+		attempts, refused := 0, ""
+		if retry.Mode != "off" && c.Name == retry.Child {
+			out := s.callWithRetry(ctx, r.Method, c.URL, retry)
+			res, err, attempts = out.resp, out.err, out.attempts
+			if out.refused != nil {
+				refused = out.refused.Reason
+			}
+		} else if c.Optional && s.fanout == "partial" {
 			optional := rpe.CallIfNotCancelled(ctx, s.client, req)
 			if optional.Skipped {
 				results[i] = ChildResult{Name: c.Name, Outcome: "skipped"}
@@ -267,7 +320,7 @@ func (s *service) callChildren(r *http.Request) []ChildResult {
 		} else {
 			res, err = s.client.Do(req)
 		}
-		cr := ChildResult{Name: c.Name, Millis: time.Since(start).Milliseconds()}
+		cr := ChildResult{Name: c.Name, Millis: time.Since(start).Milliseconds(), Attempts: attempts, RetryRefused: refused}
 		if err != nil {
 			cr.Outcome, cr.Error = string(rpe.OutcomeFailed), err.Error()
 		} else {
@@ -357,10 +410,15 @@ func (s *service) handleFaults(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, f)
 }
 
-func (s *service) handleCounters(w http.ResponseWriter, _ *http.Request) {
+// handleCounters returns the side-effect counters of the service, or of one request with ?rid=.
+func (s *service) handleCounters(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
-	out := make(map[string]int64, len(s.counters))
-	for k, v := range s.counters {
+	src := s.counters
+	if rid := r.URL.Query().Get("rid"); rid != "" {
+		src = s.perRequest[rid]
+	}
+	out := make(map[string]int64, len(src))
+	for k, v := range src {
 		out[k] = v
 	}
 	s.mu.Unlock()
@@ -374,7 +432,9 @@ func (s *service) handleReset(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Lock()
 	s.counters = map[string]int64{}
+	s.perRequest, s.ridOrder = map[string]map[string]int64{}, nil
 	s.faults = Faults{}
+	s.retry = RetrySettings{}.normalized()
 	s.mu.Unlock()
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -386,6 +446,25 @@ func (s *service) count(name string, n int64) {
 }
 
 func (s *service) countDuration(d time.Duration) { s.count("busy_ms", d.Milliseconds()) }
+
+// countRequest counts a side effect of one request (rid), keeping the most recent maxTrackedRequests requests.
+func (s *service) countRequest(rid, name string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	m, ok := s.perRequest[rid]
+	if !ok {
+		m = map[string]int64{}
+		s.perRequest[rid] = m
+		s.ridOrder = append(s.ridOrder, rid)
+		if len(s.ridOrder) > maxTrackedRequests {
+			delete(s.perRequest, s.ridOrder[0])
+			s.ridOrder = s.ridOrder[1:]
+		}
+	}
+	m[name]++
+}
+
+func jsonBody(b []byte) io.ReadCloser { return io.NopCloser(bytes.NewReader(b)) }
 
 // parseChildren parses CHILDREN="name=url[?optional],name=url".
 func parseChildren(spec string) []Child {

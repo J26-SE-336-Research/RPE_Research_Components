@@ -7,4 +7,5 @@ use (
 	./k8s/admission-webhook
 	./k8s/operator
 	./libs/rpe-go
+	./services/protocol-service
 )

@@ -106,6 +106,65 @@ type HopCase struct {
 	Error     *Failure `json:"error,omitempty"`
 }
 
+// RetryInput is the language-neutral form of a retry-gate check (R-R02).
+type RetryInput struct {
+	Attempt       int64  `json:"attempt"`
+	MaxAttempts   int64  `json:"maxAttempts"`
+	CS            string `json:"cs"`
+	Terminal      bool   `json:"terminal"`
+	ReplaySafe    bool   `json:"replaySafe"`
+	RemainingMs   int64  `json:"remainingMs"`
+	BackoffMs     int64  `json:"backoffMs"`
+	AttemptCostMs int64  `json:"attemptCostMs"`
+	RB            int64  `json:"rb"`
+}
+
+type RetryExpect struct {
+	Retry       bool   `json:"retry"`
+	Reason      string `json:"reason"`
+	Rule        string `json:"rule"`
+	NextAttempt int64  `json:"nextAttempt"`
+	BudgetLeft  int64  `json:"budgetLeft"`
+}
+
+type RetryCase struct {
+	Name   string      `json:"name"`
+	Input  RetryInput  `json:"input"`
+	Expect RetryExpect `json:"expect"`
+}
+
+// TrailEntryFields is one entry of an X-RPE-Trail.
+type TrailEntryFields struct {
+	Svc      int64  `json:"svc"`
+	Parent   int    `json:"parent"`
+	Elapsed  int64  `json:"elapsedMicros"`
+	Decision string `json:"decision"`
+	Consumed int64  `json:"consumedMs"`
+}
+
+type TrailFields struct {
+	RV      int64              `json:"rv"`
+	Inc     bool               `json:"inc"`
+	Entries []TrailEntryFields `json:"entries"`
+}
+
+type TrailCase struct {
+	Name      string       `json:"name"`
+	Input     string       `json:"input"`
+	Expect    *TrailFields `json:"expect,omitempty"`
+	Canonical string       `json:"canonical,omitempty"`
+	Error     *Failure     `json:"error,omitempty"`
+}
+
+// TrailMergeCase appends the subtree sub under entry parent of base (response-side merge, R-P02/R-P03).
+type TrailMergeCase struct {
+	Name   string `json:"name"`
+	Base   string `json:"base"`
+	Sub    string `json:"sub"`
+	Parent int    `json:"parent"`
+	Expect string `json:"expect"`
+}
+
 type TraceparentCase struct {
 	Name   string `json:"name"`
 	Input  string `json:"input"`
@@ -209,3 +268,40 @@ func Hop(in string) (string, int64, string, *Failure) {
 }
 
 func Traceparent(in string) string { return rpe.TraceIDFromTraceparent(in) }
+
+func Retry(in RetryInput) RetryExpect {
+	v := rpe.DecideRetry(rpe.RetryCheck{Attempt: in.Attempt, MaxAttempts: in.MaxAttempts, Cancel: rpe.CancelState(in.CS),
+		Terminal: in.Terminal, ReplaySafe: in.ReplaySafe, RemainingMs: in.RemainingMs, BackoffMs: in.BackoffMs,
+		AttemptCostMs: in.AttemptCostMs, RetryBudget: in.RB})
+	return RetryExpect{Retry: v.Retry, Reason: v.Reason, Rule: v.Rule, NextAttempt: v.NextAttempt, BudgetLeft: v.BudgetLeft}
+}
+
+func TrailToFields(t rpe.Trail) *TrailFields {
+	f := &TrailFields{RV: t.RegistryVersion, Inc: t.Incomplete, Entries: []TrailEntryFields{}}
+	for _, e := range t.Entries {
+		f.Entries = append(f.Entries, TrailEntryFields{Svc: e.Service, Parent: e.Parent, Elapsed: e.ElapsedMicros,
+			Decision: string(rune(e.Decision)), Consumed: e.ConsumedMs})
+	}
+	return f
+}
+
+func DecodeTrail(in string) (*TrailFields, string, *Failure) {
+	t, err := rpe.DecodeTrail(in)
+	if err != nil {
+		return nil, "", Fail(err)
+	}
+	return TrailToFields(t), t.Encode(), nil
+}
+
+// MergeTrail returns the canonical encoding of base with sub appended under parent ("" when an input is invalid).
+func MergeTrail(base, sub string, parent int) string {
+	b, err := rpe.DecodeTrail(base)
+	if err != nil {
+		return ""
+	}
+	s, err := rpe.DecodeTrail(sub)
+	if err != nil {
+		return ""
+	}
+	return b.Append(s, parent).Encode()
+}

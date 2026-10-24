@@ -376,3 +376,69 @@ func TestConsistencyInputIsValidated(t *testing.T) {
 		t.Fatalf("defaults: %+v", in)
 	}
 }
+
+func TestIntelDemoAllowsTheC4ScenariosAndRejectsUnknownNames(t *testing.T) {
+	var got []string
+	c4 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = append(got, r.Method+" "+r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"scenario":"ok"}`))
+	}))
+	defer c4.Close()
+	h, _ := newHub(config{intelligenceURL: c4.URL, intelToken: "tok", users: "alice:pw:sre", sessionSecret: "s"})
+	srv := h.routes()
+	demo := func(s string) int {
+		req := httptest.NewRequest("POST", "/api/hub/intel/demo/"+s, nil)
+		req.AddCookie(&http.Cookie{Name: sessionCookie, Value: h.auth.issue(h.auth.users["alice"], time.Hour)})
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	for _, s := range []string{"healthy", "deadline-too-short-day-one", "rate-real-overload", "joint-recovery", "joint-capacity-drop"} {
+		if code := demo(s); code != 200 {
+			t.Fatalf("%s = %d, want 200", s, code)
+		}
+	}
+	if code := demo("not-a-scenario"); code != 404 {
+		t.Fatalf("unknown scenario = %d, want 404", code)
+	}
+	if len(got) != 5 || got[4] != "POST /api/v2/intelligence/demo/joint-capacity-drop" {
+		t.Fatalf("forwarded to C4: %v", got)
+	}
+}
+
+func TestIntelPracticeCardsAreForwardedToC4(t *testing.T) {
+	var got []string
+	var token string
+	c4 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = append(got, r.Method+" "+r.URL.RequestURI())
+		if strings.HasSuffix(r.URL.Path, "/practice/clear") {
+			token = r.Header.Get("X-RPE-Control-Token")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer c4.Close()
+	h, _ := newHub(config{intelligenceURL: c4.URL, intelToken: "tok", users: "alice:pw:sre", sessionSecret: "s"})
+	srv := h.routes()
+	post := func(path string) int {
+		req := httptest.NewRequest("POST", path, nil)
+		req.AddCookie(&http.Cookie{Name: sessionCookie, Value: h.auth.issue(h.auth.users["alice"], time.Hour)})
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	for _, p := range []string{"/api/hub/intel/demo/joint-recovery?to=queue", "/api/hub/intel/demo/joint-recovery", "/api/hub/intel/demo/joint-recovery?to=other", "/api/hub/intel/practice/clear"} {
+		if code := post(p); code != 200 {
+			t.Fatalf("%s = %d, want 200", p, code)
+		}
+	}
+	want := []string{"POST /api/v2/intelligence/demo/joint-recovery?to=queue", "POST /api/v2/intelligence/demo/joint-recovery",
+		"POST /api/v2/intelligence/demo/joint-recovery", "POST /api/v2/intelligence/practice/clear"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("forwarded to C4: %v, want %v", got, want)
+	}
+	if token != "tok" {
+		t.Fatalf("practice clear token = %q, want the control token", token)
+	}
+}

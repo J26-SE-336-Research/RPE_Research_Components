@@ -1,5 +1,5 @@
 # RPE (J26-SE-336) monorepo tasks. Every target wraps a script in scripts/ so it also works without make.
-.PHONY: help prereqs test-unit cluster images deploy restart reset-data console test-e2e test all undeploy cluster-down clean
+.PHONY: help prereqs test-unit cluster images deploy restart reset-data console test-e2e test all undeploy cluster-down clean demo-c1 experiment-c1
 
 help:            ## list targets
 	@grep -E '^[a-z0-9-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-14s %s\n", $$1, $$2}'
@@ -30,6 +30,12 @@ console:         ## open the Admin Panel at http://localhost:8800 (port-forward;
 
 test-e2e:        ## run Kubernetes e2e suites (SUITES="30 35" for a subset)
 	@scripts/test-e2e.sh $(SUITES)
+
+demo-c1:         ## run the C1 protocol demos and print what they show (STEPS="chain retry" for a subset)
+	@scripts/demo-c1.sh $(STEPS)
+
+experiment-c1:   ## C1 experiment: rule R-T01 during C3 rollouts (CSV in experiments/c1/results)
+	@experiments/c1/rt01-rollout.sh
 
 test: test-unit test-e2e ## unit + e2e
 

@@ -58,6 +58,27 @@ public class AuditLog {
         record(new Entry(Instant.now(), kind, chainId(chain, source).toString(), chain, Action.CHAIN_DEADLINE.name(), source.name(), currentMs,
                 proposedMs == null ? currentMs : proposedMs, "milliseconds", decision, "c4-deadline-v2", null, detail, null));
     }
+    /** Rate/retry v2 automatic-approval event kinds (additive; the table and its columns are unchanged). */
+    public static final String RATE_AUTO_APPROVED = "RATE_AUTO_APPROVED", RATE_AUTO_REVERTED = "RATE_AUTO_REVERTED", RATE_AUTO_PAUSED = "RATE_AUTO_PAUSED";
+
+    /** An automatic rate or retry change (approved or reverted); the diagnosis, inputs and check result go to {@code detail} as JSON. */
+    public void rate(String kind, PolicyChange c, Object payload) {
+        if (this == NONE) return;
+        var p = c.proposal();
+        record(new Entry(Instant.now(), kind, p.id().toString(), p.target(), p.action().name(), p.source().name(), p.currentValue(),
+                p.proposedValue(), p.unit(), c.decision().name(), c.reviewer(), c.delivery().name(), detail(payload), c.appliedVersion()));
+    }
+    /** Automatic approval paused for a service; uses a stable per-service UUID like chain events. */
+    public void ratePaused(String service, Source source, double rate, Object payload) {
+        if (this == NONE) return;
+        var id = java.util.UUID.nameUUIDFromBytes(("rate:" + source + ":" + service).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        record(new Entry(Instant.now(), RATE_AUTO_PAUSED, id.toString(), service, Action.LEAKY_BUCKET.name(), source.name(), rate, rate,
+                "requests/second", "PAUSED", "c4-auto", null, detail(payload), null));
+    }
+    private String detail(Object payload) {
+        try { return payload instanceof String s ? s : json.writeValueAsString(payload); }
+        catch (RuntimeException e) { return String.valueOf(payload); }
+    }
     public static java.util.UUID chainId(String chain, Source source) {
         return java.util.UUID.nameUUIDFromBytes(("deadline:" + source + ":" + chain).getBytes(java.nio.charset.StandardCharsets.UTF_8));
     }

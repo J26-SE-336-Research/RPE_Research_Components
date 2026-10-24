@@ -13,6 +13,11 @@ conforms when it passes every vector. `rpe-go` and `rpe-java` both pass all of t
 | `vectors/result.json` | `X-RPE-Result` decoding, defaults and canonical encoding | 10 |
 | `vectors/hop.json` | `X-RPE-Hop` decoding and canonical encoding | 7 |
 | `vectors/traceparent.json` | Trace binding (trace-id of a W3C traceparent) | 7 |
+| `vectors/retry-gate.json` | Retry gate R-R02: allowed or refused, and the reason, in a fixed order | 16 |
+| `vectors/trail.json` | `X-RPE-Trail` decoding (verbose v1 entries) and canonical encoding | 25 |
+| `vectors/trail-merge.json` | Response-side trail merge: re-indexing, bounds, registry mismatch (R-P01..R-P03) | 6 |
+
+150 cases in total (103 at the first release, 47 added for PP1 on 20 Oct 2026). The specification is `spec/RPE-v1.md`.
 
 Errors are compared by **code** (for example `OUT_OF_RANGE`) and **rule** (for example `R-T02`), never by message text.
 
@@ -25,6 +30,9 @@ cd libs/rpe-java && ./mvnw -q test          # rpe-java (ConformanceTest + Differ
 
 `make test-unit` runs both.
 
+The protocol service runs the same cases live for the Admin Panel (Protocol Tools → Conformance): rpe-go in process
+(`conformance.RunAll`) and rpe-java in its own container (`services/protocol-service/java`).
+
 ## Differential testing
 
 `go run ./cmd/difffuzz -n 5000 -seed 1 ../generated/differential.json` writes a deterministic corpus of mutated
@@ -34,6 +42,9 @@ replays the corpus and fails on any divergence. Change the seed (`RPE_FUZZ_SEED=
 different inputs.
 
 ## Adding vectors
+
+`make test-unit` also checks that the committed vectors are exactly what the generator produces
+(`conformance-vectors-current`), so a change to the reference library that would change a vector cannot go unnoticed.
 
 Vectors are generated once from the reference implementation by `go run ./cmd/genvectors ../vectors`, reviewed and
 committed. Add a case to `cmd/genvectors/main.go`, regenerate, review the diff, and run both runners. A vector change

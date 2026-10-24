@@ -82,6 +82,8 @@ spec:
             - {name: GATEWAY_URL, value: "http://gateway.rpe-demo:8080"}
             - {name: INTELLIGENCE_URL, value: "http://rpe-intelligence.rpe-system:8090"}
             - {name: POLICY_API_URL, value: "http://rpe-policy-api.rpe-system"}
+            # C1 protocol service: trails, topology, attribution, Java-vs-Go validation, conformance
+            - {name: PROTOCOL_URL, value: "http://rpe-protocol.rpe-system:8095"}
             # shared with C4: authorises human reviews of live recommendations
             - name: INTEL_CONTROL_TOKEN
               valueFrom: {secretKeyRef: {name: rpe-control-token, key: token}}

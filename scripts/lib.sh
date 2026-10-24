@@ -6,7 +6,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CLUSTER="${RPE_CLUSTER:-rpe}"
 KCTX="${RPE_KCTX:-kind-${CLUSTER}}"
 GENERATED="${ROOT}/deploy/k8s/generated"
-IMAGES=(sidecar admission-webhook demo-app intelligence hub operator)
+IMAGES=(sidecar admission-webhook demo-app intelligence hub operator protocol-service)
 
 log()  { printf '\033[1;34m[rpe]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[rpe]\033[0m %s\n' "$*" >&2; }

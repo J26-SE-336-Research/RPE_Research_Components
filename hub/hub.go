@@ -64,6 +64,13 @@ func (h *hub) routes() http.Handler {
 	api.HandleFunc("POST /api/hub/protocol/split", h.split)
 	api.HandleFunc("POST /api/hub/demos/deadline", h.demoDeadline)
 	api.HandleFunc("POST /api/hub/demos/fanout", h.demoFanout)
+	api.HandleFunc("POST /api/hub/demos/retry", h.demoRetry)
+	api.HandleFunc("POST /api/hub/protocol/compare", h.compareImpls)
+	api.HandleFunc("GET /api/hub/protocol/conformance", h.conformance)
+	api.HandleFunc("GET /api/hub/protocol/topology", h.topology)
+	api.HandleFunc("GET /api/hub/protocol/trails", h.trails)
+	api.HandleFunc("GET /api/hub/protocol/attribution/{rid}", h.attribution)
+	api.HandleFunc("GET /api/hub/protocol/registry", h.registry)
 	// C2 Interceptor
 	api.HandleFunc("GET /api/hub/sidecars", h.sidecars)
 	api.HandleFunc("PUT /api/hub/sidecars/{pod}/policy", h.sidecarPolicy)
@@ -88,6 +95,7 @@ func (h *hub) routes() http.Handler {
 	// C4 Intelligence
 	api.HandleFunc("GET /api/hub/intel", h.intel)
 	api.HandleFunc("POST /api/hub/intel/demo/{scenario}", h.intelDemo)
+	api.HandleFunc("POST /api/hub/intel/practice/clear", h.intelPracticeClear)
 	api.HandleFunc("GET /api/hub/intel/audit", h.intelAudit)
 	api.HandleFunc("GET /api/hub/intel/connections", h.intelConnections)
 	api.HandleFunc("POST /api/hub/intel/changes/{id}/review", h.intelReview)
@@ -244,6 +252,8 @@ func (h *hub) overview(w http.ResponseWriter, r *http.Request) {
 // ---------- Chain request (C1 inspector, Overview) ----------
 
 type chainResult struct {
+	// RID is the request id of the chain (rid of the gateway's context): the key of its trail and its counters
+	RID    string            `json:"rid"`
 	Status int               `json:"status"`
 	Ms     int64             `json:"ms"`
 	Result map[string]string `json:"result"`
@@ -272,6 +282,7 @@ func (h *hub) runChain(ctx context.Context, method, path string) chainResult {
 	if json.Unmarshal(body, &root) == nil && root.Service != "" {
 		res.Hops = flattenChain(&root)
 		res.Hops[0].Status, res.Hops[0].Millis = code, d.Milliseconds()
+		res.RID = rootRID(res.Hops)
 	}
 	return res
 }

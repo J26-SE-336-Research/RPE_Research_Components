@@ -519,21 +519,44 @@ Repeat ≥ 5 times per configuration; report mean, min, max, sd and p95.
 ## 13. Viva and demo script
 
 1. **Pitch** (§5.5, 45 s), with **one diagram**: old/new epochs and stamping at the gateway (stage → flip → drain).
-2. **Demo 1 (main):** Rollouts, "Consistent rollout of a joint change": run it naive (payment first) and consistent; compare expired and mixed-policy requests and the latency chart (2 min, §5.1a).
-3. **Demo 2:** targeted, verified delivery: the chain deadline to the gateway only, a rate limit or retry ratio to the service only, each acknowledged by the sidecar (3 min).
-4. **Demo 3:** inject a new namespace live, then kill the Operator → recovery (2 min).
-5. **Results slides:** E3 propagation time and delivery success per replica count, E4 mixed-policy table, E1/E2 coverage, E7 footprint.
+2. **Demo 1: a live C4 recommendation, delivered automatically and only where it belongs** (3 min): C4 proposes from live traces, a human approves, C3 delivers it to the gateway sidecar only, verified by hash and acknowledged.
+3. **Demo 2 (main): the novelty**, Rollouts → Experiment E4: "With C3" against "Simulated without C3: the service switches first"; compare stale-deadline signals and mixed-policy requests (2 min, §5.1a).
+4. **Demo 3: recovery**: restart a pod, then the Operator; the approved policy is back without anyone stepping in (2 min).
+5. **Results slides:** E3 propagation time and delivery success, E4 mixed-policy and stale-deadline table. (E1, E2 and E7 are planned for later phases.)
 
-**PP1 runbook (updated 18 Oct 2026).** Before the panel: `scripts/cluster-down.sh && scripts/cluster-up.sh && scripts/build-images.sh && scripts/deploy.sh` (fresh cluster, all suites green), then `scripts/console.sh` (http://localhost:8800, log in as `admin`).
-1. **Injection and coverage (Workloads).** Audited coverage is 100%. Point at the proxy user 1337 and the `rpe-init` exit 0. *Optional live gap:* run the steps of `tests/e2e/91-recovery.sh` §4 (webhook down with `failurePolicy: Ignore`, create a pod), show **Pods without the proxy**, restore the webhook, click **Re-inject**.
-2. **Targeted delivery (Rollouts → Policy delivery).**
-   - **Chain deadline** (route `GET /api/orders`, for example 1100 ms): the table shows it delivered to **the gateway sidecars** only; the hash is **verified** and the sidecar's acknowledgement time is shown.
-   - **Rate limit** for `payment-svc` (for example 150): delivered to **the payment-svc sidecars** only. Workloads → Policy enforcement shows the gateway still holds its own chain-deadline version, untouched.
-   - **Retry ratio** for `payment-svc`: a new version that keeps the rate limit, again only on the payment-svc sidecars.
-   - Say plainly: enforcing the rate limit and the retry ratio is the sidecar's job (C2); C3 delivers, verifies and records the acknowledgement.
-3. **Recovery.** Start a delivery with **Delivery delay** 4000 ms and run `kubectl --context kind-rpe -n rpe-system delete pod -l app=rpe-operator` while it runs: the rollout resumes and completes. Tamper with a sidecar (Proxies, stage a different policy under the active epoch): **Policy enforcement** shows the hash mismatch, then **In sync** within `DRIFT_INTERVAL_MS`.
-4. **Evidence.** The output of `experiments/c3/e3-convergence.sh` (CSV and summary: success rate, mean, min, max, sd and p95 of the propagation time per replica count).
-5. **Consistent rollout.** Roll out a joint change (chain deadline 1000 to 4000 ms and payment rate 100 to 6 requests/s) as naive and as two-phase under steady traffic: the mixed-policy counter and the expired requests rise with naive and stay at 0 with two-phase.
+**PP1 runbook (updated 20 Oct 2026).** The Admin Panel has no form for entering policy values and no choice of delivery mechanism: every delivery comes from an approved C4 recommendation and goes out automatically, two-phase. Do the steps in this order; step 3 must come after step 2 (see the note in step 3).
+
+*Before the panel (about 30 minutes):*
+1. Start clean: `scripts/cluster-down.sh && scripts/cluster-up.sh && scripts/build-images.sh && scripts/deploy.sh`, optionally `MSYS_NO_PATHCONV=1 scripts/test-e2e.sh` (all 17 suites green), then **`scripts/reset-data.sh`** (empty Policies list, sidecars without policies, C4 learns again). Run no test suite after the reset.
+2. `scripts/console.sh` → http://localhost:8800, log in as `admin`.
+3. Wait until **Recommendations** shows the `GET /api/orders` chain as **Healthy** or **Baseline ready** (C4 learns from the live demo traffic; up to about 10 minutes after the reset).
+4. Prepare the situation for step 2: a chain deadline that is too tight (100 ms; payment alone takes about 120 ms). It is set from the terminal and not shown, exactly as suite 95 does:
+   ```bash
+   MSYS_NO_PATHCONV=1 bash -c 'source tests/e2e/lib.sh; hub_login admin >/dev/null
+     hub POST /api/hub/policies "{\"policyId\":\"gateway-resilience\",\"control\":\"chain-deadline\",\"route\":\"GET /api/orders\",\"deadlineMs\":100,\"rollout\":\"two-phase\"}"; echo "${CODE}"'
+   ```
+   It prints `201`. Within about 7 minutes **Recommendations → Awaiting review** shows a chain-deadline recommendation for `GET /api/orders`: a raise of at most +50 % (for example 100 → 150 ms). Leave it waiting. If the panel asks, say so: the too-tight deadline is the staged situation; the recommendation, the approval and the delivery are live.
+
+*In front of the panel:*
+1. **Injection and coverage (Workloads).** **Coverage audit** shows 100 %. In **Pods**, point at the proxy user 1337 and the traffic setup (`rpe-init` exit 0). *Optional live gap:* run the steps of `tests/e2e/91-recovery.sh` §4 (webhook down with `failurePolicy: Ignore`, create a pod), show **Pods without the proxy**, restore the webhook, click **Re-inject**.
+2. **A live recommendation, delivered automatically and targeted (Recommendations → Rollouts → Workloads → Policies).**
+   - Recommendations → **Awaiting review** → **Review** the chain-deadline recommendation. Show **Why** and **Measurements** (C4 explains that the observed latency is cut at the deadline), then **Approve**; you are recorded as the reviewer.
+   - Rollouts → **Latest deliveries (automatic)**: within a few seconds the new version appears, delivered to **gateway** only, with **Enforced after** and status Complete. Nobody pressed Run, entered a value or chose a mechanism.
+   - Open the rollout in **All rollouts** (Delivery: Automatic): the steps *1. Stage and verify, 2. Activate (enforced), 3. Remove the old version once unused, 4. Complete*, and for the sidecar its content hash marked **verified** and **Acknowledged by the sidecar**.
+   - Workloads → **Policy enforcement**: only the gateway's proxy holds the new version; payment-svc and the other proxies are untouched; every row is **In sync**.
+   - Policies: the new version is Active and the previous one **Superseded**. **Revert to this version** (admin only, with a confirmation) lets a human undo a bad change; do not click it.
+   - Say plainly: acting on the deadline (signalling `cs=expired`, never rejecting) is the sidecar's job (C2); C3 stores the approval, delivers to the right sidecars, verifies the content and records the acknowledgement.
+3. **The novelty: Experiment E4 (Rollouts → "Experiment E4: why coordinated delivery matters (simulation)" → Open experiment).**
+   - Say first: this is not the delivery path. It simulates a system without C3 and compares it with C3 under the same traffic.
+   - Compare **With C3 (two-phase, as in production)** → **Run experiment**; then **Simulated without C3: the service switches first** → **Run experiment**. The joint change is chain deadline 1000 → 4000 ms together with payment rate 100 → 6 requests/s; each run restores the baseline afterwards.
+   - Point at the results: with C3, 0 stale-deadline signals and 0 mixed-policy requests ("Waited before tightening" shows the short wait); without C3, requests that still carried the old deadline expired, and the sidecars counted mixed-policy requests ("Simulated network delay").
+   - *Why after step 2:* the experiment sets the `GET /api/orders` deadline back to its baseline (1000 ms), which replaces the value C4 just had approved. C4 then stays in its settling state for this chain (it waits for telemetry at the deadline it applied; C4 finding of 20 Oct 2026) and does not propose again during the demo.
+4. **Recovery (terminal, then Workloads).**
+   - `kubectl --context kind-rpe -n rpe-demo delete pod -l app=payment-svc`: the new pod's sidecar starts with no policy (policies are kept in memory). Workloads → **Policy enforcement** shows it **In sync** again within about 5 s (`DRIFT_INTERVAL_MS=5000`; measured 3 s on 20 Oct 2026); the Operator logs `drift repaired: … (missing)`.
+   - `kubectl --context kind-rpe -n rpe-system delete pod -l app=rpe-operator`: the Operator comes back, catches up from its checkpoint in PostgreSQL, and the fleet stays in sync. (A rollout interrupted by an Operator restart resumes and completes: suite 91 §2.)
+5. **Evidence.** The E3 output of `experiments/c3/e3-convergence.sh` (success rate, mean, min, max, sd and p95 of the propagation time per replica count) and the E4 tables (`experiments/c3/results/e4-*.csv`).
+
+*If something goes wrong:* no recommendation within about 10 minutes of the prep command → check that the chain showed Healthy or Baseline ready before it; otherwise `kubectl --context kind-rpe -n rpe-system rollout restart deploy/rpe-intelligence`, wait for the baseline and run the prep command again. Docker Desktop or the cluster fails → play the backup video.
 
 **Likely questions:**
 - "Istio does this?" (§5.4)
@@ -543,7 +566,9 @@ Repeat ≥ 5 times per configuration; report mean, min, max, sd and p95.
 - "Industry uses Redis for this, why PostgreSQL?" (Both are in the design. Redis is the fast path for the current policies, events and acknowledgements. PostgreSQL is the record because an approval must be durable and constrained: no policy without an approver, no edit in place, atomic version numbers, and the audit shared with C4. Redis cannot enforce those. Redis is disposable: we flush it in a test and the system rebuilds it. Both notification paths take milliseconds, so the choice is about guarantees, not speed.)
 - "Reitblatt?" (cite it as the foundation)
 - "What if a sidecar can't hold two versions?" (the ordered fallback)
-- "If the deadline travels in the request, what can be mixed?" (Only settings two services must agree on: the coupled fields of the policy contract and C4's joint recommendation. See 5.1a; we show it with a joint change of chain deadline and rate.)
+- "If the deadline travels in the request, what can be mixed?" (Only settings two services must agree on: a chain deadline at the gateway and a rate at a service, changed together by C4's healthy-recalibration joint decision. See 5.1a; E4 shows it.)
+- "What if a later decision changes other services?" (A joint or single decision lists only what changes; C3 keeps the other parts, so every service moves to the new version and none is left behind on an old one: suite 96 §6.)
+- "Why can't I enter a value in the panel?" (Values come from C4 recommendations and a human approval. The panel reviews and approves; it does not invent values. Revert exists to undo.)
 - "Why not also send a rate limit to the gateway?" (The gateway applies only the chain deadline. Activating a service policy on it used to reset its route deadlines to the static configuration, so the policy's scope decides the targets.)
 - "Does the rate limit actually take effect?" (Enforcement is the sidecar's job (C2). C3 proves the target sidecar holds the approved content, by the hash the sidecar computed, and that it acknowledged it.)
 

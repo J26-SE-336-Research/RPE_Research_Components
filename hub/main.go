@@ -24,6 +24,7 @@ type config struct {
 	gatewayURL      string
 	intelligenceURL string
 	policyAPIURL    string
+	protocolURL     string
 	intelToken      string
 	users           string
 	sessionSecret   string
@@ -38,6 +39,7 @@ func loadConfig() config {
 		gatewayURL:      env("GATEWAY_URL", "http://gateway.rpe-demo:8080"),
 		intelligenceURL: env("INTELLIGENCE_URL", "http://rpe-intelligence.rpe-system:8090"),
 		policyAPIURL:    env("POLICY_API_URL", "http://rpe-policy-api.rpe-system"),
+		protocolURL:     env("PROTOCOL_URL", "http://rpe-protocol.rpe-system:8095"),
 		intelToken:      env("INTEL_CONTROL_TOKEN", ""),
 		users:           env("HUB_USERS", "admin:admin:admin,sre:sre:sre,viewer:viewer:viewer"),
 		sessionSecret:   env("SESSION_SECRET", "rpe-dev-session-secret"),

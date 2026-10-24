@@ -12,13 +12,19 @@ it passes the shared conformance vectors and agrees with `rpe-go` on a 5,000-inp
 | `BudgetSplit` | Retry-budget split for fan-out (R-F05) |
 | `Ids` | Random ids, W3C trace binding |
 | `ProtocolException` | Error `code()` and spec `rule()` |
-| `http.Admission` | Framework-neutral inbound step: trust boundary, rejects expired or cancelled requests before the application (R-D02, R-T04) |
-| `http.RpeHttpClient` | `java.net.http` adapter: propagates the child context and bounds the call by the remaining deadline |
+| `RetryGate` | Retry gate R-R02: `decide(check)` says whether one more attempt may be sent, and why not |
+| `Trail` | `X-RPE-Trail` (verbose v1): `decode`, `encode`, `append` (response-side subtree merge, R-P01..R-P03) |
+| `http.Admission` | Framework-neutral inbound step: trust boundary; signal mode (R-D02): an expired original request is admitted with `cs=expired`, only a retry of an expired or cancelled chain is refused |
+| `http.RpeHttpClient` | `java.net.http` adapter: propagates the child context; never refuses a first attempt or cuts a call off; a retry (`attempt >= 2`) of an expired chain is not sent (R-R02) |
+
+**Warning for application developers:** nothing stops an expired original request. Read the signal
+(`inbound().context().cancel()`) and decide what to skip; use `RetryGate` before every retry.
 
 ```java
 // inbound (servlet filter, Spring interceptor, JDK HttpServer, ...)
 Admission.Decision d = Admission.admit(Admission.Config.service(), method, path, headers);
-if (!d.admitted()) { respond(d.status(), RpeHeaders.RESULT, d.result().encode(), d.message()); return; }
+if (!d.admitted()) { respond(d.status(), RpeHeaders.RESULT, d.resultHeader(), d.message()); return; }
+if (d.inbound() != null && d.inbound().context().cancel() != CancelState.NONE) { /* late: skip optional work */ }
 
 // outbound
 var client = new RpeHttpClient(HttpClient.newHttpClient(), 5 /* reserve ms */);

@@ -15,6 +15,8 @@ build() {
     intelligence)      docker build -t rpe/intelligence:dev "${ROOT}/intelligence" ;;
     operator)          docker build -t rpe/operator:dev "${ROOT}/k8s/operator" ;;
     hub)               docker build -t rpe/hub:dev -f "${ROOT}/hub/Dockerfile" "${ROOT}" ;;
+    # C1 protocol service: trail collector, topology, attribution, registry, Java-vs-Go validation and conformance
+    protocol-service)  docker build -t rpe/protocol-service:dev -f "${ROOT}/services/protocol-service/Dockerfile" "${ROOT}" ;;
     *) die "unknown image ${name} (known: ${IMAGES[*]})" ;;
   esac
 }

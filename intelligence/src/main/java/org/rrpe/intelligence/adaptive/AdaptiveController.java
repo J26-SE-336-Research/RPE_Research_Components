@@ -32,12 +32,15 @@ public class AdaptiveController {
         this.connectionChecks = connectionChecks;
         this.audit = audit;
     }
-    /** {@code deadlineEvidence} (deadline v2, per live chain) is additive; the other fields are unchanged. */
+    /**
+     * {@code deadlineEvidence} (deadline v2, per live chain), {@code rateEvidence} (rate v2, per live service) and {@code joints}
+     * (joint recalibration cards: id, parts, decision) are additive; the other fields are unchanged.
+     */
     @GetMapping public Map<String, Object> status() {
         return Map.of("collection", collector.status(), "assessments", engine.assessments(), "changes", workflow.list(), "mockEnabled", mockEnabled,
-                "deadlineEvidence", engine.deadlineEvidence());
+                "deadlineEvidence", engine.deadlineEvidence(), "rateEvidence", engine.rateEvidence(), "joints", workflow.joints());
     }
-    /** The service-window PromQL, plus the deadline v2 load queries (keys starting with {@code load}). */
+    /** The service-window PromQL, plus the deadline v2 and rate v2 load queries (keys starting with {@code load}). */
     @GetMapping("/queries") public Map<String, String> queries(@RequestParam String service) {
         var all = new java.util.TreeMap<>(prometheus.queries(service)); all.putAll(prometheus.loadQueries(service)); return all;
     }
@@ -79,7 +82,26 @@ public class AdaptiveController {
         authorize(Source.PROMETHEUS, token); collector.resetBaselines();
     }
     @GetMapping("/outbox") public Object outbox() { return workflow.deliverable(); }
-    @PostMapping("/demo/{scenario}") public Object demo(@PathVariable String scenario) { authorize(Source.MOCK, null); return scenarios.run(scenario); }
+    /**
+     * Isolated simulation; {@code ?mode=auto} runs the rate and retry scenarios with automatic approval on (never delivered);
+     * {@code ?to=queue} also adds the scenario's recommendations as practice cards (MOCK, reviewable, never applied).
+     */
+    @PostMapping("/demo/{scenario}") public Object demo(@PathVariable String scenario, @RequestParam(value = "mode", required = false) String mode,
+            @RequestParam(value = "to", required = false) String to) {
+        authorize(Source.MOCK, null);
+        if (mode != null && !mode.equals("auto")) throw new IllegalArgumentException("mode must be auto or absent");
+        if (to != null && !to.equals("queue")) throw new IllegalArgumentException("to must be queue or absent");
+        var result = scenarios.run(scenario, "auto".equals(mode));
+        if (to == null) return result;
+        var out = new java.util.LinkedHashMap<String, Object>(result);
+        out.put("practiceCards", PracticeCards.add(scenario, result, workflow, java.time.Instant.now()));
+        return out;
+    }
+    /** Removes the practice (simulation) cards; real recommendations and the audit trail are untouched. */
+    @PostMapping("/practice/clear") public Map<String, Integer> clearPractice() {
+        authorize(Source.MOCK, null);
+        return Map.of("removed", PracticeCards.clear(workflow));
+    }
     private void authorize(Source source, String supplied) {
         if (source == null) throw new IllegalArgumentException("Evidence source is required");
         if (source == Source.MOCK) {

@@ -13,6 +13,7 @@ import { ProxiesPage } from "./pages/Proxies";
 import { RecommendationsPage } from "./pages/Recommendations";
 import { RolloutsPage } from "./pages/Rollouts";
 import { ServicesPage } from "./pages/Services";
+import { TopologyPage } from "./pages/Topology";
 import { WorkloadsPage } from "./pages/Workloads";
 
 type Route = { id: string; label: string; section: string; icon: ComponentType; page: ComponentType };
@@ -22,6 +23,7 @@ const ROUTES: Route[] = [
   { id: "services", label: "Services", section: "Monitor", icon: Icons.services, page: ServicesPage },
   { id: "inspector", label: "Request Inspector", section: "Monitor", icon: Icons.inspector, page: InspectorPage },
   { id: "backpressure", label: "Backpressure", section: "Monitor", icon: Icons.backpressure, page: BackpressurePage },
+  { id: "topology", label: "Topology", section: "Monitor", icon: Icons.topology, page: TopologyPage },
   { id: "policies", label: "Policies", section: "Configuration", icon: Icons.policies, page: PoliciesPage },
   { id: "rollouts", label: "Rollouts", section: "Configuration", icon: Icons.rollouts, page: RolloutsPage },
   { id: "recommendations", label: "Recommendations", section: "Configuration", icon: Icons.recommendations, page: RecommendationsPage },
