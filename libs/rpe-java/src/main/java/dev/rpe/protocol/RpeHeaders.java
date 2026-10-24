@@ -1,12 +1,12 @@
 package dev.rpe.protocol;
 
-/** Header names and protocol limits of the RPE v1 header set (spec §2, Appendix A1). */
+/** RPE header names and limits. */
 public final class RpeHeaders {
-    /** End-to-end request context. */
+    /** Request context, travels the whole chain. */
     public static final String CONTEXT = "X-RPE-Context";
-    /** Hop-scoped header: rewritten at every hop and never delivered to the application. */
+    /** Only for one hop, rewritten each time and never given to the app. */
     public static final String HOP = "X-RPE-Hop";
-    /** Optional in-band per-hop trail. */
+    /** Optional list of hops. */
     public static final String TRAIL = "X-RPE-Trail";
     /** Response context. */
     public static final String RESULT = "X-RPE-Result";

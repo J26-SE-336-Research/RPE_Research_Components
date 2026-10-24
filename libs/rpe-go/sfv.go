@@ -6,14 +6,14 @@ import (
 	"strings"
 )
 
-// sfItem is one bare item of an RFC 8941 dictionary member. The RPE headers use
-// only integers, strings, tokens and booleans, without parameters or inner lists.
+// sfItem is one value in an RFC 8941 dictionary. Our headers only use integers, strings, tokens and booleans,
+// with no parameters or inner lists.
 type sfItem struct {
 	kind byte // 'i' integer, 's' string, 't' token, 'b' boolean
 	i    int64
 	s    string
 	b    bool
-	raw  string // serialized form, kept so unknown members can be forwarded unchanged (R-V01)
+	raw  string // the original text, so unknown members can be passed on unchanged
 }
 
 type sfMember struct {
@@ -21,9 +21,8 @@ type sfMember struct {
 	item sfItem
 }
 
-// parseDictionary parses the RFC 8941 dictionary subset used by RPE headers.
-// Member order is preserved; duplicate keys are rejected (stricter than RFC 8941,
-// which keeps the last value) because a duplicated resilience field is ambiguous.
+// parseDictionary parses the part of RFC 8941 our headers use. Member order is kept. Duplicate keys are an error,
+// which is stricter than the RFC (it keeps the last one), because two different deadlines would be confusing.
 func parseDictionary(header, input string) ([]sfMember, error) {
 	s := strings.Trim(input, " \t")
 	if s == "" {
@@ -135,8 +134,7 @@ func parseBareItem(header, s string) (sfItem, string, error) {
 	return sfItem{}, "", problem(CodeInvalidSyntax, header, "unsupported value type")
 }
 
-// dictWriter serializes members in a stable order: known keys in the order given,
-// then unknown members sorted by key.
+// dictWriter writes members in a fixed order: the known keys first in the given order, then unknown ones sorted.
 type dictWriter struct{ parts []string }
 
 func (w *dictWriter) int(key string, v int64) {

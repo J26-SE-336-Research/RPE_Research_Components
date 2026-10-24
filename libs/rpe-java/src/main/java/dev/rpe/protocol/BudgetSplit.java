@@ -1,11 +1,11 @@
 package dev.rpe.protocol;
 
-/** Retry-budget division across fan-out children (R-F05): the children's grants never exceed the parent's budget. */
+/** Splits a retry budget over several children so together they never get more than the parent had. */
 public final class BudgetSplit {
     public enum Mode {
-        /** Each child gets floor((rb - reserve) / n); the remainder goes to the first children. */
+        /** Each child gets (rb - reserve) / n and the leftover goes to the first ones. */
         PARALLEL,
-        /** Every child may use the whole unallocated budget; the parent deducts the reported rbu afterwards. */
+        /** Each child can use all of what is left, and the parent takes off what the child reports it used. */
         SEQUENTIAL
     }
 

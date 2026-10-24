@@ -11,16 +11,16 @@ import (
 	"time"
 )
 
-// Trail recording by the HTTP adapters (SignalMiddleware, SignalTransport, Middleware, Transport). It is opt-in:
-// without a TrailConfig, or before the service registry is loaded, nothing is added and nothing changes.
+// Trail recording for the HTTP middleware and transports. It is off unless a TrailConfig is given, and nothing
+// is added until the service registry has loaded.
 
-// ServiceRegistry maps service names to their 2-byte trail ids (R-P03). ok is false when the name is not
-// registered or the registry is not loaded yet.
+// ServiceRegistry maps service names to their small trail ids. ok is false if the name isn't registered or the
+// registry hasn't loaded yet.
 type ServiceRegistry interface {
 	Lookup(name string) (version, id int64, ok bool)
 }
 
-// StaticRegistry is a fixed registry (tests, single-binary deployments).
+// StaticRegistry is a fixed registry, handy for tests.
 type StaticRegistry struct {
 	Version int64
 	IDs     map[string]int64
@@ -31,11 +31,10 @@ func (s StaticRegistry) Lookup(name string) (int64, int64, bool) {
 	return s.Version, id, ok && s.Version > 0
 }
 
-// RegistryClient follows the registry published by the protocol service (GET /api/protocol/registry:
-// {"version": 1, "services": {"gateway": 1, ...}}).
+// RegistryClient keeps a copy of the registry from the protocol service, read from GET /api/protocol/registry.
 type RegistryClient struct {
 	url    string
-	self   string // registered automatically when the registry does not know it (RegisterAs)
+	self   string // our own name, registered if the registry doesn't have it yet
 	client *http.Client
 	mu     sync.RWMutex
 	reg    StaticRegistry
@@ -45,9 +44,9 @@ func NewRegistryClient(url string) *RegistryClient {
 	return &RegistryClient{url: url, client: &http.Client{Timeout: 3 * time.Second}}
 }
 
-// RegisterAs makes the client register this service (POST {url}/register) when the registry does not list it, so a new
-// service joins the trail without anyone editing the registry. When registration is refused (switched off, invalid
-// name), the service simply records no trail.
+// RegisterAs makes the client register this service if the registry doesn't list it yet, so a new service shows up
+// in the trail without anyone editing the registry by hand. If registering is refused, the service just records
+// no trail.
 func (c *RegistryClient) RegisterAs(service string) *RegistryClient {
 	c.self = service
 	return c
@@ -99,7 +98,7 @@ func (c *RegistryClient) Refresh(ctx context.Context) error {
 	return c.load(rresp)
 }
 
-// load reads a registry answer ({"version": n, "services": {...}}).
+// load reads a registry response.
 func (c *RegistryClient) load(resp *http.Response) error {
 	var body struct {
 		Version  int64            `json:"version"`
@@ -117,7 +116,7 @@ func (c *RegistryClient) load(resp *http.Response) error {
 	return nil
 }
 
-// Run refreshes the registry every interval (every 2 s until the first load succeeds) until ctx ends.
+// Run reloads the registry every interval until ctx is done. Until the first load works it retries every 2 s.
 func (c *RegistryClient) Run(ctx context.Context, interval time.Duration) {
 	for {
 		wait := interval
@@ -138,7 +137,7 @@ func (c *RegistryClient) version() int64 {
 	return c.reg.Version
 }
 
-// TrailRecord is a completed trail, reported at the trust boundary where the trail leaves the chain (R-P04).
+// TrailRecord is a finished trail, reported by the gateway before the response goes back to the client.
 type TrailRecord struct {
 	RID      string    `json:"rid"`
 	Route    string    `json:"route"`
@@ -149,19 +148,18 @@ type TrailRecord struct {
 	Trail    string    `json:"trail"`
 }
 
-// TrailConfig enables the in-band trail.
+// TrailConfig turns on the trail.
 type TrailConfig struct {
 	// Service is this service's name in the registry.
 	Service string
-	// Registry maps names to ids; the trail is recorded only while it knows Service.
+	// Registry maps names to ids. Nothing is recorded until it knows Service.
 	Registry ServiceRegistry
-	// Sink receives the completed trail at the gateway (where it is removed from the response, R-P04). It must not
-	// block; TrailCollector.Add is a suitable sink.
+	// Sink gets the finished trail at the gateway. It must not block, TrailCollector.Add works well here.
 	Sink func(TrailRecord)
 }
 
-// TrailCollector batches completed trails and posts them to the protocol service's collector
-// (POST /api/protocol/trails, body {"trails": [...]}). Add never blocks: when the buffer is full, trails are dropped.
+// TrailCollector collects finished trails and posts them to the protocol service in batches. Add never blocks,
+// if the buffer is full the trail is dropped.
 type TrailCollector struct {
 	url    string
 	client *http.Client
@@ -179,7 +177,7 @@ func (c *TrailCollector) Add(r TrailRecord) {
 	}
 }
 
-// Run posts the buffered trails every interval until ctx ends.
+// Run posts the buffered trails every interval until ctx is done.
 func (c *TrailCollector) Run(ctx context.Context, interval time.Duration) {
 	t := time.NewTicker(interval)
 	defer t.Stop()
@@ -218,8 +216,8 @@ func (c *TrailCollector) Run(ctx context.Context, interval time.Duration) {
 type trailRecorder struct {
 	mu       sync.Mutex
 	cfg      *TrailConfig
-	path     Trail // request side: the path from the gateway to this hop (own entry active)
-	subtree  Trail // response side: own entry first, then the callees' subtrees
+	path     Trail // the way from the gateway down to us, sent with requests
+	subtree  Trail // our own entry and what our callees sent back
 	received time.Time
 	ctx      Context
 	attempt  int64
@@ -236,10 +234,10 @@ func newTrailRecorder(cfg *TrailConfig, c Context, hop Hop, incoming string, gat
 		return nil
 	}
 	path := Trail{RegistryVersion: version}
-	if !gateway { // at the gateway any client-supplied trail is ignored (trust boundary)
+	if !gateway { // the gateway ignores any trail sent by the client
 		switch t, err := DecodeTrail(incoming); {
 		case incoming == "":
-			// a context without a trail below the gateway: an upstream hop did not carry it (R-P05)
+			// we got a context but no trail, so some hop above us doesn't speak RPE
 			path.Incomplete = c.PID != RootParentID
 		case err != nil || t.RegistryVersion != version:
 			path.Incomplete = true
@@ -261,15 +259,15 @@ func trailFrom(ctx context.Context) *trailRecorder {
 	return r
 }
 
-// requestHeader is the trail sent to a callee.
+// requestHeader is the trail we send to a callee.
 func (r *trailRecorder) requestHeader() string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.path.Encode()
 }
 
-// response merges what a callee returned: its subtree, or one unknown entry when it returned none (a hop that does
-// not speak RPE, or a call without a response).
+// response adds what a callee sent back. If it sent no trail, for example because it doesn't speak RPE, we add
+// one unknown entry for it.
 func (r *trailRecorder) response(h http.Header, host string, elapsed time.Duration, childTTL int64) {
 	raw := ""
 	if h != nil {
@@ -301,7 +299,7 @@ func serviceOfHost(host string) string {
 	return host
 }
 
-// complete finalizes the own entry when the response starts. decision 0 derives it from the response.
+// complete fills in our own entry when the response starts. decision 0 means work it out from the response.
 func (r *trailRecorder) complete(h http.Header, status int, cs CancelState, decision TrailDecision) {
 	r.mu.Lock()
 	if r.done {
@@ -321,7 +319,7 @@ func (r *trailRecorder) complete(h http.Header, status int, cs CancelState, deci
 		h.Set(HeaderTrail, t.Encode())
 		return
 	}
-	h.Del(HeaderTrail) // the trail never leaves the chain (R-P04)
+	h.Del(HeaderTrail) // don't leak the trail to the client
 	if r.cfg.Sink != nil {
 		r.cfg.Sink(TrailRecord{RID: r.ctx.RID, Route: r.ctx.Route, BudgetMs: r.ctx.BudgetMillis, Epoch: r.ctx.PolicyEpoch,
 			Status: status, At: time.Now().UTC(), Trail: t.Encode()})
@@ -345,7 +343,7 @@ func (r *trailRecorder) decide(h http.Header, status int, cs CancelState) TrailD
 	return DecisionForward
 }
 
-// trailWriter finalizes the trail when the handler starts its response.
+// trailWriter fills in the trail when the handler starts writing its response.
 type trailWriter struct {
 	http.ResponseWriter
 	rec   *trailRecorder

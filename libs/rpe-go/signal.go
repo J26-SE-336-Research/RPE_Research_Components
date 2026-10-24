@@ -10,46 +10,45 @@ import (
 	"time"
 )
 
-// Signal-only helpers for application developers (RPE rule "signal, never reject").
+// Helpers for services that only want the deadline signal.
 //
-// The RPE sidecar detects that a request chain's deadline has passed and signals it in the context (cs=expired /
-// cancel). These helpers let a service read that signal, pass the context on, and shed its own non-critical work.
-// They never reject an original request, never refuse a first attempt of an outbound call and never invent an error
-// or a 504 because of the deadline: the developer decides what a cancelled chain means for the service.
+// When the chain deadline passes, the sidecar marks the context with cs=expired. These helpers let a service read
+// that flag, pass the context on and skip work it does not really need. They never reject a request and never
+// make up a 504 for a late one. What a cancelled chain means for the service is up to the developer.
 //
-// The one thing RPE refuses is a retry of a chain that is already cancelled or expired (R-R02): a retry would repeat
-// side effects (a second card charge) and add load exactly when a dependency is slow. Retries are marked with
-// X-RPE-Hop att >= 2 (WithAttempt, DoWithRetry).
+// The only thing that is refused is a retry of a chain that is already cancelled or expired. Retrying then would
+// repeat side effects, like charging a card twice, and add load right when a dependency is slow. Retries carry
+// X-RPE-Hop att >= 2, see WithAttempt and DoWithRetry.
 //
-// WARNING for application developers: nothing stops an expired original request. If the application does not read
-// the signal (Cancelled, NonCritical, CallIfNotCancelled), its work runs to completion after the deadline.
+// Note that nothing stops a late original request. If the service never checks the signal, its work just runs to
+// the end after the deadline.
 //
-//	handler := rpe.SignalMiddleware(rpe.SignalConfig{}, mux)        // read the context (all endpoints)
-//	client := &http.Client{Transport: &rpe.SignalTransport{}}        // write it on every outbound call
+//	handler := rpe.SignalMiddleware(rpe.SignalConfig{}, mux)        // read the context on every endpoint
+//	client := &http.Client{Transport: &rpe.SignalTransport{}}        // send it on every outbound call
 //
 //	if rpe.Cancelled(r.Context()) { ... }                           // check the signal
-//	res := rpe.CallIfNotCancelled(ctx, client, optionalRequest)     // optional call: skipped when cancelled
-//	rpe.NonCritical(ctx, func(ctx context.Context) { ... })         // optional work: skipped or stopped when cancelled
-//	out := rpe.DoWithRetry(ctx, client, newRequest, policy)          // retries only while the gate allows (R-R02)
+//	res := rpe.CallIfNotCancelled(ctx, client, optionalRequest)     // optional call, skipped when cancelled
+//	rpe.NonCritical(ctx, func(ctx context.Context) { ... })         // optional work, skipped or stopped when cancelled
+//	out := rpe.DoWithRetry(ctx, client, newRequest, policy)          // retries only while the gate allows it
 
 // SignalConfig configures SignalMiddleware.
 type SignalConfig struct {
-	// Gateway makes this the trust boundary (R-S01): a fresh root context is always created.
+	// Gateway means this service is the entry point, so it always starts a new root context.
 	Gateway bool
 	// RouteBudget returns the route key and deadline budget for a gateway request.
 	RouteBudget func(r *http.Request) (route string, budget time.Duration)
 	// RetryBudget is the root retry budget for gateway requests.
 	RetryBudget int64
-	// Epoch returns the active policy epoch stamped by the gateway ("" if none).
+	// Epoch returns the active policy epoch, or "" if there is none.
 	Epoch func() string
-	// Now is the clock (tests); defaults to time.Now.
+	// Now is the clock, mainly for tests. Defaults to time.Now.
 	Now func() time.Time
-	// Trail enables the in-band trail (X-RPE-Trail); nil disables it.
+	// Trail turns on the X-RPE-Trail recording. Leave it nil to turn it off.
 	Trail *TrailConfig
 }
 
-// chainSignal is the cancellation state of the request being served. It only ever moves from none to cancelled
-// (monotonic). It is set from the incoming context and from cs reported on downstream responses.
+// chainSignal holds the cancel state of the request being served. Once it is cancelled it stays cancelled.
+// It is set from the incoming context and from the cs value on downstream responses.
 type chainSignal struct {
 	mu     sync.Mutex
 	state  CancelState
@@ -69,7 +68,7 @@ func (s *chainSignal) cancel(state CancelState) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.state != CancelNone {
-		return // never changes once set (R-T04)
+		return // once set it never changes
 	}
 	s.state = state
 	close(s.closed)
@@ -84,7 +83,7 @@ func (s *chainSignal) current() CancelState {
 type signalKey struct{}
 type attemptKey struct{}
 
-// inbound is the common inbound step of SignalMiddleware and Middleware.
+// inbound is the shared inbound part of SignalMiddleware and Middleware.
 type inbound struct {
 	gateway     bool
 	routeBudget func(r *http.Request) (string, time.Duration)
@@ -92,9 +91,9 @@ type inbound struct {
 	epoch       func() string
 	now         func() time.Time
 	trail       *TrailConfig
-	required    bool // a request without a context gets 400 instead of passing through
-	detect      bool // standalone mode (no sidecar): the library itself marks an expired arrival cs=expired
-	bindTrace   bool // rebind traceparent to rid for the application
+	required    bool // no context means 400 instead of passing it through
+	detect      bool // no sidecar: the library marks a late arrival as cs=expired itself
+	bindTrace   bool // point traceparent at rid for the app
 }
 
 func (cfg inbound) handler(next http.Handler) http.Handler {
@@ -132,10 +131,10 @@ func (cfg inbound) handler(next http.Handler) http.Handler {
 			return
 		}
 		if cfg.detect && c.Cancel == CancelNone && c.TTLMillis <= 0 {
-			c.Cancel = CancelExpired // signal it (R-D02); the request is still served
+			c.Cancel = CancelExpired // mark it, the request is still served
 		}
 		rec := newTrailRecorder(cfg.trail, c, hop, incomingTrail, cfg.gateway, received)
-		// R-R02 at the receiver: a retry of an expired or cancelled chain is refused. An original request never is.
+		// refuse a retry of an expired or cancelled chain, but never the original request
 		if hop.Attempt >= 2 && (c.Cancel != CancelNone || c.TTLMillis <= 0) {
 			cs, reason := CancelExpired, ReasonDeadline
 			if c.Cancel == CancelRequest {
@@ -167,7 +166,7 @@ func (cfg inbound) handler(next http.Handler) http.Handler {
 	})
 }
 
-// writeRefusal writes a terminal 504 that also carries the chain's cancellation state (the cs member).
+// writeRefusal writes a final 504 that also carries the cs value of the chain.
 func writeRefusal(w http.ResponseWriter, res Result, cs CancelState, msg string) {
 	w.Header().Set(HeaderResult, res.Encode()+", cs="+string(cs))
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -175,11 +174,10 @@ func writeRefusal(w http.ResponseWriter, res Result, cs CancelState, msg string)
 	_, _ = io.WriteString(w, msg+"\n")
 }
 
-// SignalMiddleware reads (or, at the gateway, creates) the RPE context of every request and makes the cancellation
-// signal available to the handler. A late or cancelled request is still served. A request without a context is
-// served as it is; only a context that cannot be read at all is answered with 400 (rsn=invalid-context), and a
-// retry (X-RPE-Hop att >= 2) of a cancelled or expired chain with 504 (R-R02). Expiry itself is detected by the
-// sidecar, which signals it as cs=expired.
+// SignalMiddleware reads the RPE context of every request, or creates it at the gateway, and gives the handler
+// access to the cancel signal. Late and cancelled requests are still served, and so are requests with no context.
+// A context that can't be read gets a 400, and a retry of a cancelled or expired chain gets a 504.
+// The sidecar is the one that notices the deadline has passed and sets cs=expired.
 func SignalMiddleware(cfg SignalConfig, next http.Handler) http.Handler {
 	return inbound{gateway: cfg.Gateway, routeBudget: cfg.RouteBudget, retryBudget: cfg.RetryBudget, epoch: cfg.Epoch,
 		now: cfg.Now, trail: cfg.Trail}.handler(next)
@@ -190,13 +188,13 @@ func signalFrom(ctx context.Context) *chainSignal {
 	return s
 }
 
-// Cancelled reports whether the request chain has been cancelled: the sidecar signalled it in the incoming context,
-// or a downstream response reported it. A request without an RPE context is never cancelled.
+// Cancelled tells if the chain has been cancelled, either by the incoming context or by a downstream response.
+// A request with no RPE context is never cancelled.
 func Cancelled(ctx context.Context) bool {
 	return Cancellation(ctx) != CancelNone
 }
 
-// Cancellation returns the chain's cancellation state: none, cancel or expired.
+// Cancellation returns the cancel state of the chain: none, cancel or expired.
 func Cancellation(ctx context.Context) CancelState {
 	if s := signalFrom(ctx); s != nil {
 		return s.current()
@@ -207,8 +205,8 @@ func Cancellation(ctx context.Context) CancelState {
 	return CancelNone
 }
 
-// WithAttempt marks the next outbound call made with ctx as attempt n of its logical call (X-RPE-Hop att=n).
-// Attempts from 2 on are retries: the transports never send them for a cancelled or expired chain (R-R02).
+// WithAttempt marks the next outbound call made with ctx as attempt n (sent as X-RPE-Hop att=n).
+// Attempt 2 and up are retries, and the transports don't send those once the chain is cancelled or expired.
 func WithAttempt(ctx context.Context, n int64) context.Context {
 	return context.WithValue(ctx, attemptKey{}, n)
 }
@@ -218,9 +216,8 @@ func attemptFrom(ctx context.Context) int64 {
 	return n
 }
 
-// NonCritical runs work the service can do without. When the chain is already cancelled the work is not started and
-// false is returned; otherwise it runs with a context that is cancelled as soon as the chain is cancelled (for
-// example by a downstream response), so cooperative work can stop early. It never returns an error of its own.
+// NonCritical runs work the service can live without. If the chain is already cancelled it doesn't run and returns
+// false. Otherwise the work gets a context that is cancelled as soon as the chain is, so it can stop early.
 func NonCritical(ctx context.Context, work func(ctx context.Context)) (ran bool) {
 	if Cancelled(ctx) {
 		return false
@@ -243,16 +240,16 @@ func NonCritical(ctx context.Context, work func(ctx context.Context)) (ran bool)
 	return true
 }
 
-// CallResult is the outcome of CallIfNotCancelled. Skipped means the call was not sent because the chain is
-// cancelled; it is information for the developer, not an error.
+// CallResult is what CallIfNotCancelled returns. Skipped means the call wasn't sent because the chain is
+// cancelled. That is not an error.
 type CallResult struct {
 	Response *http.Response
 	Err      error
 	Skipped  bool
 }
 
-// CallIfNotCancelled sends an optional outbound call only while the chain is not cancelled. A skipped call returns
-// Skipped=true with no error and no response; a sent call returns the client's normal response or error.
+// CallIfNotCancelled sends an optional call only while the chain is not cancelled. A skipped call has Skipped set
+// and no response or error. A sent call gives back whatever the client returned.
 func CallIfNotCancelled(ctx context.Context, client *http.Client, req *http.Request) CallResult {
 	if Cancelled(ctx) {
 		return CallResult{Skipped: true}
@@ -264,12 +261,12 @@ func CallIfNotCancelled(ctx context.Context, client *http.Client, req *http.Requ
 	return CallResult{Response: resp, Err: err}
 }
 
-// outbound is the common outbound step of SignalTransport and Transport.
+// outbound is the shared outbound part of SignalTransport and Transport.
 type outbound struct {
 	base    http.RoundTripper
 	reserve time.Duration
 	now     func() time.Time
-	detect  bool // standalone mode: the library marks a child with no time left cs=expired
+	detect  bool // no sidecar: mark a child with no time left as cs=expired
 }
 
 func (t outbound) roundTrip(req *http.Request) (*http.Response, error) {
@@ -288,7 +285,7 @@ func (t outbound) roundTrip(req *http.Request) (*http.Response, error) {
 	cs := Cancellation(req.Context())
 	attempt := attemptFrom(req.Context())
 	if attempt >= 2 && (cs != CancelNone || in.Remaining(now()) <= 0) {
-		// R-R02: a retry of a cancelled or expired chain is never sent
+		// don't send a retry once the chain is cancelled or expired
 		state, reason := CancelExpired, ReasonDeadline
 		if cs == CancelRequest {
 			state, reason = CancelRequest, ReasonCancelled
@@ -342,7 +339,7 @@ func (t outbound) roundTrip(req *http.Request) (*http.Response, error) {
 	return resp, err
 }
 
-// localResult synthesizes a terminal 504 without touching the network.
+// localResult builds a 504 response locally, without calling anything.
 func localResult(req *http.Request, result, msg string) *http.Response {
 	h := http.Header{}
 	h.Set(HeaderResult, result)
@@ -350,14 +347,13 @@ func localResult(req *http.Request, result, msg string) *http.Response {
 		Body: io.NopCloser(strings.NewReader(msg + "\n")), Request: req, ProtoMajor: 1, ProtoMinor: 1}
 }
 
-// SignalTransport propagates the context to every outbound call made with its client: a child context with a fresh
-// iid, the remaining time (negative when late) and the current cancellation state. It never refuses a first attempt
-// and never turns a slow call into an error; only a retry (WithAttempt >= 2) of a cancelled or expired chain is not
-// sent (R-R02). A cancellation reported on a response (cs in X-RPE-Result) is recorded, so later calls carry it and
-// running NonCritical work stops.
+// SignalTransport adds the context to every outbound call: a child context with a new iid, the time left (negative
+// when late) and the current cancel state. It never blocks a first attempt and never turns a slow call into an
+// error. Only a retry of a cancelled or expired chain is held back. If a response says the chain is cancelled,
+// that is remembered, so later calls carry it and running NonCritical work stops.
 type SignalTransport struct {
 	Base    http.RoundTripper
-	Reserve time.Duration // post-processing allowance subtracted from the child ttl (R-D07)
+	Reserve time.Duration // time kept back for our own work after the call, taken off the child ttl
 	Now     func() time.Time
 }
 
@@ -365,7 +361,7 @@ func (t *SignalTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	return outbound{base: t.Base, reserve: t.Reserve, now: t.Now}.roundTrip(req)
 }
 
-// resultCancelState reads the cs member the sidecar adds to X-RPE-Result ("none" when absent or unreadable).
+// resultCancelState reads the cs value the sidecar puts in X-RPE-Result. Missing or broken means none.
 func resultCancelState(h http.Header) CancelState {
 	raw := h.Get(HeaderResult)
 	if raw == "" {

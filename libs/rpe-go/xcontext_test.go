@@ -25,7 +25,7 @@ func TestDecodeEncodeRoundTrip(t *testing.T) {
 	}
 }
 
-func TestUnknownMembersAreForwarded(t *testing.T) { // R-V01
+func TestUnknownMembersAreForwarded(t *testing.T) {
 	c, err := DecodeContext(sampleCtx + `, zz="future", zy=7`)
 	if err != nil {
 		t.Fatal(err)
@@ -101,7 +101,7 @@ func TestChildAndGuard(t *testing.T) {
 	}
 }
 
-func TestSplitBudget(t *testing.T) { // R-F05
+func TestSplitBudget(t *testing.T) {
 	got := SplitBudget(SplitParallel, 7, 1, 4)
 	want := []int64{2, 2, 1, 1}
 	var sum int64
@@ -157,7 +157,7 @@ func TestMiddlewareGatewayAndPropagation(t *testing.T) {
 			w.WriteHeader(resp.StatusCode)
 		})))
 	defer gw.Close()
-	// a client-supplied context must be ignored at the gateway (trust boundary)
+	// the gateway must ignore a context sent by the client
 	req, _ := http.NewRequest("GET", gw.URL, nil)
 	req.Header.Set(HeaderContext, strings.Replace(sampleCtx, "ttl=287, bud=300", "ttl=99999, bud=99999", 1))
 	resp, err := http.DefaultClient.Do(req)
@@ -174,12 +174,12 @@ func TestMiddlewareGatewayAndPropagation(t *testing.T) {
 	}
 }
 
-func TestMiddlewareSignalsExpiryAndServesOriginals(t *testing.T) { // R-D02 (signal mode), R-T04
+func TestMiddlewareSignalsExpiryAndServesOriginals(t *testing.T) {
 	for _, tc := range []struct {
 		in   string
 		want CancelState
 	}{
-		{strings.Replace(sampleCtx, "ttl=287", "ttl=0", 1), CancelExpired}, // detected by the library, signalled
+		{strings.Replace(sampleCtx, "ttl=287", "ttl=0", 1), CancelExpired}, // the library notices it and marks it
 		{strings.Replace(sampleCtx, "cs=none", "cs=expired", 1), CancelExpired},
 		{strings.Replace(sampleCtx, "cs=none", "cs=cancel", 1), CancelRequest},
 	} {
@@ -201,7 +201,7 @@ func TestMiddlewareSignalsExpiryAndServesOriginals(t *testing.T) { // R-D02 (sig
 	}
 }
 
-func TestMiddlewareRefusesExpiredRetries(t *testing.T) { // R-R02
+func TestMiddlewareRefusesExpiredRetries(t *testing.T) {
 	h := Middleware(MiddlewareConfig{}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Error("an expired retry must not reach the application")
 	}))
@@ -265,7 +265,7 @@ func TestTransportNeverCutsASlowCallOff(t *testing.T) {
 	}
 }
 
-func TestTransportRefusesExpiredRetries(t *testing.T) { // R-R02
+func TestTransportRefusesExpiredRetries(t *testing.T) {
 	c, _ := DecodeContext(sampleCtx)
 	expired := WithInbound(context.Background(), Inbound{Ctx: c, Received: time.Now().Add(-time.Second)})
 	req, _ := http.NewRequestWithContext(WithAttempt(expired, 2), "GET", "http://127.0.0.1:1/never", nil)
@@ -276,7 +276,7 @@ func TestTransportRefusesExpiredRetries(t *testing.T) { // R-R02
 	if res, _, _ := ParseResult(resp.Header); !res.Terminal || res.Reason != ReasonDeadline {
 		t.Fatalf("want a terminal deadline result, got %+v", res)
 	}
-	// the first attempt of the same late chain is sent (it fails only because nothing listens)
+	// the first attempt of the same late chain still goes out, it only fails because nothing is listening
 	req, _ = http.NewRequestWithContext(expired, "GET", "http://127.0.0.1:1/never", nil)
 	if _, err := (&Transport{}).RoundTrip(req); err == nil || errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("the first attempt must be sent, got %v", err)

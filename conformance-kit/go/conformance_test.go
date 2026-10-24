@@ -155,7 +155,7 @@ func TestTrailMerge(t *testing.T) {
 	}
 }
 
-// TestRunAll checks the in-process runner used by the protocol service: every file loads and every case passes.
+// TestRunAll checks the runner the protocol service uses: every file loads and every case passes.
 func TestRunAll(t *testing.T) {
 	total := 0
 	for _, f := range RunAll(dir) {

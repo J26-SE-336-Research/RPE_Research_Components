@@ -5,43 +5,43 @@ import (
 	"strings"
 )
 
-// X-RPE-Trail, the in-band per-hop trail (spec §12, rules R-P01..R-P05), verbose v1 encoding:
+// X-RPE-Trail records every hop a request went through. Example:
 //
 //	X-RPE-Trail: rv=1, inc=?0, h="1:0:41250:F:0;2:1:39870:F:2;4:2:38110:X:5"
 //
 // Each entry is svcId:parent:elapsedMicros:decision:consumedMs.
-//   - svcId is the service's 2-byte id in the registry of version rv (names never travel, R-P03);
-//   - parent is the 1-based index of the entry of the calling hop in the same trail, 0 for a root;
-//   - elapsedMicros is the time the hop spent on the request including its downstream calls, -1 while active;
-//   - decision is what the hop did (TrailDecision);
-//   - consumedMs is the part of the chain budget already used when the hop received the request (bud - ttl).
+//   - svcId is the service id from registry version rv, so names are never sent
+//   - parent is the position of the calling hop's entry, starting at 1, or 0 for the root
+//   - elapsedMicros is how long the hop took including its own calls, -1 while it is still running
+//   - decision is what the hop did, see TrailDecision
+//   - consumedMs is how much of the budget was already used when the hop got the request, so bud - ttl
 //
-// On a request the trail carries the path from the gateway to the caller (every entry active). On a response it
-// carries the finished subtree of the responding hop: its own entry first, then its callees' subtrees. inc=?1 marks
-// a trail that is known to be incomplete: a hop that does not speak RPE, a truncated trail or a registry mismatch.
+// On a request the trail holds the path from the gateway down to the caller. On a response it holds the part
+// below the hop that answered: its own entry first and then what its callees sent back. inc=?1 means the trail is
+// missing something, like a hop without RPE, a cut off trail or a different registry version.
 
 // TrailDecision is the decision code of a trail entry.
 type TrailDecision byte
 
 const (
 	DecisionForward   TrailDecision = 'F' // served on time
-	DecisionEarly     TrailDecision = 'E' // answered before the application (an expired retry, an invalid context)
-	DecisionExpired   TrailDecision = 'X' // served after the chain deadline (signalled, never rejected)
+	DecisionEarly     TrailDecision = 'E' // answered before reaching the app, like a late retry or a bad context
+	DecisionExpired   TrailDecision = 'X' // served after the deadline, still served
 	DecisionCancelled TrailDecision = 'C' // the chain was cancelled and the hop skipped its work
 	DecisionRetry     TrailDecision = 'R' // a retry attempt (att >= 2) that was served
-	DecisionActive    TrailDecision = 'A' // still in progress (request-side entries)
+	DecisionActive    TrailDecision = 'A' // still running, used on the request side
 	DecisionPartial   TrailDecision = 'P' // fan-out completed without its optional children
-	DecisionOverload  TrailDecision = 'O' // shed by backpressure (429 or 503)
-	DecisionUnknown   TrailDecision = 'U' // the callee returned no trail: a hop that does not speak RPE (R-P05)
+	DecisionOverload  TrailDecision = 'O' // dropped by backpressure, a 429 or 503
+	DecisionUnknown   TrailDecision = 'U' // the callee sent no trail back, so it doesn't speak RPE
 )
 
 func validDecision(d TrailDecision) bool { return strings.IndexByte("FEXCRAPOU", byte(d)) >= 0 }
 
-// Trail bounds (R-P02): at most MaxTrailEntries entries and MaxTrailBytes bytes of header value.
+// Size limits for a trail: at most MaxTrailEntries entries and MaxTrailBytes bytes.
 const (
 	MaxTrailEntries = MaxTopologyRecords
 	MaxTrailBytes   = MaxTopologyTrailBytes
-	// maxConsumedMillis allows a late hop (ttl down to -MaxRequestDeadlineMillis).
+	// maxConsumedMillis leaves room for late hops, where ttl can go down to -MaxRequestDeadlineMillis.
 	maxConsumedMillis = 2 * MaxRequestDeadlineMillis
 )
 
@@ -66,8 +66,8 @@ type Trail struct {
 	Entries         []TrailEntry
 }
 
-// DecodeTrail parses and validates an X-RPE-Trail value. Unknown members are ignored (R-V01 applies to the
-// context, the trail is rebuilt by every hop).
+// DecodeTrail parses and checks an X-RPE-Trail value. Unknown members are ignored because every hop rebuilds
+// the trail anyway.
 func DecodeTrail(raw string) (Trail, error) {
 	if len(raw) > MaxTrailBytes {
 		return Trail{}, problem(CodeContextTooLarge, HeaderTrail, "trail exceeds 1400 bytes")
@@ -158,7 +158,7 @@ func parseTrailEntry(raw string, index int) (TrailEntry, error) {
 	return e, nil
 }
 
-// Encode serializes the trail canonically.
+// Encode writes the trail back as a header value.
 func (t Trail) Encode() string {
 	var w dictWriter
 	w.int("rv", t.RegistryVersion)
@@ -173,10 +173,10 @@ func (t Trail) Encode() string {
 	return w.String()
 }
 
-// Append adds sub (a subtree, or a path) under the entry at 1-based index parent (0 adds it as a new root). Entry
-// parents of sub are re-indexed. Entries that would exceed the bounds are dropped, together with their descendants,
-// and the result is marked incomplete (R-P02). A subtree recorded with another registry version cannot be merged
-// (its ids mean other services) and only marks the result incomplete (R-P03).
+// Append puts sub under the entry at position parent, counting from 1. parent 0 adds it as a new root. The parent
+// numbers inside sub are shifted to match. Entries that don't fit in the size limits are dropped along with
+// everything below them, and the trail is marked incomplete. A sub from another registry version is not merged,
+// since its ids mean different services, it only marks the trail incomplete.
 func (t Trail) Append(sub Trail, parent int) Trail {
 	out := Trail{RegistryVersion: t.RegistryVersion, Incomplete: t.Incomplete || sub.Incomplete,
 		Entries: append([]TrailEntry(nil), t.Entries...)}
@@ -184,12 +184,12 @@ func (t Trail) Append(sub Trail, parent int) Trail {
 		out.Incomplete = true
 		return out
 	}
-	// encoded size: rv and inc, the h member and the entries joined by ';'
+	// size so far: rv, inc, the h member and the entries joined by ';'
 	size := len(Trail{RegistryVersion: out.RegistryVersion}.Encode()) + len(`, h=""`) - 1
 	for _, e := range out.Entries {
 		size += len(e.wire()) + 1
 	}
-	newIndex := make([]int, len(sub.Entries)+1) // sub index (1-based) -> index in out, 0 when dropped
+	newIndex := make([]int, len(sub.Entries)+1) // position in sub -> position in out, 0 if dropped
 	for i, e := range sub.Entries {
 		p := parent
 		if e.Parent > 0 {

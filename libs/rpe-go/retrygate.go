@@ -1,44 +1,45 @@
 package rpe
 
-// The retry gate (spec §8, rule R-R02). RPE never rejects an original request because its deadline passed: the
-// sidecar only signals it (cs=expired). What RPE refuses is a *retry* of a chain that can no longer succeed in time,
-// because a retry of an expired chain repeats side effects (a second card charge) and multiplies load exactly when a
-// dependency is already slow. The gate is a pure decision: it sends nothing and changes nothing.
+// The retry gate. A late original request is never rejected, the sidecar only marks it with cs=expired. What we do
+// stop is a retry of a chain that can't finish in time anymore. Retrying then repeats side effects, like a second
+// card charge, and adds load right when a service is already slow. The gate only decides, it doesn't send or
+// change anything.
 
-// Reasons a retry is refused (the rsn of a refused attempt).
+// Reasons for refusing a retry, sent as rsn.
 const (
-	RetryRefusedCancelled        = "cancelled"         // the chain was cancelled (cs=cancel)
-	RetryRefusedDeadline         = "deadline"          // the chain deadline has passed (cs=expired or ttl <= 0)
-	RetryRefusedTerminal         = "terminal"          // the last response carried term=?1
-	RetryRefusedNotReplaySafe    = "not-replay-safe"   // the operation may not be repeated
-	RetryRefusedInsufficientTime = "insufficient-time" // less time left than the backoff plus one attempt
-	RetryRefusedBudget           = "budget"            // the retry budget of this subtree is used up
+	RetryRefusedCancelled        = "cancelled"         // the chain was cancelled
+	RetryRefusedDeadline         = "deadline"          // the deadline has passed
+	RetryRefusedTerminal         = "terminal"          // the last response had term=?1
+	RetryRefusedNotReplaySafe    = "not-replay-safe"   // the operation can't be repeated safely
+	RetryRefusedInsufficientTime = "insufficient-time" // not enough time for the backoff and one more attempt
+	RetryRefusedBudget           = "budget"            // no retry budget left
 	RetryRefusedAttempts         = "attempts"          // the caller's own attempt limit is reached
 )
 
-// RetryCheck is what the caller knows after an attempt failed.
+// RetryCheck is what the caller knows after a failed attempt.
 type RetryCheck struct {
-	Attempt       int64       // attempts already sent for this logical call (1 after the first attempt)
+	Attempt       int64       // attempts sent so far, 1 after the first one
 	MaxAttempts   int64       // the caller's own limit, 0 for none
-	Cancel        CancelState // chain cancellation state: from the context, or cs reported on a response
-	Terminal      bool        // the last response carried term=?1
-	ReplaySafe    bool        // the operation may be repeated (idempotent, or protected by an idempotency key)
-	RemainingMs   int64       // chain deadline left now (ttl minus the locally measured elapsed time)
+	Cancel        CancelState // cancel state from the context or from a response
+	Terminal      bool        // the last response had term=?1
+	ReplaySafe    bool        // safe to repeat, for example idempotent or using an idempotency key
+	RemainingMs   int64       // time left on the deadline right now
 	BackoffMs     int64       // wait before the next attempt
-	AttemptCostMs int64       // time one attempt is expected to need (route p50/p95 from policy or C4)
-	RetryBudget   int64       // retry budget left for this subtree (rb minus retries already spent)
+	AttemptCostMs int64       // how long one attempt usually takes
+	RetryBudget   int64       // retry budget left, rb minus the retries already used
 }
 
-// RetryVerdict is the gate's decision.
+// RetryVerdict is what the gate decided.
 type RetryVerdict struct {
 	Retry       bool   `json:"retry"`
-	Reason      string `json:"reason,omitempty"` // empty when the retry is allowed
-	Rule        string `json:"rule,omitempty"`   // R-R02 when refused
-	NextAttempt int64  `json:"nextAttempt"`      // att of the next attempt (when allowed)
-	BudgetLeft  int64  `json:"budgetLeft"`       // retry budget after this retry (when allowed)
+	Reason      string `json:"reason,omitempty"` // empty if the retry is allowed
+	Rule        string `json:"rule,omitempty"`   // the spec rule, set when refused
+	NextAttempt int64  `json:"nextAttempt"`      // att for the next attempt, if allowed
+	BudgetLeft  int64  `json:"budgetLeft"`       // budget left after this retry, if allowed
 }
 
-// DecideRetry applies R-R02. The checks run in a fixed order so that every implementation reports the same reason.
+// DecideRetry decides if one more attempt is allowed. The checks always run in the same order so the Go and Java
+// versions give the same reason.
 func DecideRetry(c RetryCheck) RetryVerdict {
 	refuse := func(reason string) RetryVerdict {
 		return RetryVerdict{Reason: reason, Rule: "R-R02", BudgetLeft: max(c.RetryBudget, 0)}

@@ -35,8 +35,8 @@ func TestDecideRetryOrder(t *testing.T) {
 	}
 }
 
-// TestDoWithRetryStopsOnAnExpiredChain: the first attempt times out, and by then the chain has too little time left
-// for another attempt, so the retry is refused and the side effect happens once.
+// TestDoWithRetryStopsOnAnExpiredChain: the first attempt times out and by then there isn't enough time left for
+// another one, so the retry is refused and the side effect only happens once.
 func TestDoWithRetryStopsOnAnExpiredChain(t *testing.T) {
 	var charged atomic.Int64
 	pay := httptest.NewServer(SignalMiddleware(SignalConfig{}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -28,7 +28,7 @@ func TestAttribution(t *testing.T) {
 	if len(a.Hops) != 5 || !a.Incomplete || !a.Late {
 		t.Fatalf("attribution %+v", a)
 	}
-	// order's own time: 90 - union(20, 70, 10 starting at the same point) = 20 ms; payment is the bottleneck (70 ms own)
+	// order's own time is 90 - 70 = 20 ms since its calls run at the same time, and payment is the slowest at 70 ms
 	if a.Hops[1].SelfMs != 20 || a.Hops[0].SelfMs != 10 || a.Hops[3].SelfMs != 70 || a.Hops[a.Bottleneck-1].Service != "payment-svc" {
 		t.Fatalf("self times %+v", a.Hops)
 	}
@@ -115,11 +115,11 @@ func TestAutoRegistration(t *testing.T) {
 		_ = json.NewDecoder(resp.Body).Decode(&out)
 		return resp.StatusCode, out
 	}
-	// a known service keeps its id and the registry its version (idempotent)
+	// a known service keeps its id and the version stays the same
 	if code, out := register("payment-svc"); code != 200 || out["id"].(float64) != 4 || out["version"].(float64) != 1 {
 		t.Fatalf("known service: %d %+v", code, out)
 	}
-	// a new service gets the next free id; the version becomes the checksum of the mapping
+	// a new service gets the next free id and the version becomes the checksum
 	code, first := register("search-svc")
 	if code != 200 || first["id"].(float64) != 9 || first["version"].(float64) == 1 {
 		t.Fatalf("new service: %d %+v", code, first)
@@ -127,12 +127,12 @@ func TestAutoRegistration(t *testing.T) {
 	if _, again := register("search-svc"); again["id"] != first["id"] || again["version"] != first["version"] {
 		t.Fatalf("registering twice changes nothing: %+v %+v", first, again)
 	}
-	// the same mapping always gets the same version (a restart that registers in the same order is consistent)
+	// the same list always gets the same version, so a restart that registers in the same order matches
 	other := testServer()
 	if v, _, _ := other.reg.add([]string{"search-svc"}); float64(v) != first["version"].(float64) {
 		t.Fatalf("same mapping, different version: %d vs %v", v, first["version"])
 	}
-	// a mapping that gives the new service another id gets another version (never merged with the first)
+	// if the new service gets a different id the version is different too, so they are never mixed
 	other2 := testServer()
 	_, _, _ = other2.reg.add([]string{"cart-svc", "search-svc"})
 	if v, _ := other2.reg.snapshot(); float64(v) == first["version"].(float64) {

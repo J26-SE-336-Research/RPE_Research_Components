@@ -5,11 +5,11 @@ import dev.rpe.protocol.ProtocolException;
 import java.util.List;
 import java.util.Map;
 
-/** Case-insensitive single-value header lookup over any {@code Map<String, List<String>>} header representation. */
+/** Reads one header value from any {@code Map<String, List<String>>}, ignoring case. */
 final class Headers {
     private Headers() {}
 
-    /** The single value of {@code name}, "" when absent; DUPLICATE_HEADER when sent more than once. */
+    /** The value of {@code name}, or "" if missing. Sending it twice is a DUPLICATE_HEADER error. */
     static String single(Map<String, List<String>> headers, String name) {
         int count = 0;
         String value = "";

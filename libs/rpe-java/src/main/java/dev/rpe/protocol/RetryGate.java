@@ -1,27 +1,27 @@
 package dev.rpe.protocol;
 
 /**
- * The retry gate (spec §8, rule R-R02). RPE never rejects an original request because its deadline passed (the
- * sidecar only signals {@code cs=expired}); it refuses a <em>retry</em> of a chain that can no longer succeed in time,
- * because such a retry repeats side effects and adds load exactly when a dependency is slow. A pure decision: it sends
- * nothing. The checks run in a fixed order so that every implementation reports the same reason.
+ * The retry gate. A late original request is never rejected, the sidecar only marks it with {@code cs=expired}. What
+ * we stop is a retry of a chain that can't finish in time anymore, because it would repeat side effects and add load
+ * right when a service is slow. It only decides, it doesn't send anything. The checks always run in the same order
+ * so the Java and Go versions give the same reason.
  */
 public final class RetryGate {
     public static final String CANCELLED = "cancelled", DEADLINE = "deadline", TERMINAL = "terminal",
             NOT_REPLAY_SAFE = "not-replay-safe", INSUFFICIENT_TIME = "insufficient-time", BUDGET = "budget", ATTEMPTS = "attempts";
 
     /**
-     * What the caller knows after an attempt failed.
+     * What the caller knows after a failed attempt.
      *
-     * @param attempt       attempts already sent (1 after the first attempt)
+     * @param attempt       attempts sent so far, 1 after the first one
      * @param maxAttempts   the caller's own limit, 0 for none
-     * @param cancel        chain cancellation state (context, or cs reported on a response)
-     * @param terminal      the last response carried {@code term=?1}
-     * @param replaySafe    the operation may be repeated
-     * @param remainingMs   chain deadline left now
+     * @param cancel        cancel state from the context or from a response
+     * @param terminal      the last response had {@code term=?1}
+     * @param replaySafe    true if the operation is safe to repeat
+     * @param remainingMs   time left on the deadline right now
      * @param backoffMs     wait before the next attempt
-     * @param attemptCostMs time one attempt is expected to need
-     * @param retryBudget   retry budget left for this subtree
+     * @param attemptCostMs how long one attempt usually takes
+     * @param retryBudget   retry budget left
      */
     public record Check(long attempt, long maxAttempts, CancelState cancel, boolean terminal, boolean replaySafe,
             long remainingMs, long backoffMs, long attemptCostMs, long retryBudget) {
@@ -30,7 +30,7 @@ public final class RetryGate {
         }
     }
 
-    /** The decision: {@code reason} and {@code rule} are empty when the retry is allowed. */
+    /** What the gate decided. {@code reason} and {@code rule} are empty if the retry is allowed. */
     public record Verdict(boolean retry, String reason, String rule, long nextAttempt, long budgetLeft) {}
 
     private RetryGate() {}

@@ -6,8 +6,8 @@ const COL = 270;
 const ROW = 92;
 
 /**
- * The service graph rebuilt from in-band trails: columns are call depth, each edge carries its call count and p50.
- * A hop that does not speak RPE is drawn dashed (unknown edge): the trail knows it was called but not what it did.
+ * The service graph rebuilt from the trails. Each column is one call level and each edge shows its call count and
+ * p50. A hop without RPE is drawn dashed, since the trail knows it was called but not what it did.
  */
 export function TrailGraph({ t }: { t: Topology }) {
   const incoming = new Map<string, number>();

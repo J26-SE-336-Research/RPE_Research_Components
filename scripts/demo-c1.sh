@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Runs the C1 (protocol) demos on the running cluster through the Admin Panel's API and prints what they show, the
-# same steps as the live demo in the panel. Use it to check the demo before presenting it, or to show it on a terminal.
+# Runs the C1 demos on the cluster through the Admin Panel API and prints the results. These are the same steps as
+# the live demo in the panel, so use it to check everything works before presenting, or to show it in a terminal.
 #   scripts/demo-c1.sh                 # all steps
 #   scripts/demo-c1.sh chain retry     # chosen steps: chain interop conformance topology signal retry
-# The signal and retry steps inject a short fault into payment-svc and remove it again; run them on the demo cluster only.
+# The signal and retry steps slow down payment-svc for a moment and then reset it, so only run them on the demo cluster.
 source "$(dirname "$0")/../tests/e2e/lib.sh"
 STEPS="${*:-chain interop conformance topology signal retry}"
 title() { printf '\n\033[1m%s\033[0m\n' "$*"; }
