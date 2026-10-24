@@ -49,9 +49,9 @@ public class AdaptiveConfig {
     }
 
     /**
-     * Deadline recommendation v2 (guide §8.3), env {@code RRPE_ADAPTIVE_DEADLINE_<NAME>}. Values an existing property
-     * already covers are reused from {@link Settings}: N_learn = baseline-samples, minimum requests per window =
-     * minimum-chain-requests, min/max deadline, cooldown.
+     * Deadline settings, env {@code RRPE_ADAPTIVE_DEADLINE_<NAME>}. Some values come from {@link Settings}: the learning
+     * windows are baseline-samples, the minimum requests per window are minimum-chain-requests, and the min and max
+     * deadline and the cooldown are the same too.
      */
     @ConfigurationProperties("rrpe.adaptive.deadline")
     public record DeadlineSettings(@DefaultValue("10") int minLearningWindows, @DefaultValue("1000") int minLearningRequests,
@@ -82,13 +82,13 @@ public class AdaptiveConfig {
             return new DeadlineSettings(10, 1000, .99, 3, .10, .30, .01, .05, 1.645, 1.0, Duration.ofMinutes(30), 3, .05, .10, .005,
                     1.5, .75, .80, .10, .25, 1, 2, 4, .25, 3, .05, 20, Duration.ofMinutes(30));
         }
-        /** The demo-cluster values of guide §8.3 (min-window-requests and cooldown come from {@link Settings}). */
+        /** The values for the demo cluster. min-window-requests and cooldown come from {@link Settings}. */
         public static DeadlineSettings demo() {
             return new DeadlineSettings(3, 150, .99, 3, .10, .30, .01, .05, 1.645, 1.0, Duration.ofMinutes(5), 2, .05, .10, .005,
                     1.5, .75, .80, .10, .25, 1, 2, 6, .25, 2, .05, 10, Duration.ofMinutes(30));
         }
     }
-    /** Service load thresholds for deadline v2 (guide §6.2). Queue pressure is in percent (0–100), as the sidecar exports it. */
+    /** Service load limits for the deadline logic. Queue pressure is in percent, as the sidecar exports it. */
     @ConfigurationProperties("rrpe.adaptive.load")
     public record LoadSettings(@DefaultValue("50") double pressureStressed, @DefaultValue("80") double pressureOverloaded,
             @DefaultValue("0.70") double cpuStressed, @DefaultValue("0.85") double cpuOverloaded,
@@ -99,7 +99,7 @@ public class AdaptiveConfig {
         }
         public static LoadSettings defaults() { return new LoadSettings(50, 80, .70, .85, .25, .90); }
     }
-    /** Lever diagnosis thresholds (guide §6.4). */
+    /** Limits for choosing the lever. */
     @ConfigurationProperties("rrpe.adaptive.lever")
     public record LeverSettings(@DefaultValue("0.5") double queueShare, @DefaultValue("0.70") double cpuLow) {
         public LeverSettings { if (!(queueShare > 0 && queueShare <= 1) || cpuLow <= 0) throw new IllegalArgumentException("Invalid lever thresholds"); }
@@ -107,8 +107,8 @@ public class AdaptiveConfig {
     }
 
     /**
-     * Leaky-bucket rate v2 (rate/retry guide §4, §7), env {@code RRPE_ADAPTIVE_RATE_<NAME>}. Reused from {@link Settings}:
-     * maximum-rate-change (largest cut per step), persistence, recovery-windows, cooldown, baseline-samples.
+     * Leaky-bucket rate settings, env {@code RRPE_ADAPTIVE_RATE_<NAME>}. These come from {@link Settings}:
+     * maximum-rate-change (the largest cut per step), persistence, recovery-windows, cooldown and baseline-samples.
      */
     @ConfigurationProperties("rrpe.adaptive.rate")
     public record RateSettings(@DefaultValue("0.25") double headroom, @DefaultValue("80") double queueHighPercent,
@@ -118,8 +118,8 @@ public class AdaptiveConfig {
             @DefaultValue("30m") Duration generousWait, @DefaultValue("0.10") double relaxStep, @DefaultValue("0.5") double maxRaise,
             @DefaultValue("0.20") double minImprovement, @DefaultValue("6") int loadGrowthWindows, @DefaultValue("1.5") double loadGrowthFactor,
             @DefaultValue("1.25") double loadGrowthMinLoadRatio) {
-        // brokeAtMemory: what the app managed when it slowed down is kept for 6 h (learning fix C); after that raises probe in small steps.
-        // load-growth-*: "app time grows with load" (learning fix B2) over the last load-growth-windows learning windows.
+        // brokeAtMemory: how long we remember what the app managed when it slowed down. After that, raises go in small steps.
+        // load-growth-*: checks whether the app gets slower with more load over the last learning windows.
         @ConstructorBinding
         public RateSettings {
             if (!(headroom >= 0) || !(queueLowPercent > 0 && queueLowPercent < queueHighPercent && queueHighPercent <= 100) || !(appTolerance > 1)
@@ -141,8 +141,8 @@ public class AdaptiveConfig {
         }
     }
     /**
-     * Retry budget v2 (guide §5), env {@code RRPE_ADAPTIVE_RETRY_<NAME>}. The maximum ratio is the existing
-     * {@link Settings#maximumRetryRatio()} (at most 0.10, also enforced by the workflow), so the guide's max-ratio 0.20 is not used.
+     * Retry budget settings, env {@code RRPE_ADAPTIVE_RETRY_<NAME>}. The maximum ratio is
+     * {@link Settings#maximumRetryRatio()}, at most 0.10, which the workflow also checks.
      */
     @ConfigurationProperties("rrpe.adaptive.retry")
     public record RetrySettings(@DefaultValue("0.10") double baseRatio, @DefaultValue("0.20") double minSuccess,
@@ -155,12 +155,11 @@ public class AdaptiveConfig {
         public static RetrySettings defaults() { return new RetrySettings(.10, .20, 30, .02); }
     }
     /**
-     * App-time baseline P0 (guide §4.5 and the rate learning fix), env {@code RRPE_ADAPTIVE_BASELINE_<NAME>}.
-     * {@code allow-shed-windows}: windows with a full or shedding queue but normal errors also teach P0 (fix A; the bucket
-     * limited the app there). {@code provisional-windows}: a provisional P0 (25th percentile) after this many windows, the
-     * median after baseline-samples. When the load (successful requests per second) clearly varies, i.e. the busiest quarter
-     * of the last {@code load-windows} learning windows carries at least {@code load-spread} × the load of the quietest
-     * quarter ({@code quiet-share}), P0 is the median app time of that quietest quarter, once it has {@code min-quiet-windows} (fix B1).
+     * Settings for the normal app time P0, env {@code RRPE_ADAPTIVE_BASELINE_<NAME>}.
+     * allow-shed-windows: windows with a full queue but normal errors also teach P0, since the bucket limited the app
+     * there. provisional-windows: after this many windows we use a rough P0 (the 25th percentile), and the median after
+     * baseline-samples. When the load clearly varies, so the busiest quarter has load-spread times the load of the
+     * quietest quarter, P0 is the median app time of the quietest quarter once it has min-quiet-windows.
      */
     @ConfigurationProperties("rrpe.adaptive.baseline")
     public record BaselineSettings(@DefaultValue("true") boolean allowShedWindows, @DefaultValue("5") int provisionalWindows,
@@ -175,7 +174,7 @@ public class AdaptiveConfig {
         public BaselineSettings(boolean allowShedWindows) { this(allowShedWindows, 5, .25, 3, 2.0, 60); }
         public static BaselineSettings defaults() { return new BaselineSettings(true); }
     }
-    /** Automatic approval safety (guide §6): verification windows, undo and flip limits within {@code period}, pause length. */
+    /** Safety settings for automatic approval: check windows, how many undos and flips are allowed, and the pause length. */
     @ConfigurationProperties("rrpe.adaptive.auto")
     public record AutoSettings(@DefaultValue("2") int verifyWindows, @DefaultValue("2") int maxReverts, @DefaultValue("3") int maxFlips,
             @DefaultValue("60m") Duration pause, @DefaultValue("30m") Duration period) {
@@ -187,9 +186,9 @@ public class AdaptiveConfig {
         public static AutoSettings defaults() { return new AutoSettings(2, 2, 3, Duration.ofMinutes(60), Duration.ofMinutes(30)); }
     }
     /**
-     * Joint healthy recalibration (C3 request J1–J6): when a healthy rate step reaches its target, the matching chain
-     * deadlines are recommended in the same decision. Off by default ({@code rrpe.adaptive.joint.enabled}); a joint is made
-     * only when the deadline change is at least {@code max(min-change-fraction × D, min-change-ms)}.
+     * Joint recalibration: when a healthy rate step reaches its target, the matching chain deadlines are recommended in
+     * the same decision. Off by default (rrpe.adaptive.joint.enabled). A joint card is only made when the deadline
+     * change is big enough, by min-change-fraction and min-change-ms.
      */
     @ConfigurationProperties("rrpe.adaptive.joint")
     public record JointSettings(@DefaultValue("false") boolean enabled, @DefaultValue("0.05") double minChangeFraction,
@@ -202,11 +201,11 @@ public class AdaptiveConfig {
     }
     /** The kinds of change that may be approved automatically. A chain deadline is never one of them. */
     public enum AutoKind { BUCKET_RAISE, BUCKET_CUT, RETRY_DECREASE, RETRY_INCREASE,
-        /** Lowering a too-generous healthy rate (above 2 × target for generous-wait) in steps of at most relax-step. */
+        /** Lowering a healthy rate that stayed above twice its target for a while, in small steps. */
         BUCKET_RELAX }
     /**
-     * {@code rrpe.adaptive.auto-approve-actions} (env {@code RRPE_ADAPTIVE_AUTOAPPROVEACTIONS}); empty by default, so every
-     * recommendation waits for a human exactly as before. {@code CHAIN_DEADLINE} is rejected.
+     * rrpe.adaptive.auto-approve-actions (env RRPE_ADAPTIVE_AUTOAPPROVEACTIONS). Empty by default, so every
+     * recommendation waits for a person. CHAIN_DEADLINE is not allowed.
      */
     @ConfigurationProperties("rrpe.adaptive")
     public record AutoApproval(@DefaultValue List<String> autoApproveActions) {

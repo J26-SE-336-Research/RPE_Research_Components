@@ -46,12 +46,12 @@ public final class AdaptiveModels {
     public record Review(String reviewer, boolean approve, String comment) {}
     public record Acknowledgement(String status, String policyVersion, Double appliedValue) {}
 
-    // ---------- Deadline recommendation v2 (see DEADLINE_V2_MIGRATION.md) ----------
+    // ---------- chain deadline ----------
 
     /**
-     * One complete gateway request of a chain, as v2 uses it. {@code expired}: the chain passed its deadline (span event
-     * {@code deadline.exceeded}, or inferred from {@code duration >= budget}). {@code cut}: ended early by a timer that is
-     * not RPE (a 504 near the deadline, an outer timeout, a client abort); such requests are censored by something else.
+     * One complete gateway request of a chain. expired means the chain passed its deadline, from the span event or
+     * because it took at least the budget. cut means something other than RPE ended it early, like a 504 near the
+     * deadline, an outer timeout or a client abort.
      */
     public record DeadlineSample(String traceId, String method, String route, Instant end, double durationMs, int status,
             long budgetMs, SortedSet<String> path, boolean expired, boolean expiredInferred, boolean cut, String cutHint,
@@ -59,7 +59,7 @@ public final class AdaptiveModels {
         public DeadlineSample { path = path == null ? new TreeSet<>() : Collections.unmodifiableSortedSet(new TreeSet<>(path)); }
         public String stratum() { return String.join(">", path); }
     }
-    /** Requests of one chain window that v2 may use, plus the count of those it must exclude, by reason. */
+    /** The requests of one chain window we can use, and how many we left out for each reason. */
     public record ChainSamples(List<DeadlineSample> samples, Map<String, Integer> excluded) {
         public ChainSamples {
             samples = samples == null ? List.of() : List.copyOf(samples);
@@ -71,14 +71,14 @@ public final class AdaptiveModels {
             Double backpressureRejections, Double breakerOpenPeers, Double cpuUtilisation, Double cpuThrottling,
             Double memoryUtilisation, Double queueWaitShare, List<String> problems, Double queueDepth, Double ratePerSecond) {
         public ServiceLoadSnapshot { problems = problems == null ? List.of() : List.copyOf(problems); }
-        /** Without the sidecar's configured rate (rate v2 callers and simulations). */
+        /** Without the rate the sidecar is set to, for the rate logic and simulations. */
         public ServiceLoadSnapshot(String service, Double queuePressurePercent, Double overloadRejections, Double backpressureRejections,
                 Double breakerOpenPeers, Double cpuUtilisation, Double cpuThrottling, Double memoryUtilisation, Double queueWaitShare, List<String> problems,
                 Double queueDepth) {
             this(service, queuePressurePercent, overloadRejections, backpressureRejections, breakerOpenPeers, cpuUtilisation, cpuThrottling,
                     memoryUtilisation, queueWaitShare, problems, queueDepth, null);
         }
-        /** Without queue depth (deadline v2 callers). */
+        /** Without queue depth, for the deadline logic. */
         public ServiceLoadSnapshot(String service, Double queuePressurePercent, Double overloadRejections, Double backpressureRejections,
                 Double breakerOpenPeers, Double cpuUtilisation, Double cpuThrottling, Double memoryUtilisation, Double queueWaitShare, List<String> problems) {
             this(service, queuePressurePercent, overloadRejections, backpressureRejections, breakerOpenPeers, cpuUtilisation, cpuThrottling,
@@ -88,7 +88,7 @@ public final class AdaptiveModels {
             return new ServiceLoadSnapshot(service, null, null, null, null, null, null, null, null, List.of());
         }
     }
-    /** Per-request evidence of a chain window for v2: samples, per-service load signals, deadline-guard health, hops without a sidecar. */
+    /** What we know about a chain window: the requests, the load of each service, the deadline guard and hops without a sidecar. */
     public record ChainEvidence(ChainSamples samples, Map<String, ServiceLoadSnapshot> loads, Map<String, Health> guards, java.util.Set<String> unmonitored) {
         public ChainEvidence {
             loads = loads == null ? Map.of() : Map.copyOf(loads);
@@ -103,16 +103,16 @@ public final class AdaptiveModels {
     public record Proportion(int events, int n, double p, double lower, double upper) {}
     public enum Lever { DEADLINE, RATE, CAPACITY, NONE }
     public enum DeadlineCase { A_RAISE, B_LOWER_OVERLOAD, C_KEEP_FIRING, D_TIGHTEN, HOLD,
-        /** The deadline part of an applied joint healthy recalibration (C3 J5); verified like A_RAISE or D_TIGHTEN by direction. */
+        /** The deadline part of an applied joint change. It is checked like a raise or a tighten, by its direction. */
         RECALIBRATE }
     public enum ChainDeadlineState { LEARNING, READY, PROPOSED, SETTLING, PAUSED }
     /**
-     * Learned healthy time of a chain. {@code status}: IDENTIFIED (T_h known), CENSORED (only "p99 ≥ D" is known; T_h may
-     * be null) or LEARNING. Null numbers mean "not known yet".
+     * The healthy time we learned for a chain. IDENTIFIED means we know it. CENSORED means we only know p99 is at least
+     * the deadline. LEARNING means we are still collecting. Null numbers are not known yet.
      */
     public record HealthyModel(String status, boolean ready, Double thMs, Double sigmaMs, Double margin, Long targetMs,
             int windows, int requests, double censoredShare, boolean coverageGap, Map<String, Double> strataShares) {}
-    /** Everything behind one v2 deadline decision; exposed additively in the API and the audit trail. */
+    /** Everything behind one deadline decision, shown in the API and the audit trail. */
     public record DeadlineEvidence(DeadlineCase decisionCase, String holdReason, long currentMs, Long proposedMs,
             HealthyModel model, Proportion hExceed, Proportion oExceed, double oShare, double stressedShare,
             double unknownShare, double cutShare, String cutHint, Double predictedHExceed, Double predictedOExceed,

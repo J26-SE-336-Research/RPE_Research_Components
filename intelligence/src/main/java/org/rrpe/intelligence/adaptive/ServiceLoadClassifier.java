@@ -4,7 +4,7 @@ import static org.rrpe.intelligence.adaptive.AdaptiveModels.*;
 import java.util.*;
 
 /**
- * Service load per window for deadline v2 (guide §6.2), first match wins:
+ * The load of a service in one window. The first match wins:
  * UNKNOWN (the deadline guard has no usable result), OVERLOADED, STRESSED, HEALTHY.
  * Optional signals that are unavailable (null) are skipped; they never block.
  */

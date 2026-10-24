@@ -4,7 +4,7 @@ import static org.junit.jupiter.api.Assertions.*;
 import java.time.Instant;
 import org.junit.jupiter.api.Test;
 
-/** Deadline v2 per-service load queries (guide §5.2) with the real sidecar metric names. */
+/** The load queries of each service, with the real sidecar metric names. */
 class PrometheusLoadQueriesTests {
     private final AdaptiveConfig.Connections connections = AdaptiveEngineTests.connections("");
     private class Fixture extends TelemetryHttp {

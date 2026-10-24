@@ -1,9 +1,8 @@
 package org.rrpe.intelligence.adaptive;
 
 /**
- * Deadline v2 formulas (guide §6.4, §6.5). The old recent-p99 × (1 + 10/20/30%) bands, the censored increase and the
- * max(baseline × 1.10, current × 0.90) restoration were replaced; the old logic stays on branch
- * component-4-intelligence-on-main. Every step is geometric and never crosses the target D*.
+ * The deadline formulas. They replace the old p99 bands; the old logic is still on the branch
+ * component-4-intelligence-on-main. Every step is a fixed share of the distance and never goes past the target D*.
  */
 public final class DeadlineMath {
     private DeadlineMath() {}
@@ -15,13 +14,13 @@ public final class DeadlineMath {
         if (!(value < Long.MAX_VALUE)) throw new IllegalArgumentException("Deadline exceeds numeric range");
         return (long) value;
     }
-    /** m = clamp(k·σ / T_h, min, max): more spread in the healthy time needs more margin. */
+    /** The margin m: more spread in the healthy time needs more margin, kept between min and max. */
     public static double margin(double sigma, double th, double k, double min, double max) {
         positive(th);
         if (!Double.isFinite(sigma) || sigma < 0) throw new IllegalArgumentException("Spread must be finite and non-negative");
         return Math.max(min, Math.min(max, k * sigma / th));
     }
-    /** D* = clamp(ceil10(T_h × (1 + m)), minMs, maxMs). */
+    /** The target deadline D*: the healthy time plus a margin, rounded up to 10 ms and kept between min and max. */
     public static long target(double th, double m, long minMs, long maxMs) {
         positive(th);
         return Math.max(minMs, Math.min(maxMs, ceil10(th * (1 + m))));

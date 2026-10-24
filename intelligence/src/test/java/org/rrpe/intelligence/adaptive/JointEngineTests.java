@@ -7,7 +7,7 @@ import java.util.*;
 import org.junit.jupiter.api.Test;
 
 /**
- * Joint healthy recalibration in the engine (C3 J1, J3) and the owner's priority rules: the normal rate, retry and deadline
+ * Joint recalibration in the engine and its priority rules: the normal rate, retry and deadline
  * recommendations come first; a joint card never blocks, delays or replaces them.
  */
 class JointEngineTests {
@@ -89,7 +89,7 @@ class JointEngineTests {
     @Test void aHealthyStepThatReachesItsTargetIsCheckedAndASmallEffectLetsTheRateGoAlone() {
         var e = JointSimulation.recovery();
         var b = bed(e, AdaptiveConfig.JointSettings.on(), Source.MOCK);
-        var demand = 46.0; // healthy target 46 × 1.25 = 57.5: steps 50 → 55 → 57.5 (the last one reaches it)
+        var demand = 46.0; // healthy target 46 * 1.25 = 57.5, reached in steps 50, 55, 57.5
         List<PolicyChange> rates = new ArrayList<>(); String joint = null;
         for (int i = 0; i < 60 && rates.size() < 2; i++) {
             for (var c : b.cycle(new JointSimulation.Bed.Traffic(e.healthy(), demand, e.depth()))) {
@@ -105,7 +105,7 @@ class JointEngineTests {
         assertTrue(joint.contains("too small, the rate goes alone"), joint);
     }
 
-    // ---- priority rules (owner, 21 Oct 2026) ----
+    // ---- priority rules ----
 
     @Test void rule2APendingNormalProposalMeansNoJointCard() {
         var e = JointSimulation.recovery();
@@ -149,7 +149,7 @@ class JointEngineTests {
         var b = bed(e, AdaptiveConfig.JointSettings.on(), Source.MOCK);
         b.healthyTarget(e.newTarget());
         var parts = jointParts(b, b.cycle(healthy(e)));
-        // healthy requests now exceed the 875 ms deadline: deadline v2 needs Case A
+        // healthy requests now go over the 875 ms deadline, so the deadline logic needs Case A
         var overSignalled = ChainSimulation.profile(500, 900, 950, 980, 1000);
         PolicyChange raise = null;
         for (int i = 0; i < 30 && raise == null; i++) {
@@ -165,7 +165,7 @@ class JointEngineTests {
         var e = JointSimulation.recovery();
         var b = new JointSimulation.Bed(DeadlineExamplesTests.settings(), AdaptiveConfig.DeadlineSettings.demo(), AdaptiveConfig.JointSettings.on(), Source.MOCK, T0);
         b.policies(50, 50, .05, 875);
-        double demand = 38.1; // × (1 + 0.05 retries) × 1.25 = 50: the healthy rule wants no change
+        double demand = 38.1; // with 5 percent retries and 25 percent headroom this is 50, so the healthy rule wants no change
         for (int i = 0; i < JointSimulation.learningCycles(b.settings, AdaptiveConfig.DeadlineSettings.demo()); i++)
             b.cycle(new JointSimulation.Bed.Traffic(e.healthy(), demand, e.depth()));
         b.cycle(new JointSimulation.Bed.Traffic(e.healthy(), demand, e.depth(), 40, 1, .1)); // retries rarely succeed (10 %)

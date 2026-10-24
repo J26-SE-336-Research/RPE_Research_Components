@@ -11,7 +11,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-/** Rate v2 (R4): a Component 3 sync updates the current rate and retry ratio but keeps C4's healthy target. */
+/** A Component 3 sync updates the current rate and retry ratio but keeps our own healthy target. */
 class SyncHealthyRateTests {
     private volatile String effective = "{}";
     private HttpServer server;

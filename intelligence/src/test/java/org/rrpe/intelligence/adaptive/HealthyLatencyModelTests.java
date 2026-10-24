@@ -12,7 +12,7 @@ class HealthyLatencyModelTests {
     private HealthyModel add(String chain, int i, List<LabelledSample> window, long budget) {
         return model.update(chain, T0.plusSeconds(300L * i), window, budget, true, cfg, 6, 100, 10000);
     }
-    /** Example 1 healthy traffic: 300 requests, body 150–350, top 3% cycling 380 / 400 / 420. */
+    /** Healthy traffic of example 1: 300 requests, most take 150 to 350 ms, the slowest 3 percent take 380, 400 or 420 ms. */
     private List<LabelledSample> example1(int i, long budget) { return healthy(300, 150, 350, 9, new double[]{380, 400, 420}[i % 3], budget); }
 
     @Test void identifiesTheGroundTruthHealthyTimeAndTargetOfExampleOne() {
@@ -26,7 +26,7 @@ class HealthyLatencyModelTests {
     }
     @Test void learnsDespiteSomeExceedancesAndIsNotResetByADeadlineChange() {
         for (int i = 0; i < 3; i++) add("c", i, example1(i, 2000), 2000);
-        // the deadline is changed to 390 ms: the 400/420 tops of some windows now exceed it (≤ 1% of requests)
+        // the deadline is changed to 390 ms: the 400 and 420 ms requests of some windows now go over it, at most 1 percent
         HealthyModel m = null;
         for (int i = 3; i < 6; i++) m = add("c", i, example1(i, 390), 390);
         assertTrue(m.ready(), "exceedances do not stop learning");

@@ -5,9 +5,9 @@ import java.time.Instant;
 import java.util.*;
 
 /**
- * C4's own memory of one service's rate (rate/retry guide §4.1, §4.6, §6): the stable healthy rate (no longer overwritten
- * by the C3 sync), the last rate that passed verification, the rate at which the app last slowed down, the app-time baseline
- * P0, recent demand, the persistent diagnosis, the change being verified, and the undo/flip/pause bookkeeping.
+ * What we remember about the rate of one service: the healthy rate, the last rate that passed its check, the rate at
+ * which the app last slowed down, the normal app time P0, recent demand, the current diagnosis, the change being
+ * checked, and the undos, flips and pauses.
  */
 public final class RateState {
     Double healthyRate, goodRate, brokeAt; Instant brokeAtUntil;
@@ -18,29 +18,29 @@ public final class RateState {
     Verification verification; UUID trackedApplied, lastProposalId; String lastKind;
     final List<Instant> undos = new ArrayList<>(), flips = new ArrayList<>(); int lastDirection; Instant autoPausedUntil;
     Double lastAppMs, lastShed; String lastVerification;
-    /** The last cut (for the anti-ratchet rule: a second cut only if this one helped). */
+    /** The last cut. A second cut only happens if this one helped. */
     record Cut(double fromRate, double toRate, double appBefore) {}
     Cut lastCut; boolean antiRatchetHold;
     AdaptiveEngine.RateDecision lastDecision;
-    /** Retry v2: consecutive windows with a clearly low retry success rate. */
+    /** Windows in a row in which retries rarely succeeded. */
     int retryLowStreak;
-    /** Joint recalibration: per-window maximum queue depth of HEALTHY windows (only collected when joint is enabled). */
+    /** The largest queue depth of each healthy window. Only collected when joint recalibration is on. */
     final Deque<Double> healthyDepth = new ArrayDeque<>();
-    /** Q = median healthy per-window maximum queue depth; null until {@code minSamples} are collected. */
+    /** The median of those depths, or null until there are enough samples. */
     public Double healthyQueue(int minSamples) {
         return healthyDepth.size() < minSamples ? null : RobustStatistics.median(healthyDepth.stream().mapToDouble(Double::doubleValue).toArray());
     }
     /** The latest automatically approved (or reverted) rate change, followed until it is applied or dropped. */
     UUID autoProposalId, lastAutoAudited;
-    /** Joint recalibration: the last healthy target seen in the policy, and a changed target not yet reached (flag on only). */
+    /** The last healthy target seen in the policy, and a changed target that is not reached yet. */
     Double seenHealthyTarget, healthyTargetChange;
-    /** Lowering a too-generous rate has started (it continues in -relax-step steps down to the target). */
+    /** We started lowering a rate that is too generous. It goes down in small steps to the target. */
     boolean relaxing;
-    /** Rate and retry changes held this cycle (automatic mode: tried again every cycle, never a card for a person). */
+    /** Rate and retry changes held this cycle. They are tried again next cycle. */
     final List<String> held = new ArrayList<>();
     /**
-     * The check of one automatic rate change, for the status API: {@code result} is kept, undone or inconclusive; app times
-     * and shed rates before and after (null when not measured); {@code normalMs} is the limit the app time was checked against.
+     * The check of one automatic rate change, for the status API. The result is kept, undone or inconclusive. App times
+     * and rejections are shown before and after; normalMs is the limit the app time was checked against.
      */
     public record Check(String proposalId, String kind, double fromRate, double toRate, String result, Double appBeforeMs, Double appAfterMs,
             Double normalMs, Double shedBeforePerSecond, Double shedAfterPerSecond, String at) {}
@@ -59,22 +59,21 @@ public final class RateState {
         double shedAfter() { return windows == 0 ? Double.NaN : shedSum / windows; }
     }
 
-    /** App time and load (successful requests per second) of one learning window (rate learning fix B). */
+    /** App time and load (successful requests per second) of one learning window. */
     record LoadSample(double appMs, double load) {}
     final Deque<LoadSample> loadSamples = new ArrayDeque<>();
     /** How the latest P0 was found, for the evidence: null for the plain median. */
     String p0Note;
-    /** The remembered brokeAt expired: raises probe in small steps until the service is healthy again (fix C). */
+    /** The remembered limit expired, so raises go in small steps until the service is healthy again. */
     boolean probing;
 
     /** P0 = median app time of the learning windows; null until {@code minSamples} are collected. */
     public Double p0(int minSamples) { return p0(minSamples, minSamples, null); }
     /**
-     * P0 (rate learning fix A, B1). When the load of the learning windows clearly varies, P0 is the median app time of the
-     * quietest windows: a rate that was too high from the start overloads the app in the busy windows only, so the quiet
-     * ones show its real speed. Until there are enough quiet windows P0 stays unknown. Otherwise: the median after
-     * {@code minSamples} windows, a provisional 25th percentile after {@code provisional} windows, and the lowest app time of
-     * full-queue windows when nothing could be learned.
+     * The normal app time P0. When the load clearly varies, we take the median of the quietest windows, because a rate
+     * that is too high only slows the app in the busy ones. Until there are enough quiet windows P0 is unknown.
+     * Otherwise we use the median once there are enough windows, a rough 25th percentile before that, and the lowest
+     * app time of full-queue windows when nothing else could be learned.
      */
     public Double p0(int minSamples, int provisional, AdaptiveConfig.BaselineSettings b) {
         p0Note = null;
@@ -96,20 +95,19 @@ public final class RateState {
             p0Note = "provisional: 25th percentile of " + apps.length + " windows";
             return percentile(apps, .25);
         }
-        // Shedding from day one (guide §4.5): after the provisional windows without a baseline, use the lowest app time seen.
+        // Rejecting from the start: use the lowest app time we saw.
         if (shedWindowsWithoutBaseline >= provisional && lowestShedApp != null) { p0Note = "provisional: lowest app time of " + shedWindowsWithoutBaseline + " full-queue windows"; return lowestShedApp; }
         return null;
     }
     /**
-     * Learns P0 from a window: always from clean windows (queue below the low mark, nothing shed, errors normal); with
-     * {@code allowShed} also from windows with a full or shedding queue but normal errors (the bucket limited the app),
-     * never from a window in which the app was overloaded (its slow time is not normal; such a window is still kept with
-     * its load, for fix B). Keeps the last {@code maxSamples}.
+     * Learns P0 from a window. Clean windows always count. With allowShed, windows with a full queue but normal errors
+     * count too, since the bucket limited the app there. A window in which the app was overloaded never counts, but it
+     * is still kept with its load. Keeps the last maxSamples.
      */
     public void learnApp(Double appMs, boolean clean, boolean shedding, boolean errorsNormal, boolean allowShed, boolean queueFull, int maxSamples) {
         learnApp(appMs, null, clean, shedding, errorsNormal, allowShed, queueFull, false, maxSamples, maxSamples);
     }
-    /** As above; with a {@code load} the window is also kept with its load (the last {@code maxLoadSamples}) for fix B. */
+    /** Same as above. With a load, the window is also kept together with its load. */
     public void learnApp(Double appMs, Double load, boolean clean, boolean shedding, boolean errorsNormal, boolean allowShed, boolean queueFull,
             boolean overloaded, int maxSamples, int maxLoadSamples) {
         if (appMs == null || !Double.isFinite(appMs)) return;
@@ -124,10 +122,9 @@ public final class RateState {
         }
     }
     /**
-     * "App time grows with load" (rate learning fix B2), also without a trustworthy P0: over the last {@code n} learning
-     * windows the busiest third (by load) is more than {@code factor} × slower than the quietest third with at least
-     * {@code minLoadRatio} × its load, and this window ({@code appMs} at {@code load}) is in that slow, busy range too.
-     * Returns the reason, or null. The queue wait is already taken out of {@code appMs}.
+     * Checks whether the app gets slower as the load grows. This works even without a good P0: in the last n windows,
+     * the busiest third is clearly slower than the quietest third, and this window is busy and slow too.
+     * Returns the reason, or null. The queue wait is already taken out of appMs.
      */
     public String loadGrowth(Double appMs, double load, int n, double factor, double minLoadRatio) {
         if (appMs == null || !Double.isFinite(appMs) || loadSamples.size() < n) return null;
@@ -143,7 +140,7 @@ public final class RateState {
                 appMs, load, n, quietApp, quietLoad) : null;
     }
     private static double median(List<LoadSample> s, java.util.function.ToDoubleFunction<LoadSample> f) { return RobustStatistics.median(s.stream().mapToDouble(f).toArray()); }
-    /** Linear-interpolated percentile {@code q} (0–1). */
+    /** Percentile q between 0 and 1, interpolated. */
     static double percentile(double[] values, double q) {
         double[] v = values.clone(); Arrays.sort(v);
         double pos = q * (v.length - 1); int lo = (int) Math.floor(pos), hi = (int) Math.ceil(pos);
@@ -154,7 +151,7 @@ public final class RateState {
         demand.addLast(current); while (demand.size() > windows) demand.removeFirst();
         return demand.stream().mapToDouble(Double::doubleValue).max().orElse(current);
     }
-    /** Persistence: how many cycles in a row this diagnosis has held. */
+    /** How many cycles in a row this diagnosis has held. */
     public int observe(RateDiagnosis.Diagnosis d) {
         diagnosisStreak = d == diagnosis ? diagnosisStreak + 1 : 1; diagnosis = d;
         healthyStreak = d == RateDiagnosis.Diagnosis.HEALTHY ? healthyStreak + 1 : 0;

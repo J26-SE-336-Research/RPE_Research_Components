@@ -5,9 +5,9 @@ import static org.rrpe.intelligence.adaptive.ChainSimulation.*;
 import java.util.*;
 
 /**
- * The worked examples of the v2 guide (§7) as deterministic traffic scripts. The same traffic was used for the old-logic
- * baseline (intelligence/evaluation/v1-baseline-results.md), so the results compare like for like. Every example starts
- * with {@link #LEARN} cycles of healthy traffic.
+ * The deadline examples as fixed traffic scripts. The old logic was measured on the same traffic
+ * (intelligence/evaluation/v1-baseline-results.md), so the results can be compared. Every example starts with
+ * {@link #LEARN} cycles of healthy traffic.
  */
 public final class DeadlineExamples {
     private DeadlineExamples() {}

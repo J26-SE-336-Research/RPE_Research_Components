@@ -4,7 +4,7 @@ import static org.rrpe.intelligence.adaptive.AdaptiveModels.*;
 import java.util.*;
 
 /**
- * Labels each request by the services on <b>its own</b> path (guide §6.3), so a chain is not judged by its worst service
+ * Labels each request by the services on <b>its own</b> path, so a chain is not judged by its worst service
  * on some other path: UNKNOWN if any monitored service on the path is UNKNOWN, else O if any is OVERLOADED, else STRESSED
  * if any is STRESSED, else H. Services without a sidecar ({@code unmonitored}) are ignored, as in chain collection today.
  */

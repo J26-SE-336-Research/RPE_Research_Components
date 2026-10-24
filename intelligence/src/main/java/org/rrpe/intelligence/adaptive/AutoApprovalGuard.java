@@ -4,13 +4,13 @@ import static org.rrpe.intelligence.adaptive.AdaptiveModels.*;
 import java.util.Set;
 
 /**
- * Safety rules for approving a rate or retry recommendation automatically (guide §6.3). A recommendation is approved by
- * {@code c4-auto} only when its kind is in {@code rrpe.adaptive.auto-approve-actions}, it is not synthetic, it stays within
- * the floor and ceiling and the step limits (rate up ≤ +50%, down ≤ −20%; retry ±0.02, or down to the protective 0.02 or
- * 0; lowering a generous rate ≤ −10%), its condition is persistent, its data is complete (rate diagnosis not UNKNOWN), every chain through the service has a
- * settled deadline (cross-lever lock), and automatic approval is not paused for the service. An undo always goes through. Otherwise the
- * change is held (automatic mode) or a human decides (automatic approval off). The existing
- * cooldown is checked before any recommendation is made. Chain deadlines have no kind and are never approved here.
+ * Safety rules for approving a rate or retry change automatically. c4-auto only approves a change when its kind is
+ * allowed, it is not a simulation, it stays between the floor and the ceiling, its step is small enough (a rate up to
+ * 50 percent up or 20 percent down, a retry budget by 0.02 or down to 0.02 or 0, a generous rate 10 percent down),
+ * its problem has lasted, its data is complete, every chain through the service has a settled deadline, and
+ * automatic approval is not paused. An undo always goes through. Otherwise the change is held, or a person decides
+ * when automatic approval is off. The cooldown is checked before any recommendation is made. Chain deadlines are
+ * never approved here.
  */
 final class AutoApprovalGuard {
     private AutoApprovalGuard() {}
@@ -25,7 +25,7 @@ final class AutoApprovalGuard {
     static Result check(Request r, Set<AdaptiveConfig.AutoKind> allowed, AdaptiveConfig.RateSettings rate, AdaptiveConfig.RetrySettings retry) {
         if (r.kind() == null) return Result.no("this kind of change is always decided by a reviewer");
         if (r.source() == Source.MOCK) return Result.no("synthetic recommendations are never approved automatically");
-        // An undo of a change that did not help always goes through (owner decision 22 Oct): never behind a lock or a pause.
+        // Undoing a change that did not help always goes through, even with a lock or a pause.
         if (r.undo() && r.kind() == AdaptiveConfig.AutoKind.BUCKET_RAISE && r.to() > r.from()) return new Result(true, "undo of a change that did not help");
         if (!allowed.contains(r.kind())) return Result.no(r.kind() + " is not in rrpe.adaptive.auto-approve-actions");
         if (r.paused()) return Result.no("automatic approval is paused for this service");

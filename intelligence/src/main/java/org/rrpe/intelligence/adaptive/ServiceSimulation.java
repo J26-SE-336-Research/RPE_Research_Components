@@ -86,7 +86,7 @@ public final class ServiceSimulation {
         return new Result(service, rate, lowest, ratio, last == null ? 0 : last.shedPerSecond(), steps, outcomes, rs.lastDecision);
     }
 
-    /** The rate/retry scenarios of the guide (§4.4) plus a retry storm, identical to the old-logic baseline. */
+    /** The rate and retry scenarios plus a retry storm, the same ones the old logic was measured on. */
     public static List<Scenario> scenarios() {
         return List.of(
             new Scenario("rate-too-low", "Example 1: rate too low (demand grows to 150 above the rate 100)", 100, .05, List.of(

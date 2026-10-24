@@ -37,9 +37,9 @@ public class MockScenarios {
         public Clock withZone(ZoneId zone) { return this; }
     }
     static final List<String> SERVICE_SCENARIOS = List.of("healthy", "stressed", "overloaded", "retry-stressed", "recovery");
-    /** Guide §7 worked examples (deadline v2), run with a simulated reviewer that approves every proposal. */
+    /** The deadline examples, run with a simulated reviewer that approves every proposal. */
     static final List<String> EXAMPLE_SCENARIOS = DeadlineExamples.all().stream().map(DeadlineExamples.Example::scenario).toList();
-    /** Rate/retry v2 examples (guide §4.4) on the service model, run with a simulated reviewer that approves every proposal. */
+    /** The rate and retry examples on the service model, run with a simulated reviewer that approves every proposal. */
     static final List<String> RATE_SCENARIOS = ServiceSimulation.scenarios().stream().map(ServiceSimulation.Scenario::id).toList();
     /** Joint healthy recalibration (C3 request, examples 1 and 2): one joint card with C3's numbers. */
     static final List<String> JOINT_SCENARIOS = JointSimulation.examples().stream().map(JointSimulation.Example::id).toList();
@@ -76,7 +76,7 @@ public class MockScenarios {
         }
         return response;
     }
-    /** The deadline side of the service scenarios: overloaded → Case B (or C), stressed and retry-stressed → no increase. */
+    /** The deadline side of the service scenarios: overloaded gives Case B or C, stressed and retry-stressed give no increase. */
     private Map<String, Object> chainPartOf(String scenario) {
         int learn = learningCycles() + perWindow(), decide = decisionCycles() + 10;
         String chain = "POST /api/orders | mock-api-gateway > mock-order-service";
@@ -106,8 +106,8 @@ public class MockScenarios {
         boolean recovery = scenario.equals("recovery"), overloaded = scenario.equals("overloaded");
         workflow.putPolicy(new Policy(service, "mock-v1", clock.now.plusSeconds(7200), recovery ? 60.0 : 120.0, 120.0, recovery ? .02 : .05, null), Source.MOCK);
         double[] latency = {80,90,100,110,120}; double[] capacity = {90,105,120,135,150};
-        // Rate v2 needs the queue signals (R1): a quiet queue while learning; the overloaded app is slow (200 ms against
-        // a 100 ms baseline) with a short queue (2 waiting), so its own time is clearly above 1.5 × P0.
+        // The rate logic needs the queue data. The queue is quiet while learning. The overloaded app is slow, 200 ms
+        // against a 100 ms baseline, with only 2 requests waiting, so the app itself is clearly slow.
         for (int i = 0; i < settings.baselineSamples(); i++) {
             engine.service(service(service, clock.now, latency[i % 5], capacity[i % 5], recovery ? 100 : 0, recovery ? 40 : 0), queue(service, 20, 0));
             clock.now = clock.now.plus(settings.cycle());
@@ -115,7 +115,7 @@ public class MockScenarios {
         clock.now = clock.now.plus(settings.window());
         var outcomes = new ArrayList<Outcome>();
         for (int cycle = 0; cycle < settings.recoveryWindows(); cycle++) {
-            // retry-stressed: retries rarely succeed (10 of 100), so the budget steps down (retry v2)
+            // retry-stressed: only 10 of 100 retries succeed, so the budget steps down
             outcomes.add(engine.service(service(service, clock.now, overloaded ? 200 : scenario.equals("stressed") ? 125 : 100,
                     overloaded ? 80 : scenario.equals("stressed") ? 100 : 120,
                     recovery || scenario.equals("retry-stressed") ? 100 : 0, recovery ? 40 : scenario.equals("retry-stressed") ? 10 : 0),
@@ -153,7 +153,7 @@ public class MockScenarios {
         response.put("jointEvidence", List.of(evidence));
         return response;
     }
-    /** A rate/retry v2 example on the service model (guide §4.4), with a simulated reviewer; nothing is sent to Component 3. */
+    /** A rate or retry example on the service model, with a simulated reviewer. Nothing is sent to Component 3. */
     private Map<String, Object> rateScenario(String id, boolean auto) {
         var s = ServiceSimulation.byId(id);
         // The learning phase lasts long enough to learn P0 with the configured baseline-samples (5 in the demo, 30 by default).
@@ -198,10 +198,10 @@ public class MockScenarios {
                 c.scrapeInterval(), c.maximumScrapeAge(), c.traceLimit(), "", "", c.metricNames());
     }
 
-    // ---------- deadline v2 simulations (per-request synthetic traffic) ----------
+    // ---------- deadline simulations with made-up requests ----------
 
     static final String ORDERS = "POST /api/orders | mock-api-gateway > mock-order-service";
-    /** Healthy time ≈ 400 ms (guide example 1): body 150–350, top 3% cycling 380 / 400 / 420. */
+    /** Healthy time of about 400 ms: most requests take 150 to 350 ms, the slowest 3 percent take 380, 400 or 420 ms. */
     static final Profile HEALTHY_400 = profile(150, 350, 380, 400, 420);
     /** True healthy p99 ≈ 1200 ms: about 25% of requests take longer than 1000 ms. */
     static final Profile HEALTHY_1200 = profile(500, 1150, 1180, 1200, 1220);

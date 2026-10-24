@@ -119,9 +119,9 @@ public class PolicyWorkflow {
     }
     public synchronized PolicyChange offer(Proposal proposal) { return offer(proposal, null); }
     /**
-     * Rate v2 automatic approval: with {@code auto} (reviewer {@code c4-auto} or {@code c4-auto-revert}, chosen by the engine's
-     * guard) a rate or retry recommendation is created APPROVED and audited as decided. Never for a chain deadline or a
-     * synthetic (MOCK) recommendation; without {@code auto} every recommendation waits for a human exactly as before.
+     * Automatic approval: with auto (reviewer c4-auto or c4-auto-revert, picked by the guard) a rate or retry change is
+     * created as APPROVED and audited as decided. This never happens for a chain deadline or a simulation. Without
+     * auto every recommendation waits for a person.
      */
     public synchronized PolicyChange offer(Proposal proposal, Review auto) {
         if (auto != null && (proposal.action() == Action.CHAIN_DEADLINE || proposal.source() == Source.MOCK || auto.reviewer() == null
@@ -287,9 +287,9 @@ public class PolicyWorkflow {
                 "Moved to policy version " + policy.version() + " (another change of this policy was applied first)", item.attempts(), item.lastAttempt(), item.appliedVersion()));
         return true;
     }
-    // ---------------------------------------------------------------- joint recommendations (C3 request J1) ----------------------------------------------------------------
+    // ---------- joint recommendations ----------
 
-    /** Part proposal id → joint id, and joint id → its part ids (in offer order). Empty unless joint recalibration is enabled. */
+    /** Maps each part to its joint, and each joint to its parts in order. Empty unless joint recalibration is on. */
     private final Map<UUID, UUID> jointOf = new LinkedHashMap<>();
     private final Map<UUID, List<UUID>> joints = new LinkedHashMap<>();
 
@@ -392,7 +392,7 @@ public class PolicyWorkflow {
                     "A part of this joint recommendation was withdrawn (" + gone.get().detail() + ")", c.attempts(), c.lastAttempt(), null);
         }
     }
-    /** Joint recommendations for the API (additive field {@code joints}): id, parts and their state, newest first. */
+    /** The joint recommendations for the API: id, parts and their state, newest first. */
     public synchronized List<Map<String, Object>> joints() {
         expire();
         var out = new ArrayList<Map<String, Object>>();

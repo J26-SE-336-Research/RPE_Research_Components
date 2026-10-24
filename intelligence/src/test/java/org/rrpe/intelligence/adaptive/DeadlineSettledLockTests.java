@@ -7,7 +7,7 @@ import java.util.*;
 import org.junit.jupiter.api.Test;
 
 /**
- * Cross-lever lock (owner decision 21 Oct 2026): no automatic rate or retry change for a service while any chain through it
+ * No automatic rate or retry change for a service while any chain through it
  * has an unsettled deadline; no automatic change on missing data; a reviewer's rate/retry approval during deadline
  * settling makes the deadline verification INCONCLUSIVE.
  */
@@ -23,7 +23,7 @@ class DeadlineSettledLockTests {
         final PolicyWorkflow workflow = new PolicyWorkflow(AdaptiveEngineTests.connections(""), settings, clock);
         final AdaptiveEngine engine = new AdaptiveEngine(settings, workflow, clock);
         final List<PolicyChange> gateway = new ArrayList<>();
-        // rates never wait for a person (owner rule, 22 Oct): changes the guard refuses are held; their "held: …" lines are collected here
+        // rates never wait for a person: changes the guard refuses are held, and their held lines are collected here
         final List<String> held = new ArrayList<>();
         Outcome last;
         int cycle;
@@ -63,15 +63,15 @@ class DeadlineSettledLockTests {
         void learn() { for (int i = 0; i < 25; i++) cycle(500, 60); }
     }
 
-    // rates never wait for a person (owner rule, 22 Oct): in the gap the gateway retry change is held (tried again), not a card
+    // rates never wait for a person: in the gap the gateway retry change is held and tried again, not a card
     @Test void theE2e95TimeGapGetsNoAutomaticGatewayChange() {
         var live = new Live();
         live.learn();
         assertEquals(ChainDeadlineState.READY, live.state(), "the chain is learned and settled before the operator's rollout");
         assertTrue(live.auto().isEmpty());
         // e2e 95: the operator rolls out a too-tight deadline (100 ms) with rate 100 and retry 0.1; from now on the gateway
-        // gets a retry change the guard would otherwise approve: retries rarely succeed (10 of 100) → 0.1 → 0.02. The demo
-        // traffic stays low, so there is no rate proposal (a pending rate proposal would hold the deadline: deadline v2 rule).
+        // gets a retry change the guard would otherwise approve: only 10 of 100 retries succeed, so 0.1 goes to 0.02. The
+        // demo traffic stays low, so there is no rate proposal, which would otherwise hold the deadline.
         live.policies("op-v2", 100, .1, 100);
         PolicyChange deadline = null; int inGap = 0;
         for (int i = 0; i < 40; i++) {
@@ -103,7 +103,7 @@ class DeadlineSettledLockTests {
         assertFalse(live.auto().isEmpty(), "settled chains do not block the automatic raise: " + live.reasons());
     }
 
-    // rates never wait for a person (owner rule, 22 Oct): the reason is read from the held change (Live.reasons)
+    // rates never wait for a person: the reason is read from the held change (Live.reasons)
     @Test void aDeadlineChangeByAnyoneLocksForTheSettlePeriod() {
         var live = new Live();
         live.learn();
@@ -115,7 +115,7 @@ class DeadlineSettledLockTests {
         assertFalse(live.auto().isEmpty(), "settled again after the settle period: " + live.reasons());
     }
 
-    // rates never wait for a person (owner rule, 22 Oct): the protective retry 0 is held on missing data, not a card
+    // rates never wait for a person: the protective retry 0 is held on missing data, not a card
     @Test void missingQueueDataIsNeverAutomaticNotEvenTheProtectiveRetryZero() {
         var settings = AdaptiveEngineTests.settings();
         var clock = new AdaptiveEngineTests.TestClock();

@@ -5,7 +5,7 @@ import static org.rrpe.intelligence.adaptive.RateDiagnosis.Diagnosis.*;
 import java.time.*;
 import org.junit.jupiter.api.Test;
 
-/** Rate v2 diagnosis (every row of guide §4.2), the formulas of §4.3 and the per-service RateState. */
+/** Every rate diagnosis, the rate formulas and the RateState of a service. */
 class RateDiagnosisTests {
     private final AdaptiveConfig.RateSettings cfg = AdaptiveConfig.RateSettings.defaults();
     private RateDiagnosis.Result d(Double rate, Double pct, Double depth, Double p95, Double accepted, Double shed, Double p0, boolean errors) {
@@ -13,7 +13,7 @@ class RateDiagnosisTests {
     }
 
     @Test void aFullQueueWithANormalAppIsARateProblemNotOverload() {
-        // guide example 1: rate 100, queue full (depth 200), p95 ≈ 2040 ms of which 2000 ms is queue wait
+        // example 1: rate 100, queue full with 200 waiting, p95 about 2040 ms, of which 2000 ms is queue wait
         var r = d(100.0, 100.0, 200.0, 2040.0, 100.0, 50.0, 40.0, false);
         assertEquals(RATE_TOO_LOW, r.diagnosis());
         assertEquals(2000, r.queueWaitMs(), 1e-9); assertEquals(40, r.appMs(), 1e-9);
@@ -35,7 +35,7 @@ class RateDiagnosisTests {
         }
     }
     @Test void raiseFollowsDemandWithHeadroomInBoundedSteps() {
-        // example 1: target max(100 + 10, 150 × 1.25 = 187.5), one step at most +50% → 150, then 187.5
+        // example 1: the target is 150 * 1.25 = 187.5, one step is at most 50 percent up, so 150 and then 187.5
         assertEquals(150, RateDiagnosis.raise(100, 150, 100, 1000, cfg));
         assertEquals(187.5, RateDiagnosis.raise(150, 150, 100, 1000, cfg));
         assertEquals(90, RateDiagnosis.raise(80, 150, 100, 90, cfg), "never above the ceiling 0.9 × brokeAt");
@@ -98,7 +98,7 @@ class RateDiagnosisTests {
         java.util.function.BiFunction<Double, Double, Boolean> guardOk = (from, to) -> AutoApprovalGuard.check(new AutoApprovalGuard.Request(
                 AdaptiveConfig.AutoKind.BUCKET_RAISE, AdaptiveModels.Source.PROMETHEUS, from, to, 50.0, 56.16, true, false, null, true, false),
                 all, cfg, AdaptiveConfig.RetrySettings.defaults()).approve();
-        double up = RateDiagnosis.raise(51.2, 88, 100, 56.16, cfg); // the live case: ceiling 0.9 × 62.4 = 56.16
+        double up = RateDiagnosis.raise(51.2, 88, 100, 56.16, cfg); // the live case: ceiling 0.9 * 62.4 = 56.16
         assertEquals(56.1, up, 1e-9, "not 56.2");
         assertTrue(guardOk.apply(51.2, up));
         assertEquals(49.9, RateDiagnosis.raise(33.3, 100, 10, 1000, cfg), 1e-9, "+50% of 33.3 is 49.95: not 50.0");

@@ -9,7 +9,10 @@ import java.util.concurrent.ConcurrentHashMap;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
-/** Corrected PDF: normalized rates, robust baselines, persistence, bounded policies and gradual recovery. */
+/**
+ * The decision engine of C4. It compares each service and chain with a baseline learned from its own healthy traffic,
+ * waits until a problem lasts, and then recommends small, bounded changes. Recovery is gradual.
+ */
 @Service
 public class AdaptiveEngine {
     private final AdaptiveConfig.Settings settings;
@@ -22,27 +25,27 @@ public class AdaptiveEngine {
         this.settings = settings; this.workflow = workflow; this.clock = clock;
     }
     private Duration evaluationDelay = Duration.ZERO;
-    /** Windows are evaluated this long after they end (Tempo ingestion); freshness limits allow for it. */
+    /** We evaluate a window this long after it ends, because Tempo needs a moment to store the traces. */
     @Autowired(required = false)
     void setEvaluationDelay(@org.springframework.beans.factory.annotation.Value("${rrpe.adaptive.evaluation-delay:0s}") Duration delay) {
         if (delay != null && !delay.isNegative()) evaluationDelay = delay;
     }
-    /** Forgets every learned baseline (live sources); used after an intentional change such as a new release. */
+    /** Forgets everything learned from live data, for example after a new release. */
     public void resetBaselines() {
         services.keySet().removeIf(k -> !k.startsWith(Source.MOCK + ":"));
         chains.keySet().removeIf(k -> !k.startsWith(Source.MOCK + ":"));
-        // Deadline v2: healthy time, disjoint-window streaks and chain state start again (state LEARNING).
+        // Deadline state starts again: healthy time, window streaks and chain state.
         java.util.function.Predicate<String> live = k -> !k.startsWith(Source.MOCK + ":");
         healthy.resetIf(live); tracker.forgetIf(live); v2.keySet().removeIf(live);
-        rates.keySet().removeIf(live); // rate v2: app-time baseline P0, healthy/good rate and streaks are learned again
+        rates.keySet().removeIf(live); // rate state is learned again too
     }
     private Duration freshness() { return settings.cycle().multipliedBy(2).plus(evaluationDelay); }
     private String key(String target, Source source) { return source + ":" + target; }
 
-    /** A service window without load signals (tests, simulations without queue data, POST /services): the rate decision is UNKNOWN. */
+    /** A service window without queue data. The rate decision is then UNKNOWN. */
     public Outcome service(ServiceWindow window) { return service(window, null); }
 
-    /** One service window with its per-service load signals (queue utilisation and depth, rejections) for rate v2. */
+    /** One service window together with its queue data, used by the rate logic. */
     public Outcome service(ServiceWindow window, ServiceLoadSnapshot load) {
         if (window == null || window.service() == null || window.service().isBlank() || window.source() == null) throw new IllegalArgumentException("Service and source are required");
         State state = services.computeIfAbsent(key(window.service(), window.source()), ignored -> new State());
@@ -72,8 +75,8 @@ public class AdaptiveEngine {
                         && window.rejections() == 0
                         && window.p95Ms() > 0 && window.successfulThroughput() > 0;
                 Health phase = learn(state, values, window.end(), clean, List.of("latency", "throughput"));
-                // Rate v2 does not wait for the health baseline: it learns its own app-time baseline (P0), so a bucket that
-                // sheds from day one can still be fixed (guide §4.5).
+                // The rate logic does not wait for this baseline. It learns its own normal app time, so a rate
+                // that is too low from the start can still be fixed.
                 var learningEvidence = new ArrayList<String>(List.of("Learning a stable Healthy reference; current samples=" + state.samples.size()));
                 var learningChanges = new ArrayList<PolicyChange>();
                 Policy learningPolicy = workflow.current(window.service(), window.source());
@@ -101,13 +104,13 @@ public class AdaptiveEngine {
                     : breached ? Health.PENDING_BREACH : Health.HEALTHY;
             state.healthy = health == Health.HEALTHY ? state.healthy + 1 : 0;
             state.degraded = health == Health.STRESSED || health == Health.OVERLOADED ? state.degraded + 1 : 0;
-            // A two-cycle stressed condition is already persistent; critical overload still waits two policy cycles.
+            // Stressed for two cycles already counts as lasting; a critical overload still waits two cycles.
             boolean protective = health == Health.STRESSED || health == Health.OVERLOADED;
             boolean persistentPolicy = protective && (persistent > 0 || state.degraded >= settings.persistence());
             evidence.add("Counts normalized by " + window.originalRequests() + " original requests; healthy cycles=" + state.healthy);
             List<PolicyChange> changes = new ArrayList<>();
             Policy policy = workflow.current(window.service(), window.source());
-            // Service errors above their baseline (503 overload rejections are not errors): app evidence for rate v2.
+            // Errors above the baseline tell the rate logic that the app itself struggles. 503 rejections are not errors.
             Statistic errorBase = state.baseline.get("errorRate");
             boolean errorsHigh = errorBase != null
                     && (values.get("errorRate") - errorBase.median()) / variation(errorBase, "errorRate") >= settings.stressedMad();
@@ -119,15 +122,14 @@ public class AdaptiveEngine {
                 retryProposed = retry(window, state, policy, health, persistentPolicy, diagnosis, evidence, changes);
                 if (jc != null) jointStep(jc, window, policy, health, diagnosis, retryProposed, evidence, changes);
             }
-            // Rate v2 withdraws its own proposals when its diagnosis changes; a retry proposal not renewed this cycle
-            // still follows health persistence.
+            // The rate logic withdraws its own proposals. A retry proposal that was not renewed follows the health state.
             if (!protective && health != Health.HEALTHY && !retryProposed) workflow.withdraw(window.service(), Action.RETRY_BUDGET, window.source(), "Condition is not yet persistent");
             if (health == Health.HEALTHY && state.healthy >= settings.recoveryWindows()) refreshBaseline(state, values);
             return save(state, window.service(), window.source(), window.end(), health, values, evidence, changes);
         }
     }
 
-    // ---------------------------------------------------------------- rate v2 ----------------------------------------------------------------
+    // ---------- leaky-bucket rate ----------
 
     private AdaptiveConfig.RateSettings rate = AdaptiveConfig.RateSettings.defaults();
     private AdaptiveConfig.RetrySettings retrySettings = AdaptiveConfig.RetrySettings.defaults();
@@ -146,14 +148,14 @@ public class AdaptiveEngine {
     RateState rateState(String service, Source source) { return rates.computeIfAbsent(key(service, source), ignored -> new RateState()); }
 
     private AdaptiveConfig.AutoApproval autoApproval = AdaptiveConfig.AutoApproval.none();
-    /** {@code rrpe.adaptive.auto-approve-actions}; empty (the default) keeps every recommendation waiting for a reviewer. */
+    /** The changes that may be approved automatically. Empty by default, so every recommendation waits for a reviewer. */
     @Autowired(required = false)
     public void configureAutoApproval(AdaptiveConfig.AutoApproval autoApproval) { if (autoApproval != null) this.autoApproval = autoApproval; }
 
-    // ---------------------------------------------------------------- joint healthy recalibration ----------------------------------------------------------------
+    // ---------- joint recalibration of rate and deadline ----------
 
     private AdaptiveConfig.JointSettings joint = AdaptiveConfig.JointSettings.defaults();
-    /** {@code rrpe.adaptive.joint.*}; disabled by default: every joint hook then does nothing. */
+    /** Joint recalibration is off by default. Then none of the joint steps do anything. */
     @Autowired(required = false)
     public void configureJoint(AdaptiveConfig.JointSettings joint) { if (joint != null) this.joint = joint; }
     private void recordCalibrationRates(ChainV2 v, Collection<String> services, Source chainSource) {
@@ -162,16 +164,16 @@ public class AdaptiveEngine {
         for (String s : services) { Policy p = workflow.current(s, serviceSource); if (p != null && number(p.bucketRate()) && p.bucketRate() > 0) rates.put(s, p.bucketRate()); }
         v.calibrationRates.addLast(Map.copyOf(rates)); while (v.calibrationRates.size() > settings.baselineSamples()) v.calibrationRates.removeFirst();
     }
-    /** The median rate of {@code service} in the chain's calibration windows (D1), or null when unknown. */
+    /** The median rate of the service in the windows the chain deadline was learned from, or null when unknown. */
     static Double calibrationRate(Deque<Map<String, Double>> windows, String service) {
         double[] r = windows.stream().map(w -> w.get(service)).filter(Objects::nonNull).mapToDouble(Double::doubleValue).toArray();
         return r.length == 0 ? null : RobustStatistics.median(r);
     }
-    /** The services each analysed chain passes through, for the cross-lever lock. */
+    /** The services each analysed chain passes through. */
     private record ChainPath(String chain, Source source, List<String> services) {}
     private final Map<String, ChainPath> chainPaths = new ConcurrentHashMap<>();
 
-    /** The last deadline seen for a chain, from the policy reference (C3 sync or an applied C4 change) and from the stamped budget. */
+    /** The last deadline we saw for a chain, both from the policy and from the budget the gateway stamps. */
     private static final class BudgetWatch { Long policyMs, stampedMs; Instant policyChangedAt, stampedChangedAt; }
     private final Map<String, BudgetWatch> budgets = new ConcurrentHashMap<>();
     private void watchPolicyBudget(String chain, Source source, Instant now) {
@@ -185,14 +187,14 @@ public class AdaptiveEngine {
         var w = budgets.computeIfAbsent(key(chain, source), ignored -> new BudgetWatch());
         synchronized (w) { if (ms == null || w.stampedMs != null && !w.stampedMs.equals(ms)) w.stampedChangedAt = now; if (ms != null) w.stampedMs = ms; }
     }
-    /** 2 × window + cooldown: how long a deadline change needs before the chain is settled again. */
+    /** How long a deadline change needs before the chain is settled again: two windows plus the cooldown. */
     private Duration settlePeriod() { return settings.window().multipliedBy(2).plus(settings.cooldown()); }
 
     /**
-     * Cross-lever lock: why a chain through this service has an unsettled deadline, or null when all are settled. Unsettled:
-     * state LEARNING, PROPOSED or SETTLING (a chain not analysed per request yet counts as LEARNING); a pending deadline
-     * proposal; a raise building (healthy requests persistently over the deadline); or a deadline / route budget change by
-     * C4 or anyone else (policy reference or stamped budget) within the settle period.
+     * Why a chain through this service has a deadline that is not settled yet, or null when all are settled. While a
+     * deadline is unsettled we do not change rates automatically, so the two never move at the same time.
+     * A deadline is unsettled when the chain is still learning, has a proposal or is settling, when a raise is building,
+     * or when anyone changed the deadline within the settle period.
      */
     private String unsettledDeadline(String service, Source source) {
         Instant now = clock.instant(); Duration settle = settlePeriod();
@@ -209,7 +211,7 @@ public class AdaptiveEngine {
         }
         return null;
     }
-    /** A raise building, or a deadline change by anyone within the settle period, on this chain (null when none). */
+    /** A raise that is building, or a recent deadline change on this chain. Null when there is none. */
     private String recentDeadlineChange(ChainPath path, ChainV2 v, Instant now, Duration settle) {
         String chain = path.chain(), k = key(chain, path.source());
         if (v != null && v.raiseBuilding) return chain + ": healthy requests exceed the deadline (a raise is building)";
@@ -223,16 +225,16 @@ public class AdaptiveEngine {
         return null;
     }
 
-    /** Joint recalibration, per service cycle: the healthy rate step that reaches its target, decided after the retry rule. */
+    /** Holds a possible joint change during one service cycle. It is decided after the retry rule. */
     private static final class JointContext { JointCandidate candidate; }
-    /** A healthy rate change that may become a joint card; {@code offerNormal} makes the normal rate proposal instead. */
+    /** A healthy rate change that may become a joint card. offerNormal makes the normal rate proposal instead. */
     private record JointCandidate(double current, double next, Map<String, Double> inputs, String rule, String trigger, Runnable offerNormal) {}
 
     /**
-     * Joint recalibration (flag on only), after the rate and retry rules of a service window. The owner's priority rules: a
-     * normal recommendation always comes first; a waiting joint card is withdrawn as soon as one is needed (OVERLOADED,
-     * STRESSED, APP_OVERLOADED, RATE_TOO_LOW, a retry change); a joint card is only made when nothing else is needed or
-     * pending. Triggers (C3 3b): the healthy step that reaches its target, or a change of the service's healthy target.
+     * Decides about a joint card after the rate and retry rules of a service window. A normal recommendation always
+     * comes first: a waiting joint card is withdrawn as soon as one is needed, and a joint card is only made when nothing
+     * else is needed or pending. It starts from a healthy rate step that reaches its target, or from a changed healthy
+     * target of the service.
      */
     private void jointStep(JointContext jc, ServiceWindow window, Policy policy, Health health, RateDiagnosis.Diagnosis diagnosis, boolean retryProposed,
             List<String> evidence, List<PolicyChange> changes) {
@@ -259,7 +261,7 @@ public class AdaptiveEngine {
         if (!tryJoint(candidate, window, policy, evidence, changes)) candidate.offerNormal().run();
     }
 
-    /** Makes (or refreshes) the joint card for a candidate; false when no joint applies (the rate goes alone as today). */
+    /** Makes or refreshes the joint card. Returns false when no joint card applies, so the rate goes alone. */
     private boolean tryJoint(JointCandidate c, ServiceWindow window, Policy policy, List<String> evidence, List<PolicyChange> changes) {
         String service = window.service(); Source source = window.source(); Instant now = clock.instant();
         for (Action a : List.of(Action.LEAKY_BUCKET, Action.RETRY_BUDGET)) {
@@ -315,15 +317,14 @@ public class AdaptiveEngine {
         return false;
     }
 
-    /** Automatic mode for a service: the automatic list is not empty and the source is live (synthetic changes are never automatic). */
+    /** Automatic mode: some changes may be approved automatically and the data is live. Simulations are never automatic. */
     private boolean automaticMode(Source source) { return !autoApproval.kinds().isEmpty() && source != Source.MOCK; }
 
     /**
-     * Offers a rate or retry recommendation; the guard may approve it automatically (reviewer {@code c4-auto}). In automatic
-     * mode (owner rule, 22 Oct 2026: rates and retries never wait for a person) a change the guard refuses is HELD instead of
-     * becoming a card: "held: …, trying again" is the first evidence line (shown in the Health view) and in
-     * {@code rateEvidence.held}; it is tried again every cycle. Returns null when held. With the automatic list empty, and for
-     * synthetic sources, a refused change waits for a person as before.
+     * Offers a rate or retry change. The guard may approve it automatically (reviewer c4-auto). In automatic mode rates and
+     * retries never wait for a person: a change the guard refuses is held, shown as the first evidence line, and tried
+     * again next cycle. Returns null when held. Without automatic approval, and for simulations, a refused change waits
+     * for a person.
      */
     private PolicyChange offerAuto(String service, Action action, Source source, Policy policy, double current, double proposed, String unit,
             Instant windowEnd, Map<String, Double> measurements, String rule, List<String> evidence, String kind, Double floor, Double ceiling,
@@ -357,11 +358,10 @@ public class AdaptiveEngine {
     }
 
     /**
-     * Follows the latest automatic rate change (guide §6.4–6.5). Once applied, its direction is recorded (flips) and it is
-     * checked on the next {@code verify-windows} disjoint windows: a raise passes when shedding falls (or is zero) and the
-     * app time stays ≤ 1.5 × P0; a cut passes when the app time improves by ≥ 20% or returns to ≤ 1.5 × P0. A failed check
-     * is undone automatically (reviewer {@code c4-auto-revert}). Too many undos or flips pause automatic approval. Returns
-     * true while the rate holds (an automatic change waits to be applied or is being checked).
+     * Follows the latest automatic rate change. Once it is applied we note its direction and check it on the next few
+     * windows. A raise passes when the app time stays normal. A cut passes when the app time gets clearly better or is
+     * normal again. A change that fails is undone automatically (reviewer c4-auto-revert), and too many undos or flips
+     * pause automatic approval. Returns true while the rate must stay as it is.
      */
     private boolean followAutomaticChange(ServiceWindow window, Policy policy, RateState rs, RateDiagnosis.Result result, Double shed, Double p0,
             double current, List<String> evidence, List<PolicyChange> changes) {
@@ -371,8 +371,8 @@ public class AdaptiveEngine {
             try { c = workflow.find(rs.autoProposalId); } catch (IllegalArgumentException gone) { c = null; }
             if (c == null || c.decision() != Decision.APPROVED || c.delivery() == Delivery.SUPERSEDED || c.delivery() == Delivery.EXPIRED) rs.autoProposalId = null;
             else if (c.delivery() == Delivery.FAILED) {
-                // A failed delivery does not freeze the service: C4 keeps deciding (the same value keeps this approved change,
-                // which the bridge retries every 30 s); after the bridge's 5 attempts it is replaced by a fresh change.
+                // A failed delivery does not block the service. The bridge retries the same change; after 5 failed
+                // attempts we drop it and decide again.
                 if (c.attempts() >= 5) {
                     workflow.withdraw(service, Action.LEAKY_BUCKET, source, "Delivery to Component 3 failed " + c.attempts() + " times; C4 decides again");
                     rs.autoProposalId = null;
@@ -417,8 +417,8 @@ public class AdaptiveEngine {
             return false;
         }
         double normal = rate.appTolerance() * (p0 != null ? p0 : v.appBefore);
-        // A raise is undone only when it slowed the app. Shedding that did not fall (demand grew) is no reason to lower the
-        // rate again, which would shed even more; the next raise may follow (see RATE_RETRY_V2_MIGRATION.md §6).
+        // A raise is only undone when it slowed the app. If rejections did not fall, demand grew, and lowering the rate
+        // again would only reject more.
         boolean pass = raise ? app <= normal : app <= (1 - rate.minImprovement()) * v.appBefore || app <= normal || notBinding(window, shed, v.toRate);
         String detail = String.format(Locale.ROOT, "%s %s → %s: app time %.0f → %.0f ms (normal ≤ %.0f), shed %.1f → %.1f req/s",
                 raise ? "raise" : "cut", fmt(v.fromRate), fmt(v.toRate), v.appBefore, app, normal, v.shedBefore, shedAfter);
@@ -444,14 +444,14 @@ public class AdaptiveEngine {
         return true;
     }
     /**
-     * A cut to {@code rateAfter} has not bitten yet: nothing is shed and fewer requests arrive than it lets through (a stepwise
-     * cut from a rate far above the demand). It cannot have helped, so it is neither undone nor the end of the cutting.
+     * True when a cut has not taken effect yet: nothing is rejected and fewer requests arrive than the new rate lets
+     * through. Such a cut cannot have helped, so we do not undo it and the next step can follow.
      */
     private boolean notBinding(ServiceWindow window, Double shed, double rateAfter) {
         Double arrivals = window.originalRequests();
         return (shed == null || shed == 0) && arrivals != null && Double.isFinite(arrivals) && arrivals / settings.window().toSeconds() < rateAfter;
     }
-    /** Pauses automatic approval for the service after {@code max-reverts} undos or {@code max-flips} direction changes within {@code period}. */
+    /** Pauses automatic approval for a service after too many undos or direction changes in a short time. */
     private void pauseIfUnstable(String service, Source source, double current, RateState rs, Instant now, List<String> evidence) {
         rs.undos.removeIf(t -> Duration.between(t, now).compareTo(autoSettings.period()) >= 0);
         if (rs.autoPaused(now) || rs.undos.size() < autoSettings.maxReverts() && rs.flips.size() < autoSettings.maxFlips()) return;
@@ -461,12 +461,12 @@ public class AdaptiveEngine {
         audit.ratePaused(service, source, current, Map.of("reason", reason, "until", rs.autoPausedUntil.toString()));
     }
 
-    /** Latest rate decision per service, for the evidence. */
+    /** The latest rate decision of a service, kept for the evidence. */
     record RateDecision(RateDiagnosis.Result result, Double rate, Double proposed, String kind, String rule, Map<String, Double> inputs) {}
 
     /**
-     * Rate v2 evidence per live service (additive field {@code rateEvidence} of the status API): the latest diagnosis with
-     * its inputs (queue, queue wait, app time, P0, demand, floor, ceiling), the rule used, and the automatic-approval state.
+     * The rate evidence of every live service for the status API: the latest diagnosis and its numbers, the rule used,
+     * and the state of automatic approval.
      */
     public Map<String, Map<String, Object>> rateEvidence() {
         var result = new TreeMap<String, Map<String, Object>>(); Instant now = clock.instant();
@@ -484,15 +484,15 @@ public class AdaptiveEngine {
         e.put("autoPausedUntil", rs.autoPaused(now) ? rs.autoPausedUntil.toString() : null);
         e.put("checking", rs.verification == null ? null : fmt(rs.verification.fromRate) + " → " + fmt(rs.verification.toRate));
         e.put("lastCheck", rs.lastVerification);
-        e.put("held", List.copyOf(rs.held)); // automatic mode: changes held this cycle, tried again every cycle
-        e.put("checks", List.copyOf(rs.checks)); // check results of the automatic rate changes, newest first (additive)
+        e.put("held", List.copyOf(rs.held)); // changes held this cycle, tried again next cycle
+        e.put("checks", List.copyOf(rs.checks)); // checks of the automatic rate changes, newest first
         return e;
     }
 
     /**
-     * Leaky-bucket rate v2 (guide §4): separates waiting in our own queue from a slow app. RATE_TOO_LOW → raise toward demand
-     * plus headroom; APP_OVERLOADED → cut once, never below the floor, and a second cut only if the previous one helped
-     * (anti-ratchet); HEALTHY → move slowly toward demand plus headroom; WATCH and UNKNOWN → hold.
+     * The leaky-bucket rate decision. We first separate time waiting in our own queue from time in the app. Then:
+     * RATE_TOO_LOW raises toward the demand plus headroom, APP_OVERLOADED cuts (never below the floor, and a second cut
+     * only if the first one helped), HEALTHY moves slowly toward the demand plus headroom, WATCH and UNKNOWN keep the rate.
      */
     private RateDiagnosis.Diagnosis bucket(ServiceWindow window, ServiceLoadSnapshot load, Policy policy, boolean errorsHigh, List<String> evidence, List<PolicyChange> changes,
             JointContext jc) {
@@ -510,22 +510,22 @@ public class AdaptiveEngine {
                 : window.rejections();
         Double shed = rejected == null ? null : rejected / seconds;
         double accepted = window.successfulThroughput();
-        // Rate learning fix A: while the queue is full or shedding (the bucket limits the app) a provisional P0 is used after
-        // provisional-windows windows; calm windows wait for the full baseline, nothing is lost by waiting there.
+        // While the queue is full or rejecting, the bucket limits the app, so a first rough P0 is good enough.
+        // Calm windows wait for the full baseline; nothing is lost by waiting there.
         boolean limiting = queuePct != null && queuePct >= rate.queueHighPercent() || shed != null && shed > 0;
         Double p0 = rs.p0(settings.baselineSamples(), limiting ? Math.min(baselineSettings.provisionalWindows(), settings.baselineSamples()) : settings.baselineSamples(),
                 baselineSettings);
-        // Rate learning fix B2: does the app time (queue wait taken out) grow with the load (successful requests per second)?
+        // Does the app time, without the queue wait, grow when the load grows?
         String growth = rs.loadGrowth(RateDiagnosis.appMs(window.p95Ms(), RateDiagnosis.queueWaitMs(depth, current)), accepted,
                 rate.loadGrowthWindows(), rate.loadGrowthFactor(), rate.loadGrowthMinLoadRatio());
         var result = RateDiagnosis.diagnose(new RateDiagnosis.Inputs(current, queuePct, depth, window.p95Ms(), accepted, shed, p0, errorsHigh, growth), rate);
-        // Learn the app-time baseline after diagnosing, so this window is judged against the past only.
+        // Learn after diagnosing, so this window is only compared with the past.
         boolean clean = queuePct != null && queuePct < rate.queueLowPercent() && shed != null && shed == 0;
         rs.learnApp(result.appMs(), accepted, clean, shed != null && shed > 0, !errorsHigh, baselineSettings.allowShedWindows(),
                 queuePct != null && queuePct >= rate.queueHighPercent(), result.diagnosis() == RateDiagnosis.Diagnosis.APP_OVERLOADED, settings.baselineSamples(), Math.max(settings.baselineSamples(), baselineSettings.loadWindows()));
         int streak = rs.observe(result.diagnosis());
         if (result.diagnosis() != RateDiagnosis.Diagnosis.HEALTHY) { rs.relaxing = false; rs.relaxSince = null; } // lowering a generous rate only while healthy
-        // Joint recalibration (flag on only): the healthy queue depth Q of this service.
+        // Keep the healthy queue depth of this service for joint recalibration.
         if (joint.enabled() && result.diagnosis() == RateDiagnosis.Diagnosis.HEALTHY && depth != null && Double.isFinite(depth)) {
             rs.healthyDepth.addLast(depth); while (rs.healthyDepth.size() > settings.baselineSamples()) rs.healthyDepth.removeFirst();
         }
@@ -550,16 +550,16 @@ public class AdaptiveEngine {
         boolean cooldownOk = cooldown(service, Action.LEAKY_BUCKET, source);
         boolean following = followAutomaticChange(window, policy, rs, result, shed, p0, current, evidence, changes);
         if (following) {
-            // An automatic change waits to be applied, is being checked, or was just undone: decide nothing else now.
+            // An automatic change is waiting, being checked or was just undone, so we decide nothing else now.
         } else if (!cooldownOk) {
-            // Decide nothing (and change no state) until the cooldown after the last applied rate change has passed.
+            // Change nothing until the cooldown after the last rate change has passed.
             evidence.add("Rate v2: waiting for the cooldown after the last applied rate change");
         } else switch (result.diagnosis()) {
             case APP_OVERLOADED -> {
                 if (!persistent) break;
                 var last = rs.lastCut;
                 if (last != null && Math.abs(current - last.toRate()) < 1e-9) {
-                    // Anti-ratchet: a second cut only if the previous cut made the app time fall by ≥ 20% or back to normal.
+                    // Only cut again if the last cut made the app clearly faster or normal again.
                     boolean helped = result.appMs() <= (1 - rate.minImprovement()) * last.appBefore() || p0 != null && result.appMs() <= rate.appTolerance() * p0
                             || notBinding(window, shed, last.toRate()); // a cut that has not bitten yet is followed by the next step
                     if (!helped) {
@@ -571,9 +571,9 @@ public class AdaptiveEngine {
                     }
                 }
                 if (rs.antiRatchetHold) { evidence.add("Rate v2: holding after an anti-ratchet undo (the rate was not the problem)"); break; }
-                // A cut only helps when it holds traffic back. When the service gets fewer requests than even the full cut
-                // would let through (nothing shed), it is slow for another reason (a slow dependency, a busy machine), so the
-                // rate is not lowered; otherwise not-yet-binding steps would slide down to the floor.
+                // A cut only helps when it holds traffic back. If the service gets fewer requests than even the full
+                // cut would let through, it is slow for another reason, like a slow dependency or a busy machine,
+                // so we keep the rate.
                 double counted = window.originalRequests() == null || !Double.isFinite(window.originalRequests()) ? 0 : window.originalRequests() / seconds;
                 double arrivals = Math.max(counted, accepted + (shed == null ? 0 : shed)); // requests per second that reach the service
                 double fullCut = RateDiagnosis.cut(current, accepted, floor, rate);
@@ -583,9 +583,8 @@ public class AdaptiveEngine {
                     break;
                 }
                 double cut = Math.max(RateDiagnosis.cut(current, accepted, floor, rate), RateDiagnosis.round(current * (1 - settings.maximumRateChange())));
-                // In automatic mode a cut always goes in checked steps of at most −20% (the guard's step limit), also while it is
-                // held; a reviewer (automatic approval off) gets the full cut.
-                double step = roundUp(current * rate.cutFactor()); // rounded up, so the step never exceeds −20% (the guard checks it)
+                // In automatic mode a cut goes in small checked steps of at most 20 percent. A reviewer gets the full cut.
+                double step = roundUp(current * rate.cutFactor()); // rounded up so the step stays within the guard's limit
                 boolean stepwise = cut < step && automaticMode(source) && autoApproval.kinds().contains(AdaptiveConfig.AutoKind.BUCKET_CUT);
                 if (cut < current) {
                     proposed = stepwise ? step : cut; kind = AdaptiveConfig.AutoKind.BUCKET_CUT.name();
@@ -597,7 +596,7 @@ public class AdaptiveEngine {
                 rs.antiRatchetHold = false;
                 if (!persistent) break;
                 double up = RateDiagnosis.raise(current, demand, rs.goodRate, ceiling, rate);
-                // Rate learning fix C: once the remembered limit has expired, only small probing steps until healthy again.
+                // After the remembered limit expires, raise only in small steps until the service is healthy again.
                 if (rs.probing) up = Math.min(up, RateDiagnosis.round(current * (1 + rate.stepFraction())));
                 if (up > current) {
                     proposed = up; kind = AdaptiveConfig.AutoKind.BUCKET_RAISE.name();
@@ -609,17 +608,15 @@ public class AdaptiveEngine {
             case HEALTHY -> {
                 rs.antiRatchetHold = false;
                 if (rs.healthyStreak < settings.recoveryWindows()) break;
-                // A persistently healthy rate is good, as far as it was used: a rate far above the demand only shows that the
-                // demand plus headroom is fine (rate learning fix: a rate too high from the start must not become a floor
-                // above the app's capacity). The floor follows it.
+                // A rate that stays healthy counts as good, but only as far as it was used. A rate far above the
+                // demand only shows that the demand plus headroom is fine. The floor follows the good rate.
                 rs.goodRate = Math.min(current, RateDiagnosis.healthyTarget(maxDemand, rate.minAbsolute(), rate.maxAbsolute(), rate));
                 rs.probing = false;
                 floor = RateDiagnosis.floor(rs.goodRate, rate); inputs.put("floor", floor); inputs.put("goodRate", rs.goodRate);
                 double target = RateDiagnosis.healthyTarget(maxDemand, floor, ceiling, rate);
-                // Too generous (owner decision 22 Oct): above 2 × the demand target (max demand × 1.25, at least min-absolute)
-                // for generous-wait, then down in steps of at most relax-step (−10%) until that target. The demand target is used
-                // here because the floor (0.5 × good rate, and the good rate is the current healthy rate) would otherwise keep
-                // a generous rate above half of itself; each step stays above that floor anyway.
+                // A rate that stays above twice the demand target for a while is too generous. We then lower it in
+                // small steps down to that target. We use the demand target here because the floor follows the
+                // current rate and would otherwise keep a generous rate high.
                 double demandTarget = RateDiagnosis.healthyTarget(maxDemand, rate.minAbsolute(), ceiling, rate);
                 if (current > 2 * demandTarget) { if (rs.relaxSince == null) rs.relaxSince = now; } else if (!rs.relaxing) rs.relaxSince = null;
                 if (rs.relaxSince != null && Duration.between(rs.relaxSince, now).compareTo(rate.generousWait()) >= 0) rs.relaxing = true;
@@ -641,28 +638,28 @@ public class AdaptiveEngine {
         }
         if (proposed != null) {
             final double fProposed = proposed, fFloor = floor, fCeiling = ceiling; final String fKind = kind, fRule = rule; final boolean fUndo = undo;
-            // HEALTHY proposes only after recovery-windows healthy cycles, so it is persistent too.
+            // HEALTHY only proposes after several healthy cycles, so it counts as lasting too.
             final boolean fPersistent = persistent || result.diagnosis() == RateDiagnosis.Diagnosis.HEALTHY, fData = result.diagnosis() != RateDiagnosis.Diagnosis.UNKNOWN;
             final var measurements = new HashMap<String, Double>(inputs);
             Runnable offerNormal = () -> {
                 var change = offerAuto(service, Action.LEAKY_BUCKET, source, policy, current, fProposed, "requests/second", window.end(), measurements, fRule, evidence,
                         fKind, fFloor, fCeiling, fPersistent, fUndo, fData);
-                if (change == null) return; // held: tried again next cycle
+                if (change == null) return; // held, tried again next cycle
                 changes.add(change);
                 if (AdaptiveConfig.AutoKind.BUCKET_CUT.name().equals(fKind) && !change.proposal().id().equals(rs.lastProposalId)) {
-                    // Rate learning fix C: remember what the app actually managed, not the configured rate.
+                    // Remember what the app actually managed, not the configured rate.
                     rs.rememberBrokeAt(Math.min(current, accepted), now, rate.brokeAtMemory());
                     rs.lastCut = new RateState.Cut(current, fProposed, result.appMs() == null ? Double.NaN : result.appMs());
                 }
                 rs.lastProposalId = change.proposal().id(); rs.lastKind = fKind;
             };
-            // Joint recalibration (flag on only): the healthy step that reaches its target may become a joint card. That is
-            // decided after the retry rule, because the normal recommendations come first.
+            // A healthy step that reaches its target may become a joint card. That is decided after the retry rule,
+            // because normal recommendations come first.
             if (jc != null && reachesTarget) jc.candidate = new JointCandidate(current, fProposed, Map.copyOf(measurements), fRule, "the healthy rate step reaches its target", offerNormal);
             else offerNormal.run();
         } else if (!following && (result.diagnosis() == RateDiagnosis.Diagnosis.HEALTHY || result.diagnosis() == RateDiagnosis.Diagnosis.WATCH)) {
             String reason = "Rate v2: " + result.diagnosis() + ", no rate change supported";
-            // Joint recalibration (flag on only): this housekeeping never withdraws a waiting joint card.
+            // This clean-up never withdraws a waiting joint card.
             if (joint.enabled()) workflow.withdrawExceptJoint(service, Action.LEAKY_BUCKET, source, reason);
             else workflow.withdraw(service, Action.LEAKY_BUCKET, source, reason);
         }
@@ -673,16 +670,15 @@ public class AdaptiveEngine {
     private static String fmt(double v) { return v == Math.rint(v) ? String.valueOf((long) v) : String.format(Locale.ROOT, "%.1f", v); }
     /** The value rounded to 0.1, or null when it was not measured (NaN is not valid JSON). */
     private static Double finite(double v) { return Double.isFinite(v) ? Math.round(v * 10) / 10.0 : null; }
-    /** Rounded up to 0.1 req/s, so a limited step (−20% cut, −10% lowering) never exceeds its limit after rounding. */
+    /** Rounds up to 0.1 req/s, so a limited step never goes past its limit after rounding. */
     static double roundUp(double v) { return Math.ceil(v * 10 - 1e-6) / 10; }
 
     /**
-     * Retry budget v2 (guide §5), rows in order: a persistently overloaded app → 0 (also when the rate diagnosis is UNKNOWN
-     * but health is persistently OVERLOADED, R2); the bucket sheds (RATE_TOO_LOW) → hold, retries into a full queue only
-     * become 503s; a clearly low retry success rate (≥ 30 attempts, Wilson upper bound < 0.20, 2 cycles) → 0.02, then 0;
-     * STRESSED → hold; healthy for 3 cycles with a quiet queue → +0.02 toward the base ratio once per stabilisation period.
-     * Without retry data an increase is only reported (advisory, R3). Per-request checks (retryable, safe operation, remaining
-     * deadline, cancelled chain) belong to the sidecar's retry logic, not to this budget. Returns whether a change was proposed.
+     * The retry budget of a service. The rules, in order: when the app stays overloaded, stop extra retries. When the
+     * bucket rejects requests, keep the budget, because retries into a full queue only become 503s. When retries rarely
+     * succeed, step down and then stop. When stressed, keep the budget. When healthy for a while, step back up slowly.
+     * Without retry data an increase is only reported. Checks per request belong to the sidecar, not to this budget.
+     * Returns whether a change was proposed.
      */
     private boolean retry(ServiceWindow window, State state, Policy policy, Health health, boolean persistent, RateDiagnosis.Diagnosis rateDiagnosis,
                           List<String> evidence, List<PolicyChange> changes) {
@@ -693,7 +689,7 @@ public class AdaptiveEngine {
         boolean rateKnown = rateDiagnosis != null && rateDiagnosis != RateDiagnosis.Diagnosis.UNKNOWN;
         boolean appOverloaded = rateDiagnosis == RateDiagnosis.Diagnosis.APP_OVERLOADED && rs.diagnosisStreak >= settings.persistence();
         boolean healthOverloaded = !rateKnown && health == Health.OVERLOADED && persistent;
-        // Retry success with enough attempts for a decision (simulated today; real once Component 2 counts retries).
+        // How often retries succeed, once there are enough attempts to decide.
         Double attempts = window.retryAttempts(), successes = window.successfulRetries();
         boolean counted = number(attempts) && number(successes) && successes <= attempts;
         boolean enough = counted && attempts >= retrySettings.minAttempts();
@@ -756,7 +752,7 @@ public class AdaptiveEngine {
     }
     private static String fmtRatio(double v) { return String.format(Locale.ROOT, "%.2f", v); }
 
-    /** Aggregate-only chain window (no per-request samples): checked and reported, but v2 cannot decide on it. */
+    /** A chain window without per-request samples. It is checked and reported, but no deadline is decided on it. */
     public Outcome chain(ChainWindow window) {
         return chain(window, null, Map.of(), List.of());
     }
@@ -765,8 +761,8 @@ public class AdaptiveEngine {
     }
 
     /**
-     * Deadline recommendation v2 for one chain window (guide §6). The window must be complete and fresh, as before; the
-     * decision itself uses the per-request {@code evidence}. Every proposal goes through the existing approval workflow.
+     * The deadline decision for one chain window. The window must be complete and fresh, and the decision uses the
+     * per-request samples. Every proposal goes through the normal approval workflow.
      */
     public Outcome chain(ChainWindow window, ChainEvidence evidence, Map<String, Double> supportingMeasurements, List<String> supportingEvidence) {
         if (window == null || window.chain() == null || window.chain().isBlank() || window.source() == null) throw new IllegalArgumentException("Chain and source are required");
@@ -798,7 +794,7 @@ public class AdaptiveEngine {
         }
     }
 
-    // ---------------------------------------------------------------- deadline v2 ----------------------------------------------------------------
+    // ---------- chain deadline ----------
 
     private AdaptiveConfig.DeadlineSettings deadline = AdaptiveConfig.DeadlineSettings.defaults();
     private AdaptiveConfig.LoadSettings load = AdaptiveConfig.LoadSettings.defaults();
@@ -815,9 +811,9 @@ public class AdaptiveEngine {
     }
     public AdaptiveConfig.DeadlineSettings deadlineSettings() { return deadline; }
 
-    /** One counted window kept for low-traffic widening. */
+    /** A counted window, kept so low traffic can be topped up with earlier windows. */
     private record CountedWindow(Instant end, long budget, List<LabelledSample> samples) {}
-    /** Per-chain v2 state. */
+    /** What we remember about the deadline of one chain. */
     private static class ChainV2 {
         ChainDeadlineState state = ChainDeadlineState.LEARNING;
         final Deque<CountedWindow> recent = new ArrayDeque<>();
@@ -825,23 +821,23 @@ public class AdaptiveEngine {
         DeadlineEvidence evidence; List<String> lines = List.of();
         UUID lastProposalId; Long lastProposedMs; Map<String, Double> lastMeasurements = Map.of(); List<String> lastProposalEvidence = List.of(); String lastRule;
         DeadlineCase lastProposalCase;
-        // Phase 4: verification after APPLIED, pause and audit de-duplication.
+        // Checking an applied change, pausing, and not auditing the same decision twice.
         UUID trackedApplied; Settling settling; String verification;
         String pausedReason; Instant pauseCauseLastSeen;
         final DeadlineSafety safety = new DeadlineSafety();
         Proportion lastH; String lastAuditedDecision; Instant conflictSince;
-        /** Healthy requests persistently exceed the deadline (Case A streak): the deadline is not settled (cross-lever lock). */
+        /** Healthy requests keep going over the deadline, so a raise is building and the deadline is not settled. */
         boolean raiseBuilding;
-        /** Any deadline persistence streak (A, O, D) is running: a deadline case may be needed soon. */
+        /** Some deadline streak is running, so a deadline change may be needed soon. */
         boolean streaksBuilding;
-        /** Joint recalibration: the rate of each service on the path in the counted windows T_h is learned from (flag on only). */
+        /** The rate of each service on the path in the windows the healthy time was learned from. */
         final Deque<Map<String, Double>> calibrationRates = new ArrayDeque<>();
     }
-    /** An applied change being verified: skip {@code settleLeft} counted windows, then collect {@code verify-windows} at the new budget. */
+    /** An applied change being checked: skip a few windows, then collect the check windows at the new deadline. */
     private static class Settling {
         final DeadlineCase applied; final long fromMs, toMs; final Proportion hBefore; int settleLeft, verified;
         Instant startedAt;
-        /** The joint recommendation this applied change belongs to (null for a deadline v2 change). */
+        /** The joint recommendation this change belongs to, or null. */
         UUID jointId;
         final List<LabelledSample> pool = new ArrayList<>();
         Settling(DeadlineCase applied, long fromMs, long toMs, Proportion hBefore, int settleLeft) {
@@ -852,8 +848,8 @@ public class AdaptiveEngine {
     @Autowired(required = false) public void setAudit(AuditLog audit) { this.audit = audit == null ? AuditLog.NONE : audit; }
 
     /**
-     * The stamped budget differs from the last approved policy. A rollout briefly shows this while the gateway catches up
-     * with Component 3, so the chain is paused only when the conflict persists for {@code persistence-windows} window lengths.
+     * The deadline the gateway stamps differs from the last approved policy. During a rollout this is normal for a short
+     * time, so we only pause the chain when it lasts for several windows.
      */
     public void configurationConflict(String chain, Source source, String reason) {
         State state = chains.computeIfAbsent(key(chain, source), ignored -> new State());
@@ -865,7 +861,7 @@ public class AdaptiveEngine {
             if (Duration.between(v.conflictSince, now).compareTo(settings.window().multipliedBy(deadline.persistenceWindows())) >= 0) pauseChain(chain, source, reason);
         }
     }
-    /** Pauses the chain now (guide §6.6). */
+    /** Pauses the deadline decisions of a chain now. */
     public void pauseChain(String chain, Source source, String reason) {
         State state = chains.computeIfAbsent(key(chain, source), ignored -> new State());
         synchronized (state) {
@@ -883,7 +879,7 @@ public class AdaptiveEngine {
         v.state = ChainDeadlineState.PAUSED; v.pausedReason = reason; v.pauseCauseLastSeen = now; v.settling = null; v.lastProposedMs = null;
     }
 
-    /** Latest v2 evidence per live chain (MOCK chains excluded), for the API. */
+    /** The latest deadline evidence of every live chain, for the API. */
     public Map<String, DeadlineEvidence> deadlineEvidence() {
         var result = new TreeMap<String, DeadlineEvidence>();
         v2.forEach((k, v) -> { if (!k.startsWith(Source.MOCK + ":") && v.evidence != null) result.put(k.substring(k.indexOf(':') + 1), v.evidence); });
@@ -899,7 +895,7 @@ public class AdaptiveEngine {
         v.conflictSince = null; // this window had no configuration conflict
         var samples = input.samples().samples();
 
-        // Service load and per-request labels (by each request's own path).
+        // Classify the load of each service, then label every request by its own path.
         var services = new TreeSet<String>(); samples.forEach(s -> services.addAll(s.path())); services.removeAll(input.unmonitored());
         var loadResults = ServiceLoadClassifier.classify(services, input.loads(), input.guards(), load);
         var loads = new HashMap<String, ServiceLoad>(); var reasons = new TreeMap<String, String>();
@@ -916,14 +912,14 @@ public class AdaptiveEngine {
         Policy policy = workflow.current(chain, source);
         Long current = policy == null || !number(policy.deadlineMs()) || policy.deadlineMs() <= 0 ? null : Math.round(policy.deadlineMs());
 
-        // Disjoint windows: only these count for learning, persistence and decisions.
+        // Only separate windows count for learning, streaks and decisions.
         boolean counted = tracker.isDisjoint(key, end, settings.window());
         if (counted) tracker.markCounted(key, end);
         boolean eligible = window.complete() && !mixed && cutShare <= deadline.cutMaxShare();
         HealthyModel model = counted
                 ? healthy.update(key, end, labelled, windowBudget, eligible, deadline, settings.baselineSamples(), settings.minimumDeadlineMs(), settings.maximumDeadlineMs())
                 : healthy.model(key, deadline, settings.minimumDeadlineMs(), settings.maximumDeadlineMs());
-        // Joint recalibration (flag on only): the rates of the path's services in the windows the healthy time is learned from.
+        // Remember the rates of the services on the path while we learn the healthy time.
         if (joint.enabled() && counted && eligible) recordCalibrationRates(v, services, source);
         if (counted && !mixed) {
             v.recent.addLast(new CountedWindow(end, windowBudget, labelled));
@@ -952,7 +948,7 @@ public class AdaptiveEngine {
 
         var pending = workflow.pending(chain, Action.CHAIN_DEADLINE, source);
         boolean pendingRate = services.stream().anyMatch(s -> workflow.pending(s, Action.LEAKY_BUCKET, source).isPresent());
-        // Joint recalibration (flag on only): a waiting joint card never holds deadline v2; its own cases still run every window.
+        // A waiting joint card never holds the normal deadline decisions.
         if (joint.enabled()) {
             pending = pending.filter(p -> !workflow.isJointPart(p.proposal().id()));
             pendingRate = services.stream().anyMatch(s -> workflow.pending(s, Action.LEAKY_BUCKET, source).filter(p -> !workflow.isJointPart(p.proposal().id())).isPresent());
@@ -961,7 +957,7 @@ public class AdaptiveEngine {
         v.proposalTimes.removeIf(t -> Duration.between(t, now).compareTo(Duration.ofHours(1)) >= 0);
         ChainDeadlineState stateBefore = v.state;
 
-        // ---- Phase 4: pause, applied-change detection and verification (guide §6.6, §6.7) ----
+        // Pausing, noticing an applied change, and checking it.
         if (v.state == ChainDeadlineState.PAUSED && v.pauseCauseLastSeen != null && Duration.between(v.pauseCauseLastSeen, now).compareTo(deadline.pauseClear()) >= 0) {
             v.state = model.ready() ? ChainDeadlineState.READY : ChainDeadlineState.LEARNING; v.pausedReason = null;
         }
@@ -971,8 +967,8 @@ public class AdaptiveEngine {
             String reason = v.safety.rejectingMiddleware(now);
             if (reason != null) pause(v, reason, now, chain, source);
         }
-        // Joint recalibration (flag on only, C3 J5): an applied joint deadline part is registered like an applied deadline proposal
-        // (case RECALIBRATE: settling, verification, safety), and the chain's healthy time is learned again from the new epoch.
+        // An applied joint deadline part is handled like an applied deadline proposal, and the healthy time is
+        // learned again from then on.
         if (joint.enabled()) {
             var part = workflow.appliedJointDeadline(chain, source);
             if (part != null && !part.proposal().id().equals(v.trackedApplied) && !part.proposal().id().equals(v.lastProposalId)) {
@@ -1005,8 +1001,8 @@ public class AdaptiveEngine {
                     boolean cleared = share(s.pool, l -> l.label() == RequestLabel.O) < deadline.shareThreshold();
                     DeadlineCase checked = s.applied == DeadlineCase.RECALIBRATE ? (s.toMs > s.fromMs ? DeadlineCase.A_RAISE : DeadlineCase.D_TIGHTEN) : s.applied;
                     var result = DeadlineVerifier.verify(checked, s.hBefore, hAfter, oAfter, cleared, deadline, settings.minimumChainRequests());
-                    // A reviewer changed a rate or retry budget on this path while the deadline was settling: the windows mix
-                    // two changes, so the deadline check proves nothing (and never causes a revert).
+                    // If a reviewer changed a rate or retry budget on this path meanwhile, the windows mix two changes,
+                    // so the check proves nothing and never causes a revert.
                     Source serviceSource = source == Source.MOCK ? Source.MOCK : Source.PROMETHEUS;
                     String confounded = s.startedAt == null ? null
                             : services.stream().filter(svc -> workflow.reviewerApprovedSince(svc, serviceSource, s.startedAt, s.jointId)).findFirst().orElse(null);
@@ -1051,7 +1047,7 @@ public class AdaptiveEngine {
             decision = DeadlinePolicy.decide(ctx, deadline, settings.maximumDeadlineMs());
         }
 
-        // Advisory whenever the overload is a rate or capacity problem (also when the deadline signal already fires).
+        // Give advice when the overload is really a rate or capacity problem.
         String advisory = oShare >= deadline.shareThreshold() && (leverResult.lever() == Lever.RATE || leverResult.lever() == Lever.CAPACITY)
                 ? "Consider the " + (leverResult.lever() == Lever.RATE ? "inbound rate" : "capacity") + " at " + String.join(", ", overloadedOnOPaths) + " (" + leverResult.reason() + ")" : null;
         String headline = headline(decision, current, model, hExceed, oExceed, windowBudget);
@@ -1066,8 +1062,7 @@ public class AdaptiveEngine {
                 + " (need " + deadline.persistenceWindows() + ")");
         lines.add("Every deadline change requires human approval; the chain p99 is pooled from complete request durations");
 
-        // Joint recalibration (flag on only): when deadline v2 needs a case for this chain, or the chain is no longer healthy, a waiting
-        // joint card is withdrawn first (the normal recommendation comes first).
+        // A normal deadline recommendation comes first, so a waiting joint card is withdrawn when one is needed.
         if (joint.enabled() && counted && workflow.activeJoint(chain, source).isPresent()) {
             String needed = decision.proposes() || decision.decisionCase() == DeadlineCase.C_KEEP_FIRING ? "deadline case " + decision.decisionCase()
                     : oShare >= deadline.shareThreshold() || stressedShare >= deadline.shareThreshold() ? "overloaded or stressed requests on the chain"
@@ -1106,7 +1101,7 @@ public class AdaptiveEngine {
                 workflow.withdraw(chain, Action.CHAIN_DEADLINE, source, "Conditions no longer support the change (" + decision.holdReason() + ")");
             }
         }
-        // A counted window that no longer proposes the same value stops the refresh: an outdated proposal then goes stale.
+        // When a counted window no longer proposes the same value, we stop refreshing, so the old proposal expires.
         if (counted && !decision.proposes()) v.lastProposedMs = null;
         boolean stillPending = workflow.pending(chain, Action.CHAIN_DEADLINE, source).isPresent();
         if (v.state != ChainDeadlineState.PAUSED && v.state != ChainDeadlineState.SETTLING) {
@@ -1121,7 +1116,7 @@ public class AdaptiveEngine {
                     samples.stream().map(DeadlineSample::traceId).limit(5).toList(), advisory);
             v.lines = List.copyOf(lines);
         }
-        // ---- audit (append-only; only on change to avoid noise) ----
+        // Write to the audit log only when something changed, to avoid noise.
         double auditCurrent = current == null ? windowBudget : current;
         if (stateBefore != v.state) audit.deadline(AuditLog.DEADLINE_STATE_CHANGED, chain, source, auditCurrent, null, v.state.name(),
                 stateBefore + " → " + v.state + (v.pausedReason == null || v.state != ChainDeadlineState.PAUSED ? "" : ": " + v.pausedReason));
@@ -1142,11 +1137,11 @@ public class AdaptiveEngine {
         return state.outcome;
     }
 
-    /** Holds that mean "the conditions for the pending proposal are gone": the pending proposal is withdrawn. */
+    /** Hold reasons that mean the basis of a pending proposal is gone, so we withdraw it. */
     private static final Set<String> WITHDRAW_ON = Set.of("IN_BAND", "STRESS_GATE", "LEVER_RATE", "LEVER_CAPACITY", "DEADLINE_NOT_THE_LEVER",
             "PREVIEW_FAILED", "INCONSISTENT", "CENSORED_OTHER", "UNKNOWN_SHARE", "AT_LIMIT");
 
-    /** Exceed rate of a label at the current budget; widened with earlier counted windows (same budget) when traffic is low. */
+    /** How many requests of a label go over the deadline. With little traffic we add earlier windows at the same deadline. */
     private Proportion proportion(ChainV2 v, List<LabelledSample> window, RequestLabel label, long budget, Instant end) {
         var pool = new ArrayList<LabelledSample>();
         for (var l : window) if (l.label() == label && !l.sample().cut()) pool.add(l);
@@ -1235,9 +1230,8 @@ public class AdaptiveEngine {
     }
     private void refreshBaseline(State state, Map<String, Double> values) { state.samples.remove(0); state.samples.add(values); state.baseline = statistics(state.samples); }
     /**
-     * The variation a deviation is measured in: the baseline MAD, but never below a practical floor (an absolute floor,
-     * or the relative floor of the median). Very steady traffic gives a near-zero MAD, which would otherwise turn
-     * noise of a fraction of a request per second into a "breach".
+     * The unit we measure a change in: the baseline MAD, but never below a small floor. Very steady traffic has an almost
+     * zero MAD, which would otherwise turn tiny noise into a breach.
      */
     private double variation(Statistic reference, String metric) {
         double floor = Math.max(metric.endsWith("Rate") ? settings.ratioFloor() : 1, Math.abs(reference.median()) * settings.zeroMadRelativeFloor());
@@ -1276,7 +1270,7 @@ public class AdaptiveEngine {
         var reasons = new ArrayList<>(evidence); reasons.add(rule);
         return workflow.offer(new Proposal(UUID.randomUUID(), target, action, source, policy.version(), current, proposed, unit, now, expiry, Map.copyOf(data), List.copyOf(reasons)), auto);
     }
-    /** A proposal with the normal lifetime (as {@link #offer}), for a part of a joint recommendation. */
+    /** A proposal with the normal lifetime, used for the parts of a joint recommendation. */
     private Proposal proposal(String target, Action action, Source source, Policy policy, double current, double proposed,
             String unit, Instant windowEnd, Map<String, Double> measurements, List<String> evidence) {
         Instant now = clock.instant(); Instant expiry = now.plus(settings.ttl()); if (policy.validUntil().isBefore(expiry)) expiry = policy.validUntil();

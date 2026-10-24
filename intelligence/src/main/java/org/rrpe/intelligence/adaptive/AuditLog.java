@@ -40,15 +40,15 @@ public class AuditLog {
     public void decided(PolicyChange c) { record(c.decision() == Decision.APPROVED ? "approved" : "rejected", c, c.reviewer()); }
     public void delivery(PolicyChange c) { record("delivery-" + c.delivery().name().toLowerCase(), c, "component-3"); }
 
-    /** Deadline v2 event kinds (additive; the table and its columns are unchanged). */
+    /** Deadline event kinds. They use the same audit table. */
     public static final String DEADLINE_DECISION = "DEADLINE_DECISION", DEADLINE_STATE_CHANGED = "DEADLINE_STATE_CHANGED",
             DEADLINE_VERIFICATION = "DEADLINE_VERIFICATION", DEADLINE_CUT_DETECTED = "DEADLINE_CUT_DETECTED",
             DEADLINE_HEALTHY_RELEARNED = "DEADLINE_HEALTHY_RELEARNED";
     private final tools.jackson.databind.json.JsonMapper json = tools.jackson.databind.json.JsonMapper.builder().build();
 
     /**
-     * A deadline v2 event for a chain. {@code proposal_id} is NOT NULL in {@code intel.audit}, so chain events use a stable
-     * per-chain UUID; the payload ({@code DeadlineEvidence} or a short text) goes to {@code detail} as JSON.
+     * A deadline event for a chain. proposal_id cannot be null in intel.audit, so chain events use a fixed UUID per
+     * chain. The evidence or a short text goes to detail as JSON.
      */
     public void deadline(String kind, String chain, Source source, double currentMs, Double proposedMs, String decision, Object payload) {
         if (this == NONE) return;
@@ -58,7 +58,7 @@ public class AuditLog {
         record(new Entry(Instant.now(), kind, chainId(chain, source).toString(), chain, Action.CHAIN_DEADLINE.name(), source.name(), currentMs,
                 proposedMs == null ? currentMs : proposedMs, "milliseconds", decision, "c4-deadline-v2", null, detail, null));
     }
-    /** Rate/retry v2 automatic-approval event kinds (additive; the table and its columns are unchanged). */
+    /** Event kinds for automatic rate and retry approval. They use the same audit table. */
     public static final String RATE_AUTO_APPROVED = "RATE_AUTO_APPROVED", RATE_AUTO_REVERTED = "RATE_AUTO_REVERTED", RATE_AUTO_PAUSED = "RATE_AUTO_PAUSED";
 
     /** An automatic rate or retry change (approved or reverted); the diagnosis, inputs and check result go to {@code detail} as JSON. */

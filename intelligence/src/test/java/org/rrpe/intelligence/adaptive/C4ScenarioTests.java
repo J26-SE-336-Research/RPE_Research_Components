@@ -52,7 +52,7 @@ class C4ScenarioTests {
         assertTrue(multiple.stream().allMatch(c -> c.decision() == Decision.PENDING_APPROVAL));
     }
 
-    // ---- deadline v2 examples (simulated reviewer, unchanged) ----
+    // ---- deadline examples, with a simulated reviewer ----
 
     @Test void deadlineExamples() {
         var tooLong = SCENARIOS.run("deadline-too-long-under-overload");
@@ -70,7 +70,7 @@ class C4ScenarioTests {
             assertTrue(changes(SCENARIOS.run(id)).stream().allMatch(c -> c.decision() != Decision.APPROVED || "simulated-reviewer".equals(c.reviewer())), id);
     }
 
-    // ---- rate and retry v2: default mode (a simulated reviewer approves every step) ----
+    // ---- rate and retry, default mode: a simulated reviewer approves every step ----
 
     @Test void rateScenariosWithTheSimulatedReviewer() {
         var tooLow = SCENARIOS.run("rate-too-low");
@@ -91,7 +91,7 @@ class C4ScenarioTests {
         assertTrue(steps(SCENARIOS.run("rate-recovery"), Action.LEAKY_BUCKET).stream().allMatch(s -> s.to() > s.from()));
     }
 
-    // ---- rate and retry v2: ?mode=auto (automatic approval on, isolated, never delivered) ----
+    // ---- rate and retry, ?mode=auto: automatic approval on, kept apart, never delivered ----
 
     @Test void rateScenariosInAutomaticMode() {
         var tooLow = SCENARIOS.run("rate-too-low", true);
@@ -101,10 +101,9 @@ class C4ScenarioTests {
         var during = steps(overload, Action.LEAKY_BUCKET).stream().filter(s -> s.phase().startsWith("app capacity 60")).toList();
         assertEquals(List.of(80.0, 64.0, 51.2), during.stream().filter(s -> s.to() < s.from()).limit(3).map(ServiceSimulation.Step::to).toList(),
                 "stepped cuts of at most −20%: 100 → 80 → 64 → 51.2");
-        // Intended rate learning fix C behaviour (owner decisions 22/23 Oct): the last cut remembers what the app actually
-        // managed (62.4 req/s), not the configured rate 64, so the ceiling is 0.9 × 62.4 = 56.16 and the one raise after the
-        // cuts stops at 56.1, under the app capacity 60 (before fix C: 0.9 × 64 = 57.6). The raise is rounded down to stay
-        // under the ceiling; rounded to 56.2 it was held forever. See RATE_RETRY_V2_MIGRATION.md.
+        // The last cut remembers what the app really managed, 62.4 req/s, not the configured 64. So the ceiling is
+        // 90 percent of 62.4, which is 56.16, and the one raise after the cuts stops at 56.1, under the app capacity 60.
+        // The raise is rounded down to stay under the ceiling; rounded up to 56.2 it would be held forever.
         assertEquals(56.1, during.get(3).to(), 1e-9, "one step up to 56.1, under the app capacity 60: " + during);
         assertTrue(during.size() == 4 || during.get(4).cycle() - during.get(3).cycle() >= 10, "and it settles there: " + during);
         // a later probe up that slowed the app is undone automatically

@@ -6,7 +6,7 @@ import java.time.Instant;
 import java.util.*;
 import org.junit.jupiter.api.Test;
 
-/** The check result of each automatic rate change is published in the rate evidence ({@code checks}, additive field). */
+/** The check result of each automatic rate change is shown in the rate evidence, in {@code checks}. */
 class RateCheckEvidenceTests {
     @SuppressWarnings("unchecked")
     static List<RateState.Check> checks(ServiceSimulation.Scenario scenario) {

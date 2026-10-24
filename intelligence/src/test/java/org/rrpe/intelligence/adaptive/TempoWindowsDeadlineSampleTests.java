@@ -6,7 +6,7 @@ import java.util.*;
 import org.junit.jupiter.api.Test;
 import tools.jackson.databind.json.JsonMapper;
 
-/** Deadline v2 additions to TempoWindows: status, expiry event, exclusions and "cut" requests (guide §5.1, §5.3, §5.4). */
+/** The deadline parts of TempoWindows: status, expiry event, what is left out, and cut requests. */
 class TempoWindowsDeadlineSampleTests {
     private final JsonMapper json = JsonMapper.builder().build();
     private final TempoWindows tempo = new TempoWindows(new TelemetryHttp(AdaptiveEngineTests.connections("")),

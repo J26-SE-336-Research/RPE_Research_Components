@@ -7,7 +7,7 @@ import java.util.*;
 import org.junit.jupiter.api.Test;
 
 /**
- * Problems 1 and 3 (22 Oct): the sidecar's configured rate (rpe_backpressure_inbound_rate_per_second) is the rate reference
+ * The rate the sidecar is set to (rpe_backpressure_inbound_rate_per_second) is the starting rate
  * when Component 3 has none, like the configured deadline; a Component 3 rate always wins.
  */
 class RateStartingReferenceTests {

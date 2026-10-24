@@ -6,7 +6,7 @@ import java.time.Instant;
 import java.util.*;
 import org.junit.jupiter.api.Test;
 
-/** Automatic approval of rate and retry changes with its safety rules (guide §6). */
+/** Automatic approval of rate and retry changes, with its safety rules. */
 class AutoApprovalTests {
     static final List<String> DEMO = List.of("BUCKET_RAISE", "BUCKET_CUT", "RETRY_DECREASE");
 
@@ -77,7 +77,7 @@ class AutoApprovalTests {
         assertEquals(Decision.PENDING_APPROVAL, workflow.offer(proposal).decision());
     }
 
-    // rates never wait for a person (owner rule, 22 Oct): the locked rate change is held and tried again, no card for a reviewer
+    // rates never wait for a person: the locked rate change is held and tried again, no card for a reviewer
     @Test void aPendingDeadlineChangeOnAChainThroughTheServiceLocksAutomaticRateChanges() {
         var r = run(ServiceSimulation.byId("rate-too-low"), Source.PROMETHEUS, DEMO, workflow -> {
             var now = Instant.parse("2026-10-20T00:00:00Z");
@@ -92,7 +92,7 @@ class AutoApprovalTests {
                 .anyMatch(e -> e.startsWith("held: rate") && e.contains("deadline not settled") && e.contains("trying again")), "visible as a held change");
     }
 
-    // rates never wait for a person (owner rule, 22 Oct): after the pause the next change is held, not a card for a reviewer
+    // rates never wait for a person: after the pause the next change is held, not a card for a reviewer
     @Test void aRaiseThatSlowsTheAppIsUndoneAndRepeatedUndosPauseAutomaticApproval() {
         var r = run(RAISE_HURTS, Source.PROMETHEUS, DEMO, null);
         var steps = r.rate();
@@ -104,7 +104,7 @@ class AutoApprovalTests {
         assertEquals(failedRaise.from(), reverts.get(0).to(), "undo to the value before the raise");
         assertTrue(reverts.get(0).evidence().contains("Automatic undo"));
         assertEquals(reverts.size(), r.audited(AuditLog.RATE_AUTO_REVERTED));
-        // the next raise stays below the ceiling learned from the failed raise (0.9 × the rate that slowed the app)
+        // the next raise stays below 90 percent of the rate that slowed the app
         var next = steps.get(first + 1);
         assertTrue(next.to() > next.from() && next.to() <= .9 * failedRaise.to() + .1, steps.toString());
         // after two undos automatic approval pauses: the next change is held (tried again), never a card for a person
@@ -123,9 +123,8 @@ class AutoApprovalTests {
     }
 
     @Test void aRealOverloadInAutomaticModeIsCutInCheckedStepsAndSettlesNearTheAppCapacity() {
-        // Intended rate learning fix C behaviour (owner decision 22 Oct, option A): the default broke-at memory is 6 h, so
-        // within this run the rate would stay under the remembered limit after the app recovers. A 30 min memory shows what
-        // happens once it expires: the rate rises again, in small probing steps. See RATE_RETRY_V2_MIGRATION.md.
+        // By default we remember the limit for 6 hours, so in this run the rate would stay under it after the app
+        // recovers. A 30 minute memory shows what happens when it expires: the rate rises again in small steps.
         var r = run(ServiceSimulation.byId("rate-real-overload"), Source.PROMETHEUS, DEMO, null, brokeAtMemory(java.time.Duration.ofMinutes(30)));
         var overload = r.rate().stream().filter(s -> s.phase().startsWith("app capacity 60")).toList();
         var cuts = overload.stream().filter(s -> s.to() < s.from() && !"c4-auto-revert".equals(s.reviewer())).toList();

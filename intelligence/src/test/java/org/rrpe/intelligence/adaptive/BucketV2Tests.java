@@ -7,8 +7,8 @@ import java.util.*;
 import org.junit.jupiter.api.Test;
 
 /**
- * Rate v2 end to end on the service model (guide §4.4 examples 1–4, floor, anti-ratchet, headroom, brokeAt ceiling).
- * During the healthy learning phase v2 already keeps 25% headroom above demand, so the problem phase may start a little
+ * The rate logic end to end on the service model: examples 1 to 4, the floor, the second-cut rule, headroom and the
+ * ceiling. While learning, the rate already keeps 25 percent headroom above demand, so the problem phase may start a little
  * above the scenario's initial rate; the assertions use the steps of the problem phase.
  */
 class BucketV2Tests {
@@ -52,14 +52,14 @@ class BucketV2Tests {
         var first = cuts.get(0);
         assertEquals(Math.max(first.from() * .5, .8 * 60), first.to(), .051, "max(floor = 0.5 × good rate, 0.8 × accepted 60)");
         assertTrue(r.lowestRate() >= 50, "never below the floor 0.5 × good rate 100 (no ratchet; the old logic reached 0.045): " + r.lowestRate());
-        // While the bucket sheds, v2 probes upward; each probe that slows the app lowers the ceiling to 0.9 × that rate.
+        // While the bucket rejects, the rate goes up; each raise that slows the app lowers the ceiling to 90 percent of it.
         double previousRaise = Double.MAX_VALUE;
         for (var raise : overload.stream().filter(s -> s.to() > s.from()).toList()) {
             assertTrue(raise.to() < previousRaise, "each probe is lower than the last: " + overload); previousRaise = raise.to();
         }
         double last = overload.get(overload.size() - 1).to();
         assertTrue(last >= 50 && last <= 66, "converges near the app capacity 60, between the floor 50 and 1.1 × capacity: " + last);
-        // In automatic mode the flip limit pauses the probing (Step 5); here a simulated human approves every step.
+        // In automatic mode the flip limit pauses this; here a simulated person approves every step.
     }
     @Test void example3AShortBurstChangesNothing() {
         var r = run("rate-short-burst");

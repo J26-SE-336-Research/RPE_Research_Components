@@ -9,7 +9,7 @@ import java.util.regex.Pattern;
 import org.junit.jupiter.api.Test;
 
 /**
- * Owner rule (22 Oct 2026): in automatic mode rate and retry changes never wait for a person. A change the guard refuses is
+ * In automatic mode rate and retry changes never wait for a person. A change the guard refuses is
  * held and tried again every cycle (problems 2, 4, 5, 6, 7, 9).
  */
 class RateHoldTests {
@@ -82,7 +82,7 @@ class RateHoldTests {
     }
 
     @Test void aTooGenerousRateIsLoweredAutomaticallyInSmallStepsDownToDemandTimesOnePointTwoFive() {
-        // problem 4: rate 400 for demand 80 (target 80 × 1.05 retries × 1.25 = 105); generous-wait 2 min
+        // problem 4: rate 400 for a demand of 80, so the target is 80 * 1.05 * 1.25 = 105; generous-wait is 2 minutes
         var settings = DeadlineExamplesTests.settings();
         var clock = new ChainSimulation.VirtualClock(Instant.parse("2026-10-22T00:00:00Z"));
         var workflow = new PolicyWorkflow(AdaptiveEngineTests.connections(""), settings, clock);

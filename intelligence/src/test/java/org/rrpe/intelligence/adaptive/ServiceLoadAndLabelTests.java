@@ -6,7 +6,7 @@ import static org.junit.jupiter.api.Assertions.*;
 import java.util.*;
 import org.junit.jupiter.api.Test;
 
-/** ServiceLoadClassifier (guide §6.2) and RequestLabeler (§6.3). */
+/** ServiceLoadClassifier and RequestLabeler. */
 class ServiceLoadAndLabelTests {
     private final AdaptiveConfig.LoadSettings t = AdaptiveConfig.LoadSettings.defaults();
     private static ServiceLoadSnapshot snap(Double pressure, Double overload, Double bpRejected, Double breaker, Double cpu, Double throttle, Double memory) {

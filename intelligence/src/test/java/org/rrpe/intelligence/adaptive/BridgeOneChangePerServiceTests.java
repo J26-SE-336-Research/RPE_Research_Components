@@ -15,7 +15,7 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
 /**
- * Owner decision (21 Oct 2026): the bridge delivers at most one change per service per cycle, so an approved rate change
+ * The bridge delivers at most one change per service per cycle, so an approved rate change
  * and an approved retry change for the same service do not undo each other.
  */
 class BridgeOneChangePerServiceTests {

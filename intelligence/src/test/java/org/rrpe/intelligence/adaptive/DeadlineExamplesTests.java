@@ -7,7 +7,7 @@ import java.util.*;
 import org.junit.jupiter.api.Test;
 
 /**
- * Guide §7 examples 1–6 end to end on a virtual clock (window 5 min, cycle 1 min, demo deadline settings). A simulated
+ * Deadline examples 1 to 6 end to end on a virtual clock, with a 5 minute window, a 1 minute cycle and the demo settings. A simulated
  * reviewer approves every proposal and it is applied on the next cycle: proposal sequence, no reversals, final deadline.
  */
 class DeadlineExamplesTests {

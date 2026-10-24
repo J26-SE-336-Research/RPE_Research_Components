@@ -18,10 +18,10 @@ public final class RobustStatistics {
         return new Statistic(median, median(Arrays.stream(input).map(value -> Math.abs(value - median)).toArray()));
     }
 
-    /** Consistency constant: 1.4826 × MAD estimates σ for normally distributed data (Rousseeuw & Croux 1993). */
+    /** 1.4826 times the MAD estimates the standard deviation of normal data (Rousseeuw and Croux, 1993). */
     public static final double MAD_SCALE = 1.4826;
 
-    /** Scaled MAD, σ̂ = 1.4826 × MAD. */
+    /** The MAD scaled by 1.4826. */
     public static double scaledMad(List<Double> values) {
         if (values.isEmpty()) throw new IllegalArgumentException("Scaled MAD requires samples");
         return MAD_SCALE * summarize(values.stream().mapToDouble(Double::doubleValue).toArray()).mad();

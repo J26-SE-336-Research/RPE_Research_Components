@@ -36,12 +36,12 @@ type Change = {
 };
 type Collection = { enabled: boolean; deliveryConfigured: boolean; configuredServices: string[]; problems: string[] };
 type Joint = { jointId: string; parts: { proposalId: string }[] };
-/** C4's check of one automatic rate change (rateEvidence[service].checks). */
+/** The check of one automatic rate change (rateEvidence[service].checks). */
 type RateCheck = { proposalId: string; kind: string; fromRate: number; toRate: number; result: string; appBeforeMs?: number | null; appAfterMs?: number | null;
   normalMs?: number | null; shedBeforePerSecond?: number | null; shedAfterPerSecond?: number | null; at: string };
-/** C4's latest rate decision per live service (status field rateEvidence). */
+/** The latest rate decision of each live service (status field rateEvidence). */
 type RateEvidence = { diagnosis: string; reason: string; rate?: number; inputs?: Record<string, number>; checks?: RateCheck[] };
-/** C4's latest deadline decision per live chain (status field deadlineEvidence); only the fields this page reads. */
+/** The latest deadline decision of each live chain (status field deadlineEvidence). Only the fields this page reads. */
 type DeadlineEvidence = { decisionCase?: string; serviceLoadReasons?: Record<string, string>; model?: { thMs?: number | null; windows?: number; requests?: number } };
 type Intel = {
   health?: { status: string };
@@ -170,7 +170,7 @@ function HealthTag({ health }: { health: string }) {
   return <Status tone={tone}>{label}</Status>;
 }
 
-// ---------- plain-language explanations, built from C4's structured numbers ----------
+// ---------- plain explanations, built from the engine numbers ----------
 
 /** Styles of this page only (class prefix c4-), on the console's own colour tokens. */
 const C4_CSS = `
@@ -245,7 +245,7 @@ function overloadedNames(dl?: DeadlineEvidence) {
   return names.length ? ` (${names.join(", ")})` : "";
 }
 
-/** What a reviewer needs to decide: a headline, one-line why, 3–4 reasons with their source, and the expected result. */
+/** What a reviewer needs to decide: a headline, one-line why, 3 or 4 reasons with their source, and the expected result. */
 function explain(c: Change, partner: Change | undefined, dl: DeadlineEvidence | undefined): Explained {
   const p = c.proposal, m = p.measurements;
   const up = p.proposedValue > p.currentValue;
@@ -541,7 +541,7 @@ function ServicesNow({ rates }: { rates: Record<string, RateEvidence> }) {
   );
 }
 
-/** Rate and retry changes C4 made automatically, each with its goal, reason and checked result. */
+/** Rate and retry changes made automatically, each with its goal, reason and checked result. */
 function AutoChanges({ changes, rates }: { changes: Change[]; rates: Record<string, RateEvidence> }) {
   if (!changes.length) return <Empty>No automatic changes yet. Rate and retry changes appear here when C4 applies them within the safety limits.</Empty>;
   const checks = new Map<string, RateCheck>();
@@ -904,7 +904,7 @@ export function RecommendationsPage() {
   const collection = intel.data?.status?.collection;
   const rates = intel.data?.status?.rateEvidence ?? {};
   const all = intel.data?.status?.changes ?? [];
-  // Rate and retry changes C4 made itself (approved by c4-auto, or undone by c4-auto-revert), newest first.
+  // Automatic rate and retry changes (approved by c4-auto or undone by c4-auto-revert), newest first.
   const autos = changes.filter((c) => c.reviewer?.startsWith("c4-auto") && (c.proposal.action === "LEAKY_BUCKET" || c.proposal.action === "RETRY_BUDGET"))
     .sort((a, b) => b.proposal.generatedAt.localeCompare(a.proposal.generatedAt));
   const undone = Object.values(rates).reduce((n, r) => n + (r.checks?.filter((k) => k.result === "undone").length ?? 0), 0);

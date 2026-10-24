@@ -8,10 +8,9 @@ import java.util.function.*;
 import org.junit.jupiter.api.Test;
 
 /**
- * Rate learning fix (c4-leaky-bucket-rate-learning-fix.md §6, tests 1–5) in automatic mode (c4-auto, live source): a
- * rate that is wrong from the start is found. The app takes 120 ms up to its capacity of 80 req/s; above that it handles
- * at most 80 req/s and gets slower (900 ms at 150 req/s admitted). Errors stay normal. Test 6 (no C3 rate policy) is
- * {@link RateStartingReferenceTests}; test 7 is the rest of the suite.
+ * In automatic mode with live data, a rate that is wrong from the start is found. The app takes 120 ms up to its
+ * capacity of 80 req/s; above that it handles at most 80 req/s and gets slower, 900 ms at 150 req/s. Errors stay
+ * normal. The case without a Component 3 rate policy is in {@link RateStartingReferenceTests}.
  */
 class RateLearningTests {
     static final String SERVICE = "payment-svc";
@@ -97,8 +96,7 @@ class RateLearningTests {
         var withP0 = r.cycles().stream().filter(c -> c.p0() != null).toList();
         assertTrue(withP0.stream().allMatch(c -> c.p0() < 120 * 1.1), "P0 ≈ 120 ms from the quiet windows, never the overloaded 900 ms: " + withP0);
         assertTrue(r.cycles().stream().anyMatch(c -> c.evidence().stream().anyMatch(e -> e.contains("quietest"))), "P0 from the quietest windows");
-        // cut toward 0.8 × what the app accepted (about 80 req/s), in automatic steps of at most −20% (each target also at
-        // most −50% of the current rate)
+        // cut toward 80 percent of what the app accepted (about 80 req/s), in automatic steps of at most 20 percent
         var cuts = r.rate().stream().filter(s -> s.to() < s.from()).toList();
         assertTrue(cuts.size() >= 2, "cut in steps: " + r.rate());
         assertTrue(cuts.stream().allMatch(s -> "c4-auto".equals(s.reviewer()) && s.evidence().contains("APP_OVERLOADED: cut")
@@ -108,7 +106,7 @@ class RateLearningTests {
     }
 
     @Test void test3AppTimeGrowingWithLoadIsAnOverloadEvenWithoutP0() {
-        // rate 200, demand rising 25 → 150 over 6 windows, then 150: the app time rises 120 → 900 ms with it
+        // rate 200, demand rising from 25 to 150 over 6 windows and then staying: the app time rises from 120 to 900 ms
         var r = run(200, 12, c -> Math.min(150, 25 * (c + 1)), RateLearningTests::saturating, CAPACITY);
         var grows = r.cycles().stream().filter(c -> c.diagnosis() == RateDiagnosis.Diagnosis.APP_OVERLOADED && c.reason().contains("app time grows with load")).toList();
         assertFalse(grows.isEmpty(), "APP_OVERLOADED with reason \"app time grows with load\": " + r.cycles());
@@ -130,18 +128,18 @@ class RateLearningTests {
         var rate = r.rate();
         var firstCut = rate.stream().filter(s -> s.to() < s.from()).findFirst().orElseThrow(() -> new AssertionError(rate.toString()));
         assertEquals(200, firstCut.from(), 1e-9);
-        double ceiling = .9 * CAPACITY * 1.04; // 0.9 × what the app managed (80 req/s, ±4% jitter) ≈ 72
+        double ceiling = .9 * CAPACITY * 1.04; // 90 percent of what the app managed, 80 req/s with some jitter, about 72
         var last20 = r.cycles().subList(r.cycles().size() - 20, r.cycles().size());
         assertTrue(rate.stream().filter(s -> s.to() > s.from() && s.cycle() > firstCut.cycle()).allMatch(s -> s.to() <= ceiling),
                 "raises after the cut stop at about 72 (0.9 × 80), not 0.9 × 200: " + rate);
-        // The automatic −20% steps stop as soon as the app time is normal again (≤ 1.5 × P0), which can be just above 72:
+        // The automatic steps stop as soon as the app time is normal again, which can be just above 72:
         // the rate settles at about the capacity, never back near the too-high 200.
         assertTrue(last20.stream().allMatch(c -> c.rate() <= 1.05 * CAPACITY && c.rate() >= .5 * CAPACITY), "settled at about the capacity 80: " + rate);
         assertTrue(last20.stream().map(Cycle::rate).distinct().count() <= 2, "no up-and-down over the last 20 windows: " + rate);
         assertTrue(rate.stream().allMatch(s -> s.reviewer().startsWith("c4-auto")), "automatic (c4-auto), never a card for a person: " + rate);
     }
 
-    // seen live (23 Oct): a busy machine made every service slow at only ~3 req/s, and not-yet-binding cuts slid to 5 req/s
+    // seen live: a busy machine made every service slow at only about 3 req/s, and cuts that did nothing slid down to 5 req/s
     @Test void aSlowServiceWithLittleTrafficKeepsItsRate() {
         // rate 100, 3 req/s arrive; the app takes 40 ms, then 300 ms from cycle 20 for a reason the rate cannot fix
         var r = run(100, 60, c -> 3, (cycle, admitted) -> cycle < 20 ? 40.0 : 300.0, CAPACITY);

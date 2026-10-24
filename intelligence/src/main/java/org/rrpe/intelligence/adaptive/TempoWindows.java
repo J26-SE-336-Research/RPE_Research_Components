@@ -36,7 +36,7 @@ public class TempoWindows {
     }
     public record PathEvidence(List<String> services, int traceCount, double p99Ms) {}
     public record Coverage(int traceCount, Double prometheusCount, Double tolerance, boolean accepted) {}
-    /** {@code samples} feeds deadline v2; it is not part of the JSON API (a window can hold thousands of requests). */
+    /** The samples feed the deadline logic. They are not in the JSON API, since a window can hold thousands of requests. */
     public record Collection(ChainWindow window, Double currentDeadlineMs, List<String> problems,
             List<PathEvidence> paths, Coverage coverage, @JsonIgnore ChainSamples samples) {
         public Collection(ChainWindow window, Double currentDeadlineMs, List<String> problems, List<PathEvidence> paths, Coverage coverage) {
@@ -51,10 +51,10 @@ public class TempoWindows {
     static final double NEAR_DEADLINE = .05;
 
     /**
-     * Turns parsed traces into deadline v2 samples (guide §5.1, §5.3, §5.4). Excluded, by reason: backpressure 503s (the
-     * rate lever's), 4xx client errors, traces without a stamped budget. Kept but marked {@code cut}: 504 near the
-     * deadline (an older rejecting middleware), other 504 and 499 (outer timeout or client abort), 502 (abnormal end).
-     * Slow 5xx are kept. Expiry: the {@code deadline.exceeded} span event, else {@code duration >= budget} (inferred).
+     * Turns parsed traces into deadline samples. Left out: backpressure 503s (they belong to the rate), 4xx client
+     * errors and traces without a budget. Kept but marked as cut: a 504 near the deadline, other 504s and 499s (outer
+     * timeout or client abort) and 502s. Slow 5xx are kept. A request expired if it has the deadline.exceeded span
+     * event, or else if it took at least the budget.
      */
     public static ChainSamples deadlineSamples(List<TraceSample> traces) {
         var samples = new ArrayList<DeadlineSample>(); var excluded = new TreeMap<String, Integer>();

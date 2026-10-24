@@ -5,26 +5,24 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * Joint healthy recalibration (C3 request, sections 3 and 4): when a service's healthy rate changes for good, the healthy
- * time of every chain through it changes by the change of its queue wait, so the matching deadline can be recommended in
- * the same decision. Pure functions; the engine supplies the chain's deadline v2 view and the rate move.
+ * Joint recalibration: when the healthy rate of a service changes for good, the healthy time of every chain through it
+ * changes by the change in queue wait. So the matching deadline can be recommended in the same decision. The engine
+ * gives us the deadline state of the chain and the rate change.
  * <ul>
- *   <li>{@code W(r) = Q / r}: healthy queue wait at rate {@code r}, {@code Q} = median per-window maximum queue depth of
- *       healthy windows;</li>
- *   <li>{@code T_h' = T_h + W(r_new) − W(r_old)}, {@code r_old} = the rate in the windows {@code T_h} was learned from;</li>
- *   <li>{@code D*' = DeadlineMath.target(T_h', m, min, max)}, clamped to the healthy step limits and
- *       {@code maximum-deadline-change};</li>
- *   <li>a joint only when {@code |D*' − D|} and the change of the target caused by the rate, {@code |D*' − D*|}, are both at
- *       least {@code max(min-change-fraction × D, min-change-ms)}.</li>
+ *   <li>The healthy queue wait at a rate is Q / rate, where Q is the typical largest queue depth of healthy windows;</li>
+ *   <li>the new healthy time is the old one plus the new queue wait minus the old queue wait, where the old rate is
+ *       the rate in the windows the healthy time was learned from;</li>
+ *   <li>the new target deadline comes from DeadlineMath.target and stays within the step limits;</li>
+ *   <li>we only make a joint card when both the change of the deadline and the change of the target are big enough.</li>
  * </ul>
  */
 final class HealthyRecalibration {
     private HealthyRecalibration() {}
 
     /**
-     * A chain's deadline situation from its latest deadline v2 evaluation: {@code lastCase}/{@code lastHold} are the last
-     * counted decision, {@code building} is true while any persistence streak (A, O, D) is running, {@code unsettled} is the
-     * cross-lever lock's reason (null when settled).
+     * The deadline state of a chain from its latest evaluation. lastCase and lastHold are the last counted decision,
+     * building is true while a deadline streak is running, and unsettled says why the deadline is not settled (null
+     * when it is).
      */
     record ChainView(String chain, ChainDeadlineState state, DeadlineCase lastCase, String lastHold, boolean building, double oShare,
                      double stressedShare, Lever lever, boolean pending, String unsettled, Double thMs, Double margin, Long currentMs) {}
@@ -32,7 +30,7 @@ final class HealthyRecalibration {
     record RateMove(String service, double q, double rateOld, double rateLastStep, double rateNew) {}
     record Plan(String chain, long currentMs, long proposedMs, boolean passes, Map<String, Double> measurements, String text) {}
 
-    /** Why this chain cannot take part in a joint (C3 3a and the owner's priority rule 2), or null when it can. */
+    /** Why this chain cannot take part in a joint card, or null when it can. */
     static String notReady(ChainView c, AdaptiveConfig.DeadlineSettings deadline) {
         if (c.state() != ChainDeadlineState.READY) return c.chain() + " is " + c.state();
         if (c.pending()) return c.chain() + " has a pending deadline proposal";
