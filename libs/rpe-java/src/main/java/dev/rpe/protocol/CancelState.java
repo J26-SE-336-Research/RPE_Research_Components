@@ -1,6 +1,6 @@
 package dev.rpe.protocol;
 
-/** Cancellation state carried in the context; terminal once set (R-C01, R-T04). */
+/** Cancel state in the context. Once set it never goes back to none. */
 public enum CancelState {
     NONE("none"), CANCEL("cancel"), EXPIRED("expired");
 

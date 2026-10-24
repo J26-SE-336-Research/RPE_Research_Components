@@ -3,18 +3,18 @@ package dev.rpe.protocol;
 import static dev.rpe.protocol.RpeHeaders.*;
 
 /**
- * The response context {@code X-RPE-Result} (spec §2.4).
+ * The {@code X-RPE-Result} response header.
  *
  * @param version     protocol version
  * @param outcome     ok | partial | rejected | stopped | failed | unknown
  * @param reason      none | deadline | cancelled | overload | insufficient-time | ...
- * @param terminal    the request MUST NOT be retried (R-R02)
+ * @param terminal    don't retry this request
  * @param bpLevel     backpressure level 0..3
- * @param bpUtil      backpressure utilisation 0..100
- * @param budgetUsed  retry budget used by the subtree ({@code rbu})
- * @param policyEpoch policy epoch applied ({@code pv}), "" when absent
- * @param late        the work completed after the deadline (point of no return)
- * @param children    fan-out child annotation "name:outcome:ms;..." ({@code kids}), "" when absent
+ * @param bpUtil      backpressure use in percent, 0..100
+ * @param budgetUsed  retry budget used below this hop ({@code rbu})
+ * @param policyEpoch policy epoch that was applied ({@code pv}), "" if missing
+ * @param late        the work finished after the deadline
+ * @param children    {@code kids}, like "name:outcome:ms;...", "" if missing
  */
 public record RpeResult(long version, String outcome, String reason, boolean terminal, long bpLevel, long bpUtil,
         long budgetUsed, String policyEpoch, boolean late, String children) {
@@ -34,7 +34,7 @@ public record RpeResult(long version, String outcome, String reason, boolean ter
         return new RpeResult(1, outcome, reason, terminal, 0, 0, 0, policyEpoch, false, "");
     }
 
-    /** Parses a serialized value. Defaults: v=1, out=unknown, rsn=none; unknown members are ignored. */
+    /** Parses a header value. Missing members default to v=1, out=unknown, rsn=none. Unknown ones are ignored. */
     public static RpeResult decode(String raw) {
         long v = 1, bp = 0, bpu = 0, rbu = 0;
         String out = UNKNOWN, rsn = NONE, pv = "", kids = "";

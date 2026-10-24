@@ -9,13 +9,12 @@ import (
 	rpe "github.com/J26-SE-336-Research/rpe/libs/rpe-go"
 )
 
-// RetrySettings is the runtime retry knob of one downstream call (POST /admin/retry). The default is off: the call is
-// made once, exactly as before. "plain" is how a typical client retries (give up after a timeout, try again); "rpe"
-// is the same policy through the RPE retry gate (rpe.DoWithRetry, rule R-R02), which never retries a chain that can
-// no longer finish in time.
+// RetrySettings is the retry switch for one downstream call, set with POST /admin/retry. It is off by default, so
+// the call is made once like before. "plain" retries the way a normal client does, give up after a timeout and try
+// again. "rpe" uses the same settings through rpe.DoWithRetry, which won't retry a chain that can't finish in time.
 type RetrySettings struct {
 	Mode             string `json:"mode"`  // off | plain | rpe
-	Child            string `json:"child"` // name of the downstream call (CHILDREN), default payment
+	Child            string `json:"child"` // which downstream call from CHILDREN, payment by default
 	AttemptTimeoutMs int    `json:"attemptTimeoutMs"`
 	MaxAttempts      int    `json:"maxAttempts"`
 	BackoffMs        int    `json:"backoffMs"`
@@ -60,7 +59,7 @@ func (s *service) handleRetry(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.retrySettings())
 }
 
-// retryOutcome is what one logical call with retries produced.
+// retryOutcome is the result of one call with retries.
 type retryOutcome struct {
 	resp     *http.Response
 	err      error
@@ -68,7 +67,7 @@ type retryOutcome struct {
 	refused  *rpe.RetryVerdict
 }
 
-// callWithRetry makes one logical downstream call with the configured retry policy.
+// callWithRetry makes one downstream call using the retry settings.
 func (s *service) callWithRetry(ctx context.Context, method, url string, cfg RetrySettings) retryOutcome {
 	newRequest := func(ctx context.Context) (*http.Request, error) {
 		return http.NewRequestWithContext(ctx, method, url, nil)
@@ -80,7 +79,7 @@ func (s *service) callWithRetry(ctx context.Context, method, url string, cfg Ret
 			AttemptTimeout: timeout, Backoff: backoff, ReplaySafe: true})
 		return retryOutcome{resp: out.Response, err: out.Err, attempts: len(out.Attempts), refused: out.Refused}
 	}
-	// plain: the usual client retry loop, with no knowledge of the chain's deadline
+	// plain is the usual retry loop that knows nothing about the deadline
 	var out retryOutcome
 	for attempt := 1; attempt <= cfg.MaxAttempts; attempt++ {
 		out.attempts = attempt

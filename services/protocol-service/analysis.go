@@ -15,7 +15,7 @@ var decisionLabel = map[rpe.TrailDecision]string{
 	rpe.DecisionPartial: "partial", rpe.DecisionOverload: "shed (overload)", rpe.DecisionUnknown: "no RPE (unknown hop)",
 }
 
-// AttributedHop is one hop of a request with the part of the deadline it used (deadline attribution).
+// AttributedHop is one hop of a request and how much of the deadline it used.
 type AttributedHop struct {
 	Index     int     `json:"index"`
 	Parent    int     `json:"parent"`
@@ -24,13 +24,13 @@ type AttributedHop struct {
 	ServiceID int64   `json:"serviceId"`
 	Decision  string  `json:"decision"`
 	Label     string  `json:"label"`
-	StartMs   float64 `json:"startMs"`   // budget already used when the hop received the request
-	ElapsedMs float64 `json:"elapsedMs"` // time at the hop including its callees
-	SelfMs    float64 `json:"selfMs"`    // time at the hop not covered by its callees
+	StartMs   float64 `json:"startMs"`   // budget already used when the hop got the request
+	ElapsedMs float64 `json:"elapsedMs"` // time spent at the hop, callees included
+	SelfMs    float64 `json:"selfMs"`    // time spent at the hop itself, without its callees
 	Unknown   bool    `json:"unknown"`
 }
 
-// Attribution is the per-hop deadline breakdown of one request.
+// Attribution shows where one request spent its deadline, hop by hop.
 type Attribution struct {
 	RID        string          `json:"rid"`
 	Route      string          `json:"route"`
@@ -43,7 +43,7 @@ type Attribution struct {
 	Incomplete bool            `json:"incomplete"`
 	TotalMs    float64         `json:"totalMs"`
 	Late       bool            `json:"late"`
-	Bottleneck int             `json:"bottleneck"` // index of the hop with the largest own time
+	Bottleneck int             `json:"bottleneck"` // the hop that used the most time itself
 	Hops       []AttributedHop `json:"hops"`
 }
 
@@ -64,7 +64,7 @@ func attribute(s *stored, reg *registry) Attribution {
 			ElapsedMs: float64(max(e.ElapsedMicros, 0)) / 1000, Unknown: e.Decision == rpe.DecisionUnknown}
 		a.Hops = append(a.Hops, h)
 	}
-	// own time = elapsed minus the union of the callees' intervals inside the hop's interval
+	// own time is the elapsed time minus the time covered by its callees
 	for i := range a.Hops {
 		h := &a.Hops[i]
 		start, end := h.StartMs, h.StartMs+h.ElapsedMs
@@ -112,7 +112,7 @@ func attribute(s *stored, reg *registry) Attribution {
 	return a
 }
 
-// TrailSummary is one row of the recent-trails list.
+// TrailSummary is one row in the list of recent trails.
 type TrailSummary struct {
 	RID        string    `json:"rid"`
 	Route      string    `json:"route"`
@@ -158,7 +158,7 @@ type EdgeStats struct {
 	Decisions map[string]int `json:"decisions"`
 }
 
-// Topology is the service graph rebuilt from the trails of a time window, with no tracing backend.
+// Topology is the service graph rebuilt only from the trails of a time window.
 type Topology struct {
 	WindowSec       int         `json:"windowSec"`
 	Trails          int         `json:"trails"`
@@ -248,7 +248,7 @@ func rebuild(items []*stored, reg *registry, window time.Duration) Topology {
 	return t
 }
 
-// Comparison scores the rebuilt edges against the declared ground truth of the demo topology.
+// Comparison compares the rebuilt edges with the real call graph.
 type Comparison struct {
 	Truth     []string `json:"truth"`
 	Rebuilt   []string `json:"rebuilt"`
@@ -258,7 +258,7 @@ type Comparison struct {
 	Precision float64  `json:"precision"`
 	Recall    float64  `json:"recall"`
 	Note      string   `json:"note"`
-	// Source says where the declared call graph comes from (the deployments, or the GROUND_TRUTH setting).
+	// Source says where the real call graph came from, the deployments or GROUND_TRUTH.
 	Source string `json:"source"`
 }
 

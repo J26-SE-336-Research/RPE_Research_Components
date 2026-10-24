@@ -1,5 +1,5 @@
-// genvectors computes the expected outputs of the conformance cases with the reference implementation (rpe-go)
-// and writes the vector files. Vectors are reviewed and committed; regenerate only when the spec changes:
+// genvectors works out the expected results of the conformance cases with rpe-go and writes the case files. The
+// files are checked and committed, so only run it again when the spec changes:
 //
 //	go run ./cmd/genvectors ../vectors
 package main

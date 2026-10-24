@@ -2,8 +2,8 @@ import type { Attribution } from "../types";
 import { Tag } from "./ui";
 
 /**
- * Per-hop deadline use of one request, rebuilt from its X-RPE-Trail: where each hop started in the chain budget, how
- * long it took (including its callees) and its own share. The dashed line is the chain deadline.
+ * Shows how one request used its deadline, hop by hop, from its X-RPE-Trail: when each hop started, how long it
+ * took with its callees, and how much of that was its own time. The dashed line is the deadline.
  */
 export function Waterfall({ a }: { a: Attribution }) {
   const scale = Math.max(a.budgetMs, a.totalMs, 1) * 1.05;

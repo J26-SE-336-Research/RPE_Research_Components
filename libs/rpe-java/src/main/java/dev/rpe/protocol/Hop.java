@@ -1,17 +1,17 @@
 package dev.rpe.protocol;
 
 /**
- * The hop-scoped {@code X-RPE-Hop} header: rewritten at every hop and stripped before the application.
+ * The {@code X-RPE-Hop} header. It only lives for one hop, gets rewritten each time and is removed before the app.
  *
- * @param callerToken backpressure caller token ({@code cb}), "" when absent
- * @param attempt     attempt number ({@code att}), 1 = first attempt, 0 when absent
+ * @param callerToken backpressure caller token ({@code cb}), "" if missing
+ * @param attempt     attempt number ({@code att}), 1 is the first attempt, 0 if missing
  */
 public record Hop(String callerToken, long attempt) {
     public Hop {
         callerToken = callerToken == null ? "" : callerToken;
     }
 
-    /** Parses a serialized value; unknown members are ignored. */
+    /** Parses a header value. Unknown members are ignored. */
     public static Hop decode(String raw) {
         String cb = "";
         long att = 0;

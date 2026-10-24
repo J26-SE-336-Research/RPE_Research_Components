@@ -1,6 +1,6 @@
-// Command protocol-service is the C1 protocol service (spec Appendix A3.7): the trail collector, the topology
-// rebuilt from trails, per-request deadline attribution, the service registry, and header validation and conformance
-// run live by both reference implementations (rpe-go in process, rpe-java in the container next to it).
+// Command protocol-service is the C1 service. It collects trails, rebuilds the topology from them, shows where each
+// request spent its deadline, runs the service registry, and checks headers and the conformance cases with both
+// libraries: rpe-go here and rpe-java in the container next to it.
 package main
 
 import (
@@ -41,7 +41,7 @@ func main() {
 	srv := &http.Server{Addr: ":" + env("PORT", "8095"), Handler: s.routes(), ReadHeaderTimeout: 5 * time.Second}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	// The declared call graph: set by hand (GROUND_TRUTH), or read from the demo deployments when running in a cluster.
+	// the real call graph, set by hand in GROUND_TRUTH or read from the demo deployments when we run in a cluster
 	switch kube := newKubeReader(); {
 	case os.Getenv("GROUND_TRUTH") != "":
 		s.truth.set(parseTruth(os.Getenv("GROUND_TRUTH")), "GROUND_TRUTH setting")
@@ -100,8 +100,8 @@ func (s *server) putRegistry(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"version": v, "services": ids})
 }
 
-// register is the automatic registration of one service (a hop that starts and does not find its own name): it is
-// given the next free id, or its existing id when it is already registered (idempotent).
+// register adds one service that started and didn't find its name in the registry. It gets the next free id, or
+// its old id if it is already there, so calling it twice is fine.
 func (s *server) register(w http.ResponseWriter, r *http.Request) {
 	if !s.autoRegister {
 		writeErr(w, 403, "automatic registration is switched off (AUTO_REGISTER=false); add the service with PUT /api/protocol/registry")
@@ -236,7 +236,7 @@ func (s *server) conformance(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, conformanceMatrix(r.Context(), s.vectorsDir, s.java))
 }
 
-// defaultTruth is the demo shop's call graph, used only outside a cluster (local development and tests).
+// defaultTruth is the demo shop's call graph, only used outside a cluster, for local runs and tests.
 const defaultTruth = "gateway>order-svc,order-svc>inventory-svc,order-svc>payment-svc,order-svc>loyalty-svc,order-svc>legacy-svc,legacy-svc>shipping-svc"
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

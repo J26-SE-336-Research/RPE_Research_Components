@@ -3,14 +3,14 @@ package dev.rpe.protocol;
 import java.security.SecureRandom;
 import java.util.HexFormat;
 
-/** Random identifiers (lowercase hex) and W3C trace binding (spec §5). */
+/** Random ids in lowercase hex, and helpers for the W3C traceparent. */
 public final class Ids {
     private static final SecureRandom RANDOM = new SecureRandom();
     private static final HexFormat HEX = HexFormat.of();
 
     private Ids() {}
 
-    /** A random non-zero identifier of {@code bytes} bytes as lowercase hex. */
+    /** A random non-zero id of {@code bytes} bytes as lowercase hex. */
     public static String random(int bytes) {
         byte[] b = new byte[bytes];
         do {
@@ -24,7 +24,7 @@ public final class Ids {
         return true;
     }
 
-    /** The trace-id of a W3C traceparent header, or "" when absent or invalid. */
+    /** The trace-id from a W3C traceparent header, or "" if it is missing or broken. */
     public static String traceIdFromTraceparent(String traceparent) {
         if (traceparent == null) return "";
         String[] parts = traceparent.split("-", -1);
@@ -36,7 +36,7 @@ public final class Ids {
         return parts[1].toLowerCase();
     }
 
-    /** A traceparent for the request id {@code rid} with a fresh span id. */
+    /** A traceparent for request id {@code rid} with a new span id. */
     public static String newTraceparent(String rid) {
         return "00-" + rid + "-" + random(8) + "-01";
     }

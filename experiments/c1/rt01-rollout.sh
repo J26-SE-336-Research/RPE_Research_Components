@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# C1 rule R-T01 during C3 rollouts: chain requests are sent while a new gateway chain deadline is rolled out (two-phase
-# and naive), and the hub checks every hop of every chain against C1's transition rules (R-T01..R-T06, R-F05). A broken
-# chain is one where a hop saw another policy epoch (pe), a longer deadline, a bigger retry budget, ... than its caller.
-# The new deadlines are versions of the gateway's current policy; the starting deadline is restored at the end.
-#   experiments/c1/rt01-rollout.sh [CHAINS_PER_ROLLOUT]      (default 30; results in experiments/c1/results/)
+# Do chains stay consistent while C3 rolls out a new gateway deadline? We send chain requests during a two-phase
+# rollout and a naive one, and the hub checks every hop against the C1 context rules. A chain is broken if a hop
+# saw a different policy epoch, a longer deadline or a bigger retry budget than its caller. The new deadlines are
+# new versions of the gateway's current policy, and the old deadline is put back at the end.
+#   experiments/c1/rt01-rollout.sh [CHAINS_PER_ROLLOUT]      default 30, results go to experiments/c1/results/
 source "$(dirname "$0")/../../tests/e2e/lib.sh"
 N=${1:-30}
 OUT="$(cd "$(dirname "$0")" && pwd)/results"
@@ -24,7 +24,7 @@ restore() {
 }
 trap restore EXIT
 
-# chains MODE DEADLINE -> sends N chain requests and appends a CSV row
+# chains MODE DEADLINE sends N chain requests and adds a row to the CSV
 TOTAL_BROKEN=0
 chains() {
   local checked=0 broken=0 rules="" failed

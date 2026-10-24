@@ -16,15 +16,15 @@ import (
 	rpe "github.com/J26-SE-336-Research/rpe/libs/rpe-go"
 )
 
-// Verdict is one implementation's reading of a header value. rpe-java returns the same shape, so the two can be
-// compared field by field.
+// Verdict is what one library made of a header value. rpe-java returns the same JSON, so the two can be compared
+// field by field.
 type Verdict struct {
 	Impl      string            `json:"impl"`
 	Valid     bool              `json:"valid"`
 	Fields    map[string]string `json:"fields,omitempty"`
 	Canonical string            `json:"canonical,omitempty"`
 	Error     *ProtoErr         `json:"error,omitempty"`
-	Failure   string            `json:"failure,omitempty"` // the implementation could not be reached
+	Failure   string            `json:"failure,omitempty"` // set when we couldn't reach that side
 }
 
 type ProtoErr struct {
@@ -48,7 +48,7 @@ func validateGo(kind, value string) Verdict {
 	v := Verdict{Impl: "go"}
 	fail := func(err error) Verdict { v.Error = protoErr(err); return v }
 	if value == "" {
-		// the header helpers treat an empty result or hop header as absent; a value to validate must not be empty
+		// an empty result or hop header counts as missing, so an empty value can't be checked
 		return fail(&rpe.ProtocolError{Code: rpe.CodeInvalidSyntax, Detail: "empty dictionary"})
 	}
 	switch kind {
@@ -136,7 +136,7 @@ func (j javaClient) validate(ctx context.Context, kind, value string) Verdict {
 	return v
 }
 
-// agree reports whether two verdicts are identical: validity, error code and rule, fields and canonical encoding.
+// agree tells if two verdicts are the same: valid or not, error code and rule, fields and encoded value.
 func agree(a, b Verdict) bool {
 	if a.Failure != "" || b.Failure != "" || a.Valid != b.Valid || a.Canonical != b.Canonical {
 		return false
@@ -147,7 +147,7 @@ func agree(a, b Verdict) bool {
 	return reflect.DeepEqual(a.Fields, b.Fields)
 }
 
-// Matrix is the conformance matrix: every vector, evaluated live by both implementations.
+// Matrix holds every conformance case, run right now by both libraries.
 type Matrix struct {
 	At    time.Time    `json:"at"`
 	Files []MatrixFile `json:"files"`

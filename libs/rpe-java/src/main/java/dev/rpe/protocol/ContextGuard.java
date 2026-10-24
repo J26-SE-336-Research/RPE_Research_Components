@@ -3,14 +3,14 @@ package dev.rpe.protocol;
 import java.util.ArrayList;
 import java.util.List;
 
-/** The context guard: rules R-T01..R-T06 for a parent → child step. */
+/** Checks that a child context follows the rules from its parent. */
 public final class ContextGuard {
     private ContextGuard() {}
 
     /**
-     * Returns every rule the transition violates (empty when valid).
+     * Returns every rule the child breaks, or an empty list if it is fine.
      *
-     * @param elapsedMillis time the parent spent locally before sending the child request
+     * @param elapsedMillis how long the parent spent before sending the child request
      */
     public static List<ProtocolException> validateTransition(RpeContext in, RpeContext out, long elapsedMillis) {
         List<ProtocolException> v = new ArrayList<>();

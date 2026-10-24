@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-// ---------- C1 Protocol: the protocol service (trail, topology, attribution, Java vs Go) ----------
+// C1 protocol service: trails, topology, deadline per hop and Java vs Go
 
 // relayProtocol forwards a request to the C1 protocol service and returns its answer unchanged.
 func (h *hub) relayProtocol(w http.ResponseWriter, r *http.Request, method, path string, body any) {
@@ -36,7 +36,7 @@ func query(r *http.Request, keys ...string) string {
 	return "?" + q.Encode()
 }
 
-// compareImpls validates one header value with rpe-go and rpe-java side by side.
+// compareImpls checks one header value with rpe-go and rpe-java and shows both answers.
 func (h *hub) compareImpls(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Kind  string `json:"kind"`
@@ -69,7 +69,7 @@ func (h *hub) registry(w http.ResponseWriter, r *http.Request) {
 	h.relayProtocol(w, r, http.MethodGet, "/api/protocol/registry", nil)
 }
 
-// rootRID is the request id of a chain (from the gateway's context).
+// rootRID is the request id of a chain, taken from the gateway's context.
 func rootRID(hops []Hop) string {
 	if len(hops) > 0 {
 		return hops[0].Fields["rid"]
@@ -77,7 +77,7 @@ func rootRID(hops []Hop) string {
 	return ""
 }
 
-// requestCounters reads a service's side-effect counters of one request.
+// requestCounters reads a service's side effect counters for one request.
 func (h *hub) requestCounters(r *http.Request, service, rid string) map[string]int64 {
 	out := map[string]int64{}
 	if rid == "" {
@@ -89,11 +89,11 @@ func (h *hub) requestCounters(r *http.Request, service, rid string) map[string]i
 	return out
 }
 
-// demoRetry: retry safety (R-R02). Payment is made slower than the chain budget and order-svc gives up on an attempt
-// after attemptTimeoutMs, then retries once. With a plain retry the abandoned attempt still completes on the payment
-// side and the retry charges the card again; with the same policy through the RPE retry gate the retry is refused,
-// because the chain cannot finish another attempt in time, and the card is charged once. Counters are read for this
-// request only (by request id), so background traffic does not affect the result.
+// demoRetry is the retry safety demo. Payment is made slower than the chain budget, and order-svc gives up on an
+// attempt after attemptTimeoutMs and retries once. With a plain retry the first attempt still finishes at payment
+// and the retry charges the card a second time. With the RPE retry gate the retry is refused because there is no
+// time left for it, so the card is charged once. Counters are read for this request id only, so other traffic
+// doesn't change the result.
 func (h *hub) demoRetry(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Mode             string `json:"mode"`
@@ -111,7 +111,7 @@ func (h *hub) demoRetry(w http.ResponseWriter, r *http.Request) {
 	_, _, _, _, _ = h.call(r.Context(), http.MethodPost, svcURL("payment-svc", "/admin/faults"), map[string]any{"latencyMs": in.LatencyMs})
 	_, _, _, _, _ = h.call(r.Context(), http.MethodPost, svcURL("order-svc", "/admin/retry"), retry)
 	res := h.runChain(r.Context(), "/api/orders")
-	// every attempt that was sent completes on the payment side, also after its caller gave up
+	// every attempt that was sent still finishes at payment, even after the caller gave up on it
 	time.Sleep(time.Duration(in.LatencyMs+400) * time.Millisecond)
 	payment := h.requestCounters(r, "payment-svc", res.RID)
 	_, _, _, _, _ = h.call(r.Context(), http.MethodPost, svcURL("order-svc", "/admin/retry"), map[string]any{"mode": "off"})
@@ -134,9 +134,9 @@ func ruleOf(refused string) string {
 	return "R-R02"
 }
 
-// signalSummary describes the restored "Retryable / terminal" and "Payment work" views of the slow-dependency demo
-// in signal mode: the late original request is served (never rejected), the chain is marked cs=expired, which makes it
-// non-retryable, and payment's work is not abandoned by RPE: only the application can decide to stop it.
+// signalSummary fills the "Retryable" and "Payment work" boxes of the slow payment demo. The late request is still
+// served, the chain is marked cs=expired so it can't be retried, and RPE doesn't stop payment's work, only the app
+// could decide that.
 func signalSummary(raw string) map[string]any {
 	cs := "none"
 	terminal := false

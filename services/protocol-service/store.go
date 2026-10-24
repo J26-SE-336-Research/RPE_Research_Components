@@ -13,12 +13,11 @@ import (
 	rpe "github.com/J26-SE-336-Research/rpe/libs/rpe-go"
 )
 
-// registry is the service registry (R-P03): names never travel in the trail, only their 2-byte ids. Ids never change
-// once given. The registry is kept in memory: the seed list (REGISTRY) always gets ids 1..n and version REGISTRY_VERSION,
-// so the demo services keep the same ids after a restart. A service added later (by registration) gets the next free id
-// and the version becomes a checksum of the whole name → id mapping. So the same mapping always has the same version, and
-// if a restart gave a later service another id, the version would differ too and trails of the two mappings are never
-// merged (a subtree of another registry version only marks the trail incomplete).
+// registry maps service names to small ids, so the trail only has to carry the ids. An id never changes once it
+// is given. It lives in memory. The services in REGISTRY always get ids 1..n and version REGISTRY_VERSION, so the
+// demo services keep their ids after a restart. A service that registers later gets the next free id, and then the
+// version becomes a checksum of all the names and ids. That way the same list always has the same version, and if
+// a restart ever gave a service a different id the version changes too, so old and new trails are never mixed.
 type registry struct {
 	mu          sync.RWMutex
 	seedVersion int64
@@ -27,10 +26,10 @@ type registry struct {
 	names       map[int64]string
 }
 
-// maxRegistered is the largest trail id (svcId is 0..65535; 0 means not registered).
+// maxRegistered is the biggest id we can give out. 0 means not registered.
 const maxRegistered = 65535
 
-// serviceName is a Kubernetes-style name (DNS label): lowercase letters, digits and '-', 1..63 characters.
+// serviceName is a Kubernetes style name: lowercase letters, digits and '-', 1 to 63 characters.
 var serviceName = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 
 func newRegistry(version int64, services []string) *registry {
@@ -56,7 +55,7 @@ func (r *registry) snapshot() (int64, map[string]int64) {
 	return r.version, out
 }
 
-// mappingVersion is the checksum version of a mapping: 2 .. 2^31-1, different from the seed version.
+// mappingVersion is the checksum version of a list, between 2 and 2^31-1 and never the same as the seed version.
 func mappingVersion(ids map[string]int64, seed int64) int64 {
 	names := make([]string, 0, len(ids))
 	for n := range ids {
@@ -74,8 +73,8 @@ func mappingVersion(ids map[string]int64, seed int64) int64 {
 	return v
 }
 
-// add registers services that are not known yet (existing ids never change) and returns the registry. Invalid names
-// are reported and not added.
+// add registers services we don't know yet and returns the registry. Existing ids stay the same. Bad names are
+// reported and skipped.
 func (r *registry) add(services []string) (int64, map[string]int64, error) {
 	r.mu.Lock()
 	changed := false
@@ -116,14 +115,14 @@ func (r *registry) name(id int64) string {
 	return "unregistered"
 }
 
-// stored is one completed trail.
+// stored is one finished trail.
 type stored struct {
 	rec   rpe.TrailRecord
 	trail rpe.Trail
 	bytes int
 }
 
-// store keeps the most recent completed trails (a ring) with an index by request id.
+// store keeps the latest finished trails in a ring buffer, with a lookup by request id.
 type store struct {
 	mu       sync.Mutex
 	capacity int
@@ -138,7 +137,7 @@ func newStore(capacity int) *store {
 	return &store{capacity: capacity, ring: make([]*stored, 0, capacity), byRID: map[string]*stored{}}
 }
 
-// add validates and stores a trail; it returns false for a trail that does not decode.
+// add checks and stores a trail. It returns false if the trail can't be decoded.
 func (s *store) add(rec rpe.TrailRecord) bool {
 	t, err := rpe.DecodeTrail(rec.Trail)
 	s.mu.Lock()

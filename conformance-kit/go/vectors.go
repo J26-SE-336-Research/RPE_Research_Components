@@ -1,5 +1,5 @@
-// Package conformance holds the C1 conformance vectors (spec Appendix A1) and evaluates them with rpe-go.
-// The same vector files are evaluated by the rpe-java runner; both implementations must pass 100%.
+// Package conformance loads the shared conformance cases and runs them with rpe-go. The Java tests run the same
+// files, and both libraries have to pass all of them.
 package conformance
 
 import (
@@ -13,7 +13,7 @@ import (
 	rpe "github.com/J26-SE-336-Research/rpe/libs/rpe-go"
 )
 
-// Fields is the language-neutral form of an X-RPE-Context.
+// Fields is an X-RPE-Context written as plain JSON fields, so Go and Java can share it.
 type Fields struct {
 	V       int64             `json:"v"`
 	RID     string            `json:"rid"`
@@ -106,7 +106,7 @@ type HopCase struct {
 	Error     *Failure `json:"error,omitempty"`
 }
 
-// RetryInput is the language-neutral form of a retry-gate check (R-R02).
+// RetryInput is one retry gate check written as plain JSON fields.
 type RetryInput struct {
 	Attempt       int64  `json:"attempt"`
 	MaxAttempts   int64  `json:"maxAttempts"`
@@ -156,7 +156,7 @@ type TrailCase struct {
 	Error     *Failure     `json:"error,omitempty"`
 }
 
-// TrailMergeCase appends the subtree sub under entry parent of base (response-side merge, R-P02/R-P03).
+// TrailMergeCase puts sub under entry parent of base, the way a response trail is merged.
 type TrailMergeCase struct {
 	Name   string `json:"name"`
 	Base   string `json:"base"`
@@ -186,7 +186,7 @@ func Load[T any](dir, file string) (Suite[T], error) {
 	return s, json.Unmarshal(b, &s)
 }
 
-// ---------- evaluation with rpe-go ----------
+// running the cases with rpe-go
 
 func ToContext(f Fields) rpe.Context {
 	return rpe.Context{Version: f.V, RID: f.RID, IID: f.IID, PID: f.PID, TTLMillis: f.TTL, BudgetMillis: f.Bud,
@@ -202,7 +202,7 @@ func FromContext(c rpe.Context) Fields {
 		CS: cs, PE: c.PolicyEpoch, RT: c.Route, Unknown: c.Unknown}
 }
 
-// Fail converts an rpe-go error into the vector form.
+// Fail turns an rpe-go error into the form used in the case files.
 func Fail(err error) *Failure {
 	if err == nil {
 		return nil
@@ -293,7 +293,7 @@ func DecodeTrail(in string) (*TrailFields, string, *Failure) {
 	return TrailToFields(t), t.Encode(), nil
 }
 
-// MergeTrail returns the canonical encoding of base with sub appended under parent ("" when an input is invalid).
+// MergeTrail returns base with sub added under parent, encoded. Returns "" if an input is broken.
 func MergeTrail(base, sub string, parent int) string {
 	b, err := rpe.DecodeTrail(base)
 	if err != nil {

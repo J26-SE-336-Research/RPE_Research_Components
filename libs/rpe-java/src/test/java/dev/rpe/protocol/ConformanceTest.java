@@ -16,8 +16,8 @@ import org.junit.jupiter.api.DynamicTest;
 import org.junit.jupiter.api.TestFactory;
 
 /**
- * Runs the shared C1 conformance vectors ({@code conformance-kit/vectors}) against rpe-java. The Go runner evaluates
- * the same files against rpe-go; together they show the two implementations agree on every vector.
+ * Runs the shared conformance cases in {@code conformance-kit/vectors} against rpe-java. The Go side runs the same
+ * files, so together they show both libraries agree on every case.
  */
 class ConformanceTest {
     private static final ObjectMapper JSON = new ObjectMapper();
