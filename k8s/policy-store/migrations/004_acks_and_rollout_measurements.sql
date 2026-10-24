@@ -4,7 +4,7 @@ alter table policy.deliveries add column if not exists confirmed_state text;
 alter table policy.deliveries add column if not exists confirmed_hash text;
 alter table policy.deliveries add column if not exists confirmed_at timestamptz;
 
--- Measurements for each rollout (experiment E4, naive against two-phase).
+-- Measurements for each rollout (experiment E4, naive against two-phase) This is the part i am going to prove.
 alter table policy.rollouts add column if not exists skew_ms int;
 alter table policy.rollouts add column if not exists mixed_policy_requests bigint;
 alter table policy.rollouts add column if not exists convergence_ms bigint;
