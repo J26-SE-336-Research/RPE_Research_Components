@@ -15,8 +15,6 @@ client → gateway → order-svc → (parallel) inventory-svc, payment-svc, loya
           every hop: app + rpe-sidecar (injected by the C3 webhook), context X-RPE-Context (C1)
 ```
 
-**📘 Full explanation of every component and a complete run guide: [COMPONENTS.md](COMPONENTS.md).**
-
 ## Quick start (Kubernetes, the whole ecosystem)
 
 ```bash
@@ -38,8 +36,6 @@ Or step by step:
 | `make restart` | Restart RPE workloads after rebuilding images (`:dev` tags don't change) |
 | `make test-e2e` | Run the Kubernetes e2e suites in `tests/e2e/` (`SUITES="30 35"` for a subset) |
 | `make undeploy` / `make cluster-down` | Clean up |
-
-All targets wrap scripts in `scripts/`, so `scripts/test-e2e.sh 35` works without make. Scripts are bash-3.2 compatible (stock macOS).
 
 Try it by hand:
 
@@ -87,8 +83,3 @@ charts/rpe/                                                                C3, t
 console/ hub/              shared  Admin Panel: React console + Go rpe-hub
 scenarios/                                                                 shared, to be built
 ```
-
-**Component guides** (A to Z per member: proposal commitments, novelty, design, contracts, status, plan, evaluation, viva) are in [`docs/components/`](docs/components/README.md). Each member works from their guide:
-`claude "Read docs/components/<your-guide>.md completely before doing anything. Then <task>."`
-
-Local-only material (proposal PDFs, legacy prototypes, early scope notes) lives in `_research/`, which is gitignored.

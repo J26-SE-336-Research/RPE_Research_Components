@@ -654,9 +654,3 @@ Makefile, go.work           shared  task runner, Go workspace
 docs/components/            shared  A-to-Z guide per component (commitments, novelty, design, contracts, status, plan)
 _research/                  local only (gitignored): proposals, legacy prototypes, early scope notes
 ```
-
-**Working on your component.** Each member has a detailed guide in [`docs/components/`](docs/components/README.md). It covers proposal commitments, novelty, design, contracts, status, plan, evaluation, UI and viva. Start Claude Code with:
-
-```bash
-claude "Read docs/components/<your-guide>.md completely before doing anything. Then <task>."
-```
