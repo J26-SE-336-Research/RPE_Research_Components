@@ -1,0 +1,311 @@
+# Rate and Retry v2: Step 0 inventory and migration list
+
+Companion to [`C4-RATE-RETRY-V2-IMPLEMENTATION.md`](C4-RATE-RETRY-V2-IMPLEMENTATION.md) (the guide). Step 0 changes no code.
+
+| Item | Value |
+|---|---|
+| Work branch | `c4/rate-retry-v2`, created from `c4/deadline-v2` at `a49f09f` (identical to `main`) |
+| Old rate/retry logic | Replaced, not kept (guide DECISION 2); it stays in git on `c4/deadline-v2` |
+| Baseline | `./mvnw -q test` with JDK 22: **164 tests, 0 failures, 0 errors** |
+
+## 1. Section 2 facts, checked in the code
+
+| Fact | Evidence | Confirmed |
+|---|---|---|
+| Request latency starts before the request enters the leaky-bucket queue | `ProxyHandler.channelRead0`: `requestStartNanos` (line 164) and `RpeContractMetrics.begin(…, requestStartNanos)` (line 173) come before `backpressure.enqueueInbound` (line 525); durations are `nanoTime − requestStartNanos` | ✅ p95 includes queue wait |
+| `rpe_inflight_requests` counts queued requests, inbound and outbound | `RpeContractMetrics.begin` increments `IN_FLIGHT` for every hop at request start | ✅ not usable as "being processed" |
+| Queue depth is exposed | `BackpressureController.prometheusText`: `rpe_backpressure_inbound_queue_depth` (gauge, `inboundQueue.size()`) | ✅ not yet queried by C4 |
+| `rpe_retries_total` is never incremented | `RpeContractMetrics`: the `RETRIES` adders are only created (line 47), never incremented ("the proxy does not retry yet") | ✅ retry effectiveness unknown live |
+| Sync sets `healthyBucketTarget = current rate` | `Component3Bridge.sync` line 134: `new Policy(…, rate, rate, ratio, null)` | ✅ recovery capped at the current rate |
+
+## 2. Test migration list
+
+`KEEP` = must pass unmodified. `UPDATE` = intended change, marked
+`// rate-retry v2: intended behaviour change (see RATE_RETRY_V2_MIGRATION.md)`. No test is removed.
+
+| Class | Test | Verdict | Reason |
+|---|---|---|---|
+| `AdaptiveEngineTests` | `correctedMadExamplePersistsAndRateUsesSuccessfulCapacity` | **UPDATE** | Asserts the old cut `min(baseline, recent) × 0.90 / × 0.75` (90 and 60). The health assertions (PENDING_BREACH → STRESSED → OVERLOADED, baseline 100/10, frozen baseline) stay |
+| | `retryEffectivenessExampleProducesTwentyExtraAttempts` | **UPDATE** | Asserts the old `0.10 × effectiveness`, halved when STRESSED (0.02, 20 extra attempts) |
+| | `recoveryRequiresHealthyWindowsAndAppliedPolicyThenHonoursCooldown` | **UPDATE** | Asserts the old "+5% of baseline" recovery (66) and retry +0.01 steps (0.03, 0.04). The cooldown assertion stays |
+| | `retrySafetyAndRepeatedWindowsPreventUnsafeChanges` | **UPDATE** | Asserts the per-request safety check inside the budget rule (removed: those checks belong to the sidecar's retry logic, guide §5). The "repeated window is not a new cycle" assertion stays |
+| | `criticalOverloadClassificationStillWaitsTwoCyclesForAutomaticPolicies` | KEEP | The protective "overloaded → retry 0 after 2 cycles" rule is kept (see decision R2) |
+| | `nearZeroMadFromVerySteadyTrafficDoesNotTurnNoiseIntoABreach`, `missingCountsAndTooFewRequestsNeverBecomeHealthy`, `mediansAndMadMatchTheDocumentAndZeroMadUsesOnlyTheFloor` | KEEP | Health classification only |
+| | 3 deadline tests | KEEP | Deadline v2 unchanged |
+| `PolicyWorkflowTests` | all 5 | KEEP | With `auto-approve-actions` empty (code default) the workflow is exactly as today |
+| `Component3BridgeTests` | all 5 | KEEP | They assert the delivered payload and the synced current rate (`bucketRate() == 90`), which v2 keeps; `healthyBucketTarget` is not asserted |
+| `DeadlineScenarioEndpointTests` | `serviceScenariosKeepTheirRateResultsAndAddTheDeadlineSide` | KEEP | Asserts only the deadline side and the number of outcomes |
+| `DeadlineEvaluationReportTests` | 1 | KEEP | Asserts only the six deadline examples (its printed table will show the new rate/retry numbers) |
+| All other classes | all | KEEP | Deadline v2, statistics, examples, verifier, endpoints and the legacy `/api/v1` engine are not touched |
+
+**Result: 160 KEEP, 4 UPDATE, 0 REMOVE.**
+
+## 3. Old code to remove, with all callers
+
+| Old code | Where | Callers | Plan |
+|---|---|---|---|
+| Overload/stress cut `min(rate, min(baseline, recent) × 0.75 / 0.90)` | `AdaptiveEngine.bucket` | `AdaptiveEngine.service` only | Replace with rate v2 |
+| Healthy recovery `+5% of baseline`, capped at `healthyBucketTarget` and baseline | `AdaptiveEngine.bucket` | same | Replace with the v2 healthy rule |
+| Retry target `maximumRetryRatio × effectiveness`, halved when STRESSED, +0.01 steps | `AdaptiveEngine.retry` | `AdaptiveEngine.service` only | Replace with retry v2 |
+| Per-request checks in the budget rule (`retryableFailure`, `safeOperation`, `remainingDeadlineMs`, `retryDurationMs`) | `AdaptiveEngine.retry` lines 159–161 | same | Remove from the rule; report them in the evidence |
+
+**Kept, because others use them:**
+- **`ServiceWindow` fields** `retryableFailure`, `safeOperation`, `remainingDeadlineMs`, `retryDurationMs`: they're part of the `POST /api/v2/intelligence/services` JSON, `MockScenarios` and tests.
+- **`Policy.healthyBucketTarget`**: used by `PolicyWorkflow` (validation, kept on APPLIED), `Component3Bridge`, the `PUT /policies` JSON and many tests.
+- **`maximumRateChange` and `maximumRetryRatio`**: still the step limit and the cap.
+- **The protective "overloaded → retry 0" rule, cooldown, `offer` and `withdraw`.**
+
+## 4. e2e, Admin Panel and hub
+
+| Place | Expects rate/retry PENDING_APPROVAL? | Note |
+|---|---|---|
+| `tests/e2e/70-intelligence.sh` | No | Health, API object and deadline simulations only |
+| `tests/e2e/80-admin-panel.sh` | No | Line 63 sets a gateway rate of 10 through the hub; no C4 card is checked |
+| `tests/e2e/95-intelligence-live.sh` | No (only `CHAIN_DEADLINE` must be PENDING_APPROVAL, which stays) | It sets the gateway policy to `ratePerSec 100, retryRatio 0.1`. With auto-approval on, the cross-lever lock (guide §6.3) blocks automatic gateway changes while the deadline proposal is pending. Before that, the healthy rule lowers a rate only after 30 min and a raise needs a full queue, so no gateway change is expected during the test |
+| `console/src/pages/Recommendations.tsx` | No | The Queue shows only `PENDING_APPROVAL`; auto-approved changes appear in **Reviewed** with reviewer `c4-auto`. The page description "Nothing is applied until a reviewer approves it" becomes inaccurate for rate and retry; the console is outside this work (note for the console owner) |
+| `hub/` | No | It only forwards reviews; `approvedBy` comes from C4's reviewer field (`c4-auto`) |
+
+## 5. Decisions (approved by the owner, 20 Oct 2026)
+
+Approved as proposed below, with these notes:
+- **R1:** UNKNOWN → hold applies to live windows without load data. `MockScenarios` (the existing `healthy`, `stressed`,
+  `overloaded`, `retry-stressed`, `recovery` and the new rate scenarios) **provide queue depth and utilisation**, so the
+  simulations still produce rate decisions. Any changed expectation of e2e `70` or of tests using the scenarios is reported.
+- **R2:** APP_OVERLOADED (app evidence) → retry 0; RATE_TOO_LOW → hold.
+- **e2e `95`:** the auto-approval guard (persistence + cooldown + cross-lever lock) must not change the gateway's rate or
+  retry while it runs; any doubt is reported before running it.
+- **Note for the console owner:** the Recommendations page says "Nothing is applied until a reviewer approves it". With
+  `RRPE_ADAPTIVE_AUTOAPPROVEACTIONS` set, this is true **only for request deadlines**: allowed rate and retry changes are
+  approved automatically (reviewer `c4-auto`) and appear in **Reviewed**, not in the Queue. The console is not changed in this work.
+
+| # | Question | Proposed answer |
+|---|---|---|
+| R1 | A service window without load data (`engine.service(window)` from tests, `MockScenarios` or `POST /services`, or a missing queue-depth series) | Rate diagnosis **UNKNOWN → hold**, as guide §4.2 says, with the reason in the evidence |
+| R2 | Retry when the rate diagnosis is UNKNOWN but health is persistently OVERLOADED | Keep today's protective **retry → 0** (the safe direction), so the protective rule doesn't depend on queue data. When the diagnosis is RATE_TOO_LOW, hold instead (guide §5) |
+| R3 | How to show an ADVISORY retry increase (retry data missing) | **No proposal**: an evidence line "Advisory: retry X → Y not proposed (retry-data-unavailable)". Nothing can be approved or delivered. With retry data (simulations now, C2 PP2 later), an increase is a normal proposal: PENDING_APPROVAL unless `RETRY_INCREASE` is allowed |
+| R4 | `healthyRate` storage | C4's own `RateState`, set once from the first synced rate, then only from verified healthy decisions. `Component3Bridge.sync` keeps the policy's existing `healthyBucketTarget` instead of overwriting it with the current rate (current rate and retry ratio are still updated) |
+| R5 | Queue-depth query | `avg(avg_over_time(rpe_backpressure_inbound_queue_depth{service,namespace}[W]))`, added to `loadQueries` (so it also appears in `GET /queries`); missing → R1. **Implemented as the maximum, see §6** |
+
+## 6. Implementation notes and deviations (recorded per step)
+
+- **R5 uses the maximum (Step 2).** The query is `max(max_over_time(rpe_backpressure_inbound_queue_depth{...}[W]))`,
+  not the average. When the queue fills in bursts, p95 contains the full-queue waits. An average depth underestimates
+  `Wq = depth / rate`, so `Papp = p95 − Wq` made the app look slow and repeating bursts were diagnosed APP_OVERLOADED
+  (a cut). With the maximum, example 4 is diagnosed RATE_TOO_LOW and the rate is raised.
+- **Burst model corrected (Step 2).** The first model alternated whole windows at 80 and 160. Real bursts happen inside
+  every window, so `ServiceSimulation` now averages the base and burst halves of each window and keeps the worst queue
+  depth, utilisation and p95. The old-logic example 4 in `evaluation/rate-retry-v1-baseline.md` is re-recorded with this model.
+- **Cooldown before any state change (Step 2).** During the per-service cooldown the diagnosis is still computed and shown
+  in the evidence, but the anti-ratchet and `goodRate` state are not changed.
+- **Lowering the healthy rate is never automatic.** The slow step down (rate > 2 × target for 30 min) is proposed
+  without an automatic kind, so it always waits for a reviewer.
+- **Example 2 with a human approving every step.** After the first cut to `max(floor, 0.8 × accepted)`, v2 keeps probing
+  upwards while the bucket sheds. Every probe that slows the app lowers the `brokeAt` ceiling to 0.9 × that rate, so the
+  probes get smaller and the rate settles between the floor (50) and about 1.1 × the app capacity (60). It never ratchets
+  below the floor. In automatic mode the flip limit (Step 5) pauses this probing.
+- **Retry v2 (Step 4).** The rows of guide §5 are checked in order: overload → 0 (APP_OVERLOADED for 2 cycles, or rate
+  UNKNOWN with persistent OVERLOADED health, R2), RATE_TOO_LOW → hold (a pending retry proposal is withdrawn), low
+  success → 0.02 then 0, STRESSED → hold, healthy → +0.02. Details:
+  - Low success needs ≥ 30 attempts and a one-sided 95% Wilson upper bound (z = 1.645, the existing
+    `RobustStatistics.wilsonOneSided`) below 0.20 for 2 consecutive windows. A decrease below STRESSED is allowed (it is the
+    safe direction); the table rows are applied in the guide's order.
+  - An increase also needs a quiet queue (rate diagnosis HEALTHY), and comes at most once per stabilisation period
+    (`rate.stabilisation`, 5 min) after the last applied retry change. The target is `min(retry.base-ratio 0.10,
+    maximum-retry-ratio)`, so the guide's "max 0.20" is not reachable while the workflow caps the ratio at 0.10.
+  - The per-request safety fields of `ServiceWindow` (`retryableFailure`, `safeOperation`, `remainingDeadlineMs`,
+    `retryDurationMs`) are kept in the API but no longer used by the budget rule: these checks belong to the sidecar's
+    retry logic (guide §5).
+  - The protective step down goes straight from the current ratio to 0.02 (for example 0.05 → 0.02), as in the guide's table.
+- **Automatic approval (Step 5).** `PolicyWorkflow.offer(Proposal)` is unchanged; a new `offer(Proposal, Review auto)`
+  creates the change APPROVED (reviewer `c4-auto` or `c4-auto-revert`) and calls `audit.decided`. It refuses chain
+  deadlines and MOCK recommendations. A human rejection of the identical recommendation still holds (30 min) and is
+  never overridden. New audit kinds `RATE_AUTO_APPROVED`, `RATE_AUTO_REVERTED`, `RATE_AUTO_PAUSED` use the same table and
+  columns (detail = JSON with kind, guard reason, rule and inputs, or the check result).
+- **Cross-lever lock is a little stricter than the guide.** Besides a *pending* deadline proposal on a chain through the
+  service, a deadline change *applied* on such a chain within the stabilisation period (5 min, demo 1 min) also blocks
+  automatic rate/retry approval. Chains are matched by the service list of the analysed chain windows. This only makes
+  automatic approval rarer (for e2e `95`, see below).
+- **A raise is undone only when it slowed the app (deviation from guide §6.4).** The guide says a raise passes "if
+  rejections fall and Papp ≤ 1.5 × P0". In the simulation a raise was undone because demand grew afterwards (shedding
+  rose), and the undo made shedding worse. Now a raise fails only when the app time is above 1.5 × P0; if shedding did
+  not fall, the raise is kept, the evidence says so, and a further raise may follow. A cut passes as in the guide.
+- **Automatic cuts go in checked steps (interpretation).** The cut formula can propose more than −20% (example 2:
+  100 → 50), but the guard allows at most −20% per automatic step, so a real overload would wait for a reviewer the whole
+  time. When an automatic cut is possible for the service (allowed, live, not paused, not locked), the proposal is
+  `max(full cut, 0.8 × rate)`, and the evidence names the full cut. Each step is checked before the next. A reviewer
+  (human mode, or when automatic approval is not possible) still gets the full cut. In the simulation (example 2,
+  automatic): 100 → 80 → 64 → 51.2, a probe to 57.6, then it settles below the app capacity 60, never below the floor,
+  with no pause needed.
+- **While an automatic change waits to be applied or is being checked** (2 disjoint windows), the rate rule decides
+  nothing else for that service. A check without any app-time measurement is inconclusive and keeps the change.
+- **Retry changes are not checked after they are applied** (the guide's check covers rate raises and cuts only).
+- **Floor after a healthy rate (Step 6 fix).** In the HEALTHY rule the good rate becomes the current rate; the floor
+  (0.5 × good rate) is now recomputed from it before the target is chosen. Before, the first healthy cycle after a rate
+  change used the floor of the previous good rate and could propose a raise toward an old, higher floor.
+
+## 7. Scenarios, e2e and Admin Panel (Step 6)
+
+- **Existing service scenarios (R1).** `MockScenarios` now passes queue utilisation and depth: a quiet queue (20%,
+  empty) while learning and in every scenario except `overloaded`, where the app is slow (p95 200 ms against a
+  100 ms baseline, was 150 ms) with a short queue (60%, 2 waiting). `retry-stressed` now has retries that rarely succeed
+  (10 of 100, was 40 of 100), so it shows the retry v2 step down when the health baseline is ready.
+  With production settings (30 baseline samples) these short scenarios never finish learning the health baseline,
+  which is why the old logic returned **no** rate or retry change for any of them (see `evaluation/v2-results.md`).
+  Rate v2 learns its own P0 during that time, so the scenarios now return (all `PENDING_APPROVAL`):
+
+  | Scenario | Old logic | v2 |
+  |---|---|---|
+  | `overloaded` | none | LEAKY_BUCKET 120 → 64 (APP_OVERLOADED) |
+  | `stressed` | none | LEAKY_BUCKET 120 → 131.3 (HEALTHY: headroom over demand 100 × 1.05 retries) |
+  | `retry-stressed` | none | LEAKY_BUCKET 120 → 132 (HEALTHY: headroom) |
+  | `recovery` | none | LEAKY_BUCKET 60 → 66 (HEALTHY: toward demand × 1.25) |
+  | `healthy` | none | LEAKY_BUCKET 120 → 132 (HEALTHY: demand 120 = rate, no headroom) |
+
+  The deadline side of the scenarios (Case B for `overloaded`, no increase for `stressed`) is unchanged.
+- **New demo scenarios** (`POST /demo/{id}`, simulated reviewer, never delivered): `rate-too-low`,
+  `rate-too-low-day-one`, `rate-real-overload`, `rate-recovery`, `rate-short-burst`, `rate-bursts`, `retry-storm-rate`.
+  The learning phase is stretched to at least `baseline-samples + 6` cycles so P0 is learned with any setting. The hub's
+  scenario allow-list (off-limits here) does not include them yet.
+- **API (additive).** `GET /` has `rateEvidence` per live service; `GET /queries` has `loadQueueDepth`.
+- **e2e `70`:** uses only the deadline simulations, the status object and the outbox: **no expectation changes**.
+  `DeadlineScenarioEndpointTests` (deadline side and status codes of the service scenarios) passes unchanged.
+- **e2e `80`:** only checks that `demo/stressed` returns at least one outcome through the hub (still 3): no expectation changes.
+- **e2e `95` (not run, doubt reported to the owner).** Covered: while C4's deadline proposal is pending, and for the
+  stabilisation period (1 min) after it is applied, the cross-lever lock blocks any automatic change on the gateway; a
+  human rejection is never overridden. **Not covered:** the ~7 minutes between the operator's rollout (gateway rate 100,
+  retry 0.1, deadline 100 ms) and C4's deadline proposal. No deadline proposal is pending yet, so an automatic gateway
+  change is possible if, in that time, (a) the gateway is persistently diagnosed APP_OVERLOADED (cut/retry 0), or (b) the
+  queue-depth series is missing and health is persistently OVERLOADED (retry 0), or (c) demand × 1.25 exceeds 100
+  (raise). With the low demo traffic (a) and (c) are unlikely; (b) depends on the live gateway health. Any automatic
+  change creates a new gateway policy epoch, so the deadline proposal would be superseded or the final check
+  `GW_EPOCH == epoch` would fail. Options: run 95 with `RRPE_ADAPTIVE_AUTOAPPROVEACTIONS` empty; or keep it and accept
+  the risk; or adapt 95 (outside `intelligence/`, needs the owner's decision).
+- **Note for the console owner:** the Recommendations page says "Nothing is applied until a reviewer approves it". With
+  `RRPE_ADAPTIVE_AUTOAPPROVEACTIONS` set this is true **only for request deadlines**; automatic rate/retry changes appear
+  in **Reviewed** with reviewer `c4-auto` (or `c4-auto-revert` for an automatic undo). The console is not changed here.
+
+## 8. Owner decisions of 21 Oct 2026 (e2e 95 gap, changes applied together)
+
+- **Deadline not settled → no automatic rate/retry change** (`AdaptiveEngine.unsettledDeadline`, replaces the narrower
+  cross-lever lock of Step 5). For a service, every analysed chain through it must be settled. A chain is unsettled when:
+  - its deadline v2 state is LEARNING, PROPOSED or SETTLING (a chain without per-request analysis yet counts as LEARNING);
+  - a deadline proposal is pending;
+  - its deadline or route budget changed within the settle period **2 × window + cooldown**: by C4 (applied), or by anyone
+    else, seen as a change of the policy reference (C3 sync) or of the budget stamped in the traces (a window with mixed
+    budgets counts as a change);
+  - *(addition)* a raise is building: healthy requests exceed the deadline (Case A persistence streak > 0). This is the
+    e2e 95 situation right after the operator's 100 ms rollout, and it covers the time until the proposal appears even
+    when that takes longer than the settle period.
+  The proposal is still made, as PENDING_APPROVAL, with the evidence line
+  "Automatic approval not used: deadline not settled: … (cross-lever lock); a reviewer decides".
+- **No automatic change on missing data.** When the rate diagnosis is UNKNOWN (for example no queue-depth series), no
+  automatic approval at all, including the protective retry → 0. Evidence: "insufficient data for automatic change".
+- **Reviewer change during settling → deadline verification INCONCLUSIVE.** When a rate or retry change for a service on
+  the chain is approved by a reviewer (not `c4-auto…`) after the deadline change was applied, the deadline check ends
+  INCONCLUSIVE ("a reviewer approved a rate or retry change for … while the deadline was settling") and can never cause a
+  revert. (`PolicyWorkflow.reviewerApprovedSince`, additive.)
+- **Interaction with deadline v2 (unchanged rule).** Deadline v2 holds a deadline decision while a *rate* proposal is
+  pending on the chain (`PENDING_RATE_PROPOSAL`). With the lock, that rate proposal cannot be automatic while the deadline
+  is unsettled, so both wait for a reviewer: approving or rejecting the rate proposal releases the deadline. In e2e 95
+  the demo traffic is low and the gateway gets no rate proposal, so the deadline flow is not held.
+- **One change per service per cycle** (`Component3Bridge`). A new C3 version is built from the effective spec, so a rate
+  and a retry change delivered together would undo each other. The bridge now delivers at most one change per service
+  policy per cycle (a chain deadline counts for the gateway), and none while another change of that policy is still
+  rolling out (SENT).
+- **An approved change survives another lever's version** (`PolicyWorkflow.putPolicy`). When the policy version changes,
+  an *approved, not yet sent* change whose own value is unchanged in the new version moves to the new version (detail
+  "Moved to policy version …") instead of being superseded. Pending, sent and outdated changes are superseded exactly as
+  before (`PolicyWorkflowTests` unchanged). The duplicate "0.050 → 0" retry row in the reviewer-mode results no longer
+  happens.
+- Tests: `DeadlineSettledLockTests` (the e2e 95 time gap with no automatic gateway change, settled chains still
+  automatic, a budget change by anyone, missing data, INCONCLUSIVE verification) and `BridgeOneChangePerServiceTests`.
+
+## 9. Rates never wait for a person (owner decision, 22 Oct 2026)
+
+Replaces the 21 Oct rule "PENDING_APPROVAL when automatic approval is not possible" in **automatic mode** (the automatic list
+is not empty; the demo cluster). With the list empty (code default, unit tests, reviewer-mode simulations, practice cards)
+everything works as before.
+
+| # | Problem (live review) | Fix |
+|---|---|---|
+| 1, 3 | No rate recommendation without a C3 policy rate (fresh system, the gateway's `c4-gateway` with only routes) | `loadRatePerSecond` = `rpe_backpressure_inbound_rate_per_second` (sidecar) → `PolicyWorkflow.observeConfiguredRate`: reference `prometheus-config:rate:<r>` without a C3 policy, rate filled in for a C3 policy without one; a C3 rate wins; kept alive (not superseded) while a change is rolling out. The bridge already creates `c4-<service>` |
+| 2, 7, 8 | A rate/retry change the guard refuses became a card for a person | **held**: no card; "held: <change> (<reason>), trying again" is the first evidence line (Health view) and in `rateEvidence.held`; tried again every cycle; an older pending card for it is withdrawn. An undo always goes through (before the lock, the pause and the list). `RETRY_INCREASE` added to the demo list |
+| 4 | Lowering a too-generous rate always went to a person, and could never start | new kind `BUCKET_RELAX` (in the demo list): above 2 × the demand target (max demand × 1.25, at least min-absolute) for `rate.generous-wait` (renamed from relax-after; 30m, demo 2m), then steps of at most −10% down to that target, checked and undone like any automatic change. The demand target is used because the floor (0.5 × good rate, the good rate being the current rate) kept a generous rate above half of itself, so the old relax rule could never fire |
+| 5 | During the lock the full cut went to a person | automatic mode: a cut is always a step of at most −20%, also while held |
+| 6 | A pending rate card made a waiting deadline card go stale | a held rate is not a card, so deadline v2 never sees a pending rate (`PENDING_RATE_PROPOSAL`) and keeps its card fresh |
+| 9 | A failed delivery froze the service for up to 5 minutes | C4 keeps deciding; the same value keeps the approved change (the bridge retries every 30 s); after 5 failed attempts it is replaced by a fresh change |
+
+**Rounding fix:** the −20% cut step and the −10% lowering step are rounded **up** to 0.1 req/s. Rounding to the nearest
+value could make a step slightly larger than its limit (291.6 × 0.9 = 262.44 → 262.4), so the guard refused it forever.
+
+**Tests changed** (marked `rates never wait for a person (owner rule, 22 Oct)`): `AutoApprovalTests`
+`aPendingDeadlineChange…LocksAutomaticRateChanges` and `aRaiseThatSlowsTheApp…Pause`; `DeadlineSettledLockTests`
+`theE2e95TimeGap…`, `aDeadlineChangeByAnyone…` (reason read from the held change; the `Live` helper collects held lines),
+`missingQueueData…`; `PracticeIsolationTests.practiceCardsNeverChangeLiveDecisions` (held changes are now part of the
+compared live decisions). `AutoApprovalTests.anEmptyAllowList…` and `PolicyWorkflowTests` are unchanged.
+**New tests:** `RateStartingReferenceTests`, `RateHoldTests`, `AutoDeliveryBridgeTests`.
+
+**Timing for a live demo:** each automatic change is checked on 2 disjoint windows (window 1 min) and then waits for the
+cooldown (1 min), so one change takes about 3 minutes in the demo cluster; lowering a rate that is 2.5 × too generous takes
+about 4–5 steps.
+
+## 10. Rate learning fix: a rate that is wrong from the start (owner decision, 22 Oct 2026)
+
+From `c4-leaky-bucket-rate-learning-fix.md` (fixes A–C; fix D, the sidecar's rate as the reference, is section 9 #1).
+Approval is unchanged: rate and retry changes are `c4-auto` or held, deadline and joint cards wait for a person.
+
+| Fix | Problem | Change |
+|---|---|---|
+| A | Rate too low from day one: the queue is never calm, P0 is never learned, UNKNOWN for hours | `baseline.allow-shed-windows` defaults to **true** (full or shedding queue, normal errors: the bucket limited the app). While the queue is full or shedding, a **provisional P0** (25th percentile) after `baseline.provisional-windows` (5, demo 3) windows; the lowest-app fallback also after those windows. Evidence: "P0 … ms provisional: …" |
+| B1 | Rate too high from day one: the queue is calm, the overloaded app time is learned as P0 | each learning window keeps its app time **and its load** (`successfulThroughput`, the last `baseline.load-windows`, 60, demo 40). When the load clearly varies (busiest quarter ≥ `baseline.load-spread` 2.0 × the quietest quarter), P0 = median app time of the **quietest quarter** (`quiet-share` 0.25, at least `min-quiet-windows` 3; unknown until then). Evidence: "P0 … ms from the N quietest of M windows" |
+| B2 | Traffic that never gets quiet | over the last `rate.load-growth-windows` (6) learning windows, the busiest third is more than `rate.load-growth-factor` (1.5) × slower than the quietest third with at least `rate.load-growth-min-load-ratio` (1.25) × its load, and this window is in that slow, busy range: **APP_OVERLOADED** "app time grows with load", also without a P0 |
+| C | After a cut the ceiling came from the configured rate, so the rate went up and down | a cut remembers `min(rate, accepted)`; `rate.broke-at-memory` **6 h** (was 30 min; demo 10 min). When it expires, RATE_TOO_LOW raises are **+10% probes** (`step-fraction`) until the service has been HEALTHY for `recovery-windows` cycles. Evidence: "probing: the remembered limit expired …" |
+
+**Further changes found by the new tests (deviations, all inside C4):**
+- A window in which the app is APP_OVERLOADED never teaches P0 (it is still kept with its load for B). Otherwise a slow
+  app's time became "normal" within a few windows: with allow-shed-windows on, the full-queue windows after a cut; in
+  test 5, the calm windows of a rate that is too high.
+- The provisional P0 is used only while the queue is full or shedding. Calm windows wait for the full baseline (nothing is
+  lost by waiting there); without this, every calm learning phase ended one window earlier and four scenario tests shifted.
+- A cut that has not bitten yet (nothing shed, fewer requests arrive than the new rate lets through: an automatic −20%
+  step from 200 while 150 arrive) is neither undone by its check nor stopped by the anti-ratchet; the next step follows.
+  Evidence: "the cut has not bitten yet".
+- The good rate after persistent HEALTHY is `min(rate, max demand × 1.25)`: a rate far above the demand only shows that
+  the demand is fine. Otherwise a rate that was too high from the start set the floor (0.5 × good rate) above the app's
+  capacity (200 → floor 100 while the app manages 80). In the cluster `rate-bursts` now ends at 168.4 (was 169.5).
+- The B2 load ratio is 1.25, not the planned 1.5: the throughput of a saturated app stops rising at its capacity, so a
+  1.5 ratio held for one window only. B1's spread stays 2.0 (1.5 changed the calibrated `correctedMad` example).
+
+**Tests changed (intended fix C behaviour, owner decisions 22/23 Oct; marked in the test):**
+- `C4ScenarioTests.rateScenariosInAutomaticMode`: after the cuts 100 → 80 → 64 → 51.2 one raise stops at 56.1 =
+  0.9 × the 62.4 req/s the app managed, under its capacity 60 (was 57.6 = 0.9 × the configured 64). A first version of
+  this test (22 Oct) expected no raise at all; that was the rounding bug below, not the ceiling.
+- `AutoApprovalTests.aRealOverloadInAutomaticMode…`: runs with a 30 min memory (the 6 h default keeps the rate under the
+  remembered limit for the whole run) and checks that the first raise after the memory expired is a +10% probe.
+  `AutoApprovalTests.run` got an optional rate-settings argument.
+
+**New tests:** `RateLearningTests` (document §6, tests 1–5, automatic mode): too low from day one (provisional P0 after
+≤ 5 windows, 30 → 45 → … → about 75); too high with quiet and busy periods (P0 ≈ 120 ms from the quiet windows,
+APP_OVERLOADED only in the busy ones, cuts from the accepted ≈ 80 req/s); app time growing with load (APP_OVERLOADED
+"app time grows with load" before any P0); a flat app is never overloaded; after the cut from 200 the raises stop at
+0.9 × 80 ≈ 72 and the rate settles at about the capacity with no up-and-down over 20 windows. Test 6 is
+`RateStartingReferenceTests`.
+
+**No cut when the rate is not the cause (23 Oct, seen live):** a busy machine made every service slow at only ~3 req/s;
+because a cut that has not bitten yet is not undone, automatic cuts slid from 100 down to the minimum 5 req/s. Now
+APP_OVERLOADED cuts only when the full cut would hold traffic back (nothing shed and the full cut ≥ the requests that
+reach the service, max(counted, accepted + shed) per second → no change, evidence "the rate is not the cause").
+Test: `RateLearningTests.aSlowServiceWithLittleTrafficKeepsItsRate`. No scenario value changed.
+
+**Rounding fix (23 Oct):** a raise (and the healthy target) is rounded to 0.1 req/s but never above its limit, the
+ceiling or the +50% step (`RateDiagnosis.roundAtMost`). Rounded to the nearest value it could land just above it
+(ceiling 56.16 → 56.2), and the automatic-approval guard then held the raise forever ("held: … above the ceiling
+56.160000000000004"). Same problem as the cut and lowering steps (section 9), on the raise side. Test:
+`RateDiagnosisTests.aRaiseNeverRoundsAboveTheCeilingOrTheStepLimit`.
+
+**Scenario values (demo guide §4):** `rate-real-overload` reviewer settles at 54; automatic: cuts to 51.2, then one
+raise just under 0.9 × what the app managed (56.1 defaults, 55 cluster); after the recovery it rises only in +10%
+probes (cluster, 10-min memory, up to 80.6) or not at all within the run (defaults, 6 h).
+
+**Viva:** `viva-live.sh toohigh` / `toohigh-stop` (and `.ps1`): rate 200 through the hub, demo-app fault `cpuBurnMs`, a
+temporary load pod with busy and quiet periods; `toohigh-stop` and `reset` undo it. Not yet tried on the cluster.

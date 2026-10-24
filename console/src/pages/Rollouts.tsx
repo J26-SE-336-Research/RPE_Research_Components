@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useData } from "../api";
 import { Ago, Alert, Drawer, Empty, Kpi, KV, PageHeader, Panel, Status, Tag, fmtMs, type Tone } from "../components/ui";
-import type { Rollout } from "../types";
+import { planStep, type Rollout } from "../types";
 import { ConsistencyDemo } from "./Consistency";
 
 const PHASE: Record<string, [Tone, string]> = {
@@ -103,8 +103,8 @@ export function enforcedAfter(r: Rollout) {
 }
 
 /**
- * The real delivery path: every approved Component 4 recommendation is delivered as soon as it is approved, two-phase,
- * with no choice of mechanism and no waiting for an operator. Experiment runs (simulated naive deliveries) are left out.
+ * The real delivery path: every approved C4 recommendation is delivered as soon as it is approved, two-phase, with no
+ * choice of mechanism and nobody pressing Run. Experiment runs (simulated naive deliveries) are not listed here.
  */
 function LatestDeliveries({ data }: { data?: Rollout[] }) {
   const rows = (data ?? []).filter((r) => r.spec.mode !== "naive").slice(0, 6);
@@ -232,7 +232,7 @@ export function RolloutsPage() {
               ["Enforced after", fmtMs(enforcedAfter(sel))],
               ["Replaces", sel.spec.previousEpoch || "—"],
               ...(sel.status.plan?.length
-                ? ([["Order", sel.status.plan.map((p) => `${p.step}. ${p.kind} ${p.service}${p.changes?.length ? ` (${p.changes.join(", ")})` : ""}`).join("; ")], ["Waited before tightening", fmtMs(sel.status.gateMs)]] as [string, string][])
+                ? ([["Order", sel.status.plan.map(planStep).join("; ")],["Waited before tightening", fmtMs(sel.status.gateMs)]] as [string, string][])
                 : []),
               ...(sel.spec.order ? ([["Simulated arrival order", `${sel.spec.order}, ${sel.spec.skewMs ?? 0} ms simulated network delay`]] as [string, string][]) : []),
               ["Mixed-policy requests", String(sel.status.mixedPolicyRequests ?? 0)],

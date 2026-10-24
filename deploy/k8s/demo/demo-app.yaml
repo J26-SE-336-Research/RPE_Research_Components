@@ -1,5 +1,6 @@
 # Shared demo topology (Appendix A6). Generated layout: one Deployment + Service per demo service.
 #   gateway -> order-svc -> (parallel) inventory-svc, payment-svc, loyalty-svc (optional), legacy-svc (optional) -> shipping-svc
+#     -> partner-svc (optional, an outside system with NO sidecar and no RPE: the unknown hop of C1 rule R-P05)
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -27,6 +28,10 @@ spec:
           ports: [{containerPort: 8080, name: http}]
           env:
             - {name: SERVICE_NAME, value: gateway}
+            # in-band trail (X-RPE-Trail): service ids from the C1 protocol service's registry (port 8095 bypasses the sidecar)
+            - {name: RPE_TRAIL_REGISTRY_URL, value: "http://rpe-protocol.rpe-system:8095/api/protocol/registry"}
+            # the gateway reports each completed trail (removed from its response, R-P04) to the collector
+            - {name: RPE_TRAIL_COLLECTOR_URL, value: "http://rpe-protocol.rpe-system:8095/api/protocol/trails"}
             - {name: ROLE, value: gateway}
             - {name: ROUTE_BUDGETS, value: "GET /api/orders=300;POST /api/orders=500"}
             - {name: DEFAULT_BUDGET_MS, value: "1000"}
@@ -73,6 +78,8 @@ spec:
           ports: [{containerPort: 8080, name: http}]
           env:
             - {name: SERVICE_NAME, value: order-svc}
+            # in-band trail (X-RPE-Trail): service ids from the C1 protocol service's registry (port 8095 bypasses the sidecar)
+            - {name: RPE_TRAIL_REGISTRY_URL, value: "http://rpe-protocol.rpe-system:8095/api/protocol/registry"}
             - {name: CHILDREN, value: "inventory=http://inventory-svc:8080/reserve,payment=http://payment-svc:8080/pay,loyalty=http://loyalty-svc:8080/award?optional,legacy=http://legacy-svc:8080/ship?optional"}
             - {name: FANOUT, value: partial}
             - {name: SPLIT_MODE, value: parallel}
@@ -114,6 +121,8 @@ spec:
           ports: [{containerPort: 8080, name: http}]
           env:
             - {name: SERVICE_NAME, value: inventory-svc}
+            # in-band trail (X-RPE-Trail): service ids from the C1 protocol service's registry (port 8095 bypasses the sidecar)
+            - {name: RPE_TRAIL_REGISTRY_URL, value: "http://rpe-protocol.rpe-system:8095/api/protocol/registry"}
             - {name: SIDE_EFFECT, value: stock_reserved}
           readinessProbe:
             httpGet: {path: /healthz, port: 8080}
@@ -153,6 +162,8 @@ spec:
           ports: [{containerPort: 8080, name: http}]
           env:
             - {name: SERVICE_NAME, value: payment-svc}
+            # in-band trail (X-RPE-Trail): service ids from the C1 protocol service's registry (port 8095 bypasses the sidecar)
+            - {name: RPE_TRAIL_REGISTRY_URL, value: "http://rpe-protocol.rpe-system:8095/api/protocol/registry"}
             - {name: SIDE_EFFECT, value: cards_charged}
             # a payment provider call takes ~120-140 ms, so chain latency is realistic for deadline tuning
             - {name: BASE_LATENCY_MS, value: "120"}
@@ -195,6 +206,8 @@ spec:
           ports: [{containerPort: 8080, name: http}]
           env:
             - {name: SERVICE_NAME, value: loyalty-svc}
+            # in-band trail (X-RPE-Trail): service ids from the C1 protocol service's registry (port 8095 bypasses the sidecar)
+            - {name: RPE_TRAIL_REGISTRY_URL, value: "http://rpe-protocol.rpe-system:8095/api/protocol/registry"}
             - {name: SIDE_EFFECT, value: points_awarded}
             # optional work: skipped when the request chain is cancelled (the service decides; it still answers)
             - {name: NON_CRITICAL, value: "true"}
@@ -236,6 +249,8 @@ spec:
           ports: [{containerPort: 8080, name: http}]
           env:
             - {name: SERVICE_NAME, value: fraud-check-svc}
+            # in-band trail (X-RPE-Trail): service ids from the C1 protocol service's registry (port 8095 bypasses the sidecar)
+            - {name: RPE_TRAIL_REGISTRY_URL, value: "http://rpe-protocol.rpe-system:8095/api/protocol/registry"}
             - {name: SIDE_EFFECT, value: fraud_checked}
           readinessProbe:
             httpGet: {path: /healthz, port: 8080}
@@ -274,6 +289,8 @@ spec:
           ports: [{containerPort: 8080, name: http}]
           env:
             - {name: SERVICE_NAME, value: legacy-svc}
+            # in-band trail (X-RPE-Trail): service ids from the C1 protocol service's registry (port 8095 bypasses the sidecar)
+            - {name: RPE_TRAIL_REGISTRY_URL, value: "http://rpe-protocol.rpe-system:8095/api/protocol/registry"}
             - {name: CHILDREN, value: "shipping=http://shipping-svc:8080/ship"}
           readinessProbe:
             httpGet: {path: /healthz, port: 8080}
@@ -313,6 +330,11 @@ spec:
           ports: [{containerPort: 8080, name: http}]
           env:
             - {name: SERVICE_NAME, value: shipping-svc}
+            # partner-svc does not speak RPE, so its call is recorded as an unknown hop (R-P05); optional: skipped once the
+            # chain is cancelled, and a failure there does not fail the shipment
+            - {name: CHILDREN, value: "partner=http://partner-svc:8080/track?optional"}
+            # in-band trail (X-RPE-Trail): service ids from the C1 protocol service's registry (port 8095 bypasses the sidecar)
+            - {name: RPE_TRAIL_REGISTRY_URL, value: "http://rpe-protocol.rpe-system:8095/api/protocol/registry"}
             - {name: SIDE_EFFECT, value: shipments_created}
           readinessProbe:
             httpGet: {path: /healthz, port: 8080}
@@ -328,4 +350,44 @@ metadata:
   namespace: rpe-demo
 spec:
   selector: {app: shipping-svc}
+  ports: [{port: 8080, targetPort: 8080, name: http}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: partner-svc
+  namespace: rpe-demo
+  labels: {app: partner-svc, app.kubernetes.io/part-of: rpe-demo}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: partner-svc}
+  template:
+    metadata:
+      labels: {app: partner-svc}
+      # an outside system the customer does not control: no sidecar and no RPE library (C1 unknown hop, R-P05)
+      annotations: {"resilience.rpe.dev/inject": disabled}
+    spec:
+      containers:
+        - name: app
+          image: rpe/demo-app:dev
+          imagePullPolicy: IfNotPresent
+          ports: [{containerPort: 8080, name: http}]
+          env:
+            - {name: SERVICE_NAME, value: partner-svc}
+            - {name: RPE_ENABLED, value: "false"}
+          readinessProbe:
+            httpGet: {path: /healthz, port: 8080}
+            periodSeconds: 3
+          resources:
+            requests: {cpu: 10m, memory: 16Mi}
+            limits: {memory: 64Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: partner-svc
+  namespace: rpe-demo
+spec:
+  selector: {app: partner-svc}
   ports: [{port: 8080, targetPort: 8080, name: http}]

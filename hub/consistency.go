@@ -14,19 +14,18 @@ import (
 	rpe "github.com/J26-SE-336-Research/rpe/libs/rpe-go"
 )
 
-// The consistency demo (the C3 novelty: per-request-consistent rollout).
+// The consistency demo (experiment E4).
 //
 // One approved decision changes two settings that depend on each other: the chain deadline of GET /api/orders at
-// the gateway (1000 → 4000 ms) and the rate of payment-svc's inbound leaky bucket (100 → 6 requests/s). At the low
-// rate a burst of chain requests waits in payment's queue for more than a second. That is fine for a request with
-// the new 4000 ms deadline and too long for a request that still carries the old 1000 ms deadline: it expires
-// (cs=expired; signal, never reject, so it is still served, but late).
+// the gateway (1000 → 4000 ms) and the rate of payment-svc's leaky bucket (100 → 6 requests/s). At the low rate a
+// burst of chain requests waits in payment's queue for over a second. That is fine with the new 4000 ms deadline, but
+// too long for a request that still has the old 1000 ms deadline, so it expires (cs=expired). It is still served,
+// only late, because we signal and never reject.
 //
-// The demo sends the same traffic (a burst of chain requests every few seconds) while the change is delivered either
-// naive (each sidecar switches when the change reaches it, in no particular order) or two-phase (stage everywhere,
-// the gateway loosens first and stamps the new version, wait until no request of the old version is in flight, then
-// payment tightens). It counts the requests that expired because of the delivery and the requests the sidecars
-// served under another version than the one they carry.
+// The demo sends the same traffic (a burst of chain requests every few seconds) while the change is delivered
+// either naive (each sidecar switches whenever the change reaches it) or two-phase (stage everywhere, the gateway
+// loosens first, wait until no old-version request is running, then payment tightens). It counts the requests that
+// expired because of the delivery and the requests served under a different version than the one they carry.
 
 const (
 	consistencyPolicy  = "chain-orders"
@@ -378,8 +377,8 @@ func (h *hub) publishConsistency(ctx context.Context, approver string, deadlineM
 	return ro.Metadata.Name, nil
 }
 
-// jointParts builds the parts of one joint decision: per service, its current policy with the changes for that
-// service applied (so its other settings are kept). It returns the policy id (id, or one named after the services).
+// jointParts builds the parts of a joint decision: for each service its current policy with the changes applied, so
+// its other settings stay. It returns the policy id (id, or a name made from the services).
 func (h *hub) jointParts(ctx context.Context, id string, changes []policyInput) (string, []map[string]any, string) {
 	var order []string
 	specs := map[string]map[string]any{}
@@ -395,8 +394,8 @@ func (h *hub) jointParts(ctx context.Context, id string, changes []policyInput) 
 				spec = map[string]any{}
 			}
 			if service == "gateway" {
-				// a rate limit is never aimed at the gateway (controlService); an older single policy may still
-				// hold one, and it must not ride along in the gateway's part (the sidecar keeps its current rate)
+				// Nothing sets a rate on the gateway (see controlService), but an older policy may still have one.
+				// Drop it so it does not travel in the gateway's part; the sidecar keeps its current rate.
 				delete(spec, "leakyBucket")
 			}
 			specs[service], routes[service] = spec, route

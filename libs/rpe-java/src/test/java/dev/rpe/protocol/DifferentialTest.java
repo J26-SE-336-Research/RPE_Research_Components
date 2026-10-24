@@ -12,9 +12,9 @@ import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 
 /**
- * Differential test against the Go reference: replays the mutation corpus written by
- * {@code conformance-kit/go/cmd/difffuzz} and requires the same verdict (canonical encoding, or error code and rule)
- * for every input. Skipped when the corpus has not been generated (scripts/test-unit.sh generates it).
+ * Compares rpe-java with the Go library. It replays the inputs made by {@code conformance-kit/go/cmd/difffuzz} and
+ * expects the same answer for each one, either the same encoded value or the same error code and rule. It is
+ * skipped if the inputs haven't been generated yet, scripts/test-unit.sh does that.
  */
 class DifferentialTest {
     @Test

@@ -99,8 +99,11 @@ export type Hop = {
   context: string;
   fields?: Record<string, string>;
   checks: Check[];
+  attempts?: number;
+  retryRefused?: string;
 };
 export type ChainResult = {
+  rid?: string;
   status: number;
   ms: number;
   result: Record<string, string> | null;

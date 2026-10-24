@@ -18,7 +18,7 @@ const (
 type ProtocolError struct {
 	Code           ErrorCode
 	Header, Detail string
-	// Rule is the spec rule identifier (for example "R-T02") when the error is a rule violation.
+	// Rule is the spec rule that was broken, like "R-T02".
 	Rule string
 }
 

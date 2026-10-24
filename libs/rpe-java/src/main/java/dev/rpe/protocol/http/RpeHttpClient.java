@@ -1,6 +1,7 @@
 package dev.rpe.protocol.http;
 
 import dev.rpe.protocol.CancelState;
+import dev.rpe.protocol.Hop;
 import dev.rpe.protocol.Ids;
 import dev.rpe.protocol.RpeContext;
 import dev.rpe.protocol.RpeHeaders;
@@ -9,16 +10,15 @@ import java.io.IOException;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.net.http.HttpTimeoutException;
-import java.time.Duration;
 
 /**
- * Context propagation for {@link java.net.http.HttpClient}: derives the child context (fresh iid, pid, ttl reduced by
- * elapsed time and reserve), bounds the call by the remaining deadline, and refuses to send once the deadline has
- * passed or the request is cancelled.
+ * Sends the RPE context with every {@link java.net.http.HttpClient} call. Each call gets a child context with a new
+ * iid and pid and a smaller ttl. A first attempt always goes out, even when the chain is late (then it carries
+ * {@code cs=expired}), and slow calls are never cut off. Only a retry of a cancelled or expired chain is held back.
+ * Use {@link dev.rpe.protocol.RetryGate} to decide if a retry is worth it at all.
  */
 public final class RpeHttpClient {
-    /** The call was not sent, or did not finish, within the propagated deadline. Carries the terminal result. */
+    /** Thrown when a retry of a cancelled or expired chain was not sent. Holds the result to send back. */
     public static final class DeadlineExceededException extends IOException {
         private final RpeResult result;
 
@@ -34,33 +34,41 @@ public final class RpeHttpClient {
     private final long reserveMillis;
 
     /**
-     * @param reserveMillis parent post-processing allowance subtracted from the child ttl (R-D07)
+     * @param reserveMillis time kept back for our own work after the call, taken off the child ttl
      */
     public RpeHttpClient(HttpClient http, long reserveMillis) {
         this.http = http;
         this.reserveMillis = reserveMillis;
     }
 
-    /** Sends {@code request} as a child of {@code inbound} with the given retry-budget grant (use BudgetSplit for fan-out). */
+    /** Sends {@code request} as the first attempt of a child call, giving it {@code grant} retry budget. */
     public <T> HttpResponse<T> send(HttpRequest.Builder request, Inbound inbound, long grant, HttpResponse.BodyHandler<T> handler)
             throws IOException, InterruptedException {
+        return send(request, inbound, grant, 1, handler);
+    }
+
+    /**
+     * Sends attempt number {@code attempt} of a child call. From the second attempt on it adds
+     * {@code X-RPE-Hop: att=attempt}. A retry of a cancelled or expired chain is not sent and throws
+     * {@link DeadlineExceededException}.
+     */
+    public <T> HttpResponse<T> send(HttpRequest.Builder request, Inbound inbound, long grant, long attempt,
+            HttpResponse.BodyHandler<T> handler) throws IOException, InterruptedException {
         RpeContext in = inbound.context();
         long now = System.nanoTime();
-        long remaining = inbound.remainingMillis(now);
-        if (in.cancel() != CancelState.NONE || remaining <= 0) {
-            throw new DeadlineExceededException("deadline expired before send",
-                    RpeResult.of(RpeResult.REJECTED, RpeResult.DEADLINE, true, in.policyEpoch()));
+        if (attempt >= 2 && (in.cancel() != CancelState.NONE || inbound.remainingMillis(now) <= 0)) {
+            boolean cancelled = in.cancel() == CancelState.CANCEL;
+            throw new DeadlineExceededException("retry refused (R-R02): the request chain is " + (cancelled ? "cancel" : "expired"),
+                    RpeResult.of(RpeResult.REJECTED, cancelled ? RpeResult.CANCELLED : RpeResult.DEADLINE, true, in.policyEpoch()));
         }
         RpeContext child = in.child(inbound.elapsedMillis(now), reserveMillis, grant);
-        request.setHeader(RpeHeaders.CONTEXT, child.encode())
-                .setHeader(RpeHeaders.TRACEPARENT, Ids.newTraceparent(child.rid()))
-                .timeout(Duration.ofMillis(Math.max(1, remaining)));
-        try {
-            return http.send(request.build(), handler);
-        } catch (HttpTimeoutException e) {
-            // the call outlived the propagated deadline: a terminal deadline result (R-D04)
-            throw new DeadlineExceededException("deadline expired in flight",
-                    RpeResult.of(RpeResult.REJECTED, RpeResult.DEADLINE, true, in.policyEpoch()));
+        if (child.cancel() == CancelState.NONE && child.ttlMillis() <= 0) {
+            child = child.withCancel(CancelState.EXPIRED); // no sidecar here, so we mark it ourselves
         }
+        request.setHeader(RpeHeaders.CONTEXT, child.encode()).setHeader(RpeHeaders.TRACEPARENT, Ids.newTraceparent(child.rid()));
+        if (attempt >= 2) {
+            request.setHeader(RpeHeaders.HOP, new Hop("", attempt).encode());
+        }
+        return http.send(request.build(), handler);
     }
 }

@@ -12,6 +12,7 @@ A closed-loop resilience ecosystem for HTTP microservices, built by four SLIIT f
 
 ```
 client → gateway → order-svc → (parallel) inventory-svc, payment-svc, loyalty-svc (optional), legacy-svc (optional) → shipping-svc
+          → partner-svc (optional; an outside system with no RPE: shown as the unknown hop, C1 rule R-P05)
           every hop: app + rpe-sidecar (injected by the C3 webhook), context X-RPE-Context (C1)
 ```
 

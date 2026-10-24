@@ -3,6 +3,7 @@ package dev.rpe.protocol.http;
 import static org.junit.jupiter.api.Assertions.*;
 
 import com.sun.net.httpserver.HttpServer;
+import dev.rpe.protocol.CancelState;
 import dev.rpe.protocol.ContextGuard;
 import dev.rpe.protocol.RpeContext;
 import dev.rpe.protocol.RpeHeaders;
@@ -22,7 +23,7 @@ class AdmissionAndClientTest {
             + "ttl=287, bud=300, rb=3, cs=none, pe=\"e42\", rt=\"POST /api/orders\"";
 
     @Test
-    void gatewayIgnoresClientContextAndCreatesRoot() { // R-S01
+    void gatewayIgnoresClientContextAndCreatesRoot() {
         var cfg = Admission.Config.gateway((m, p) -> new Admission.RouteBudget.Budget(m + " " + p, 1000), 3, () -> "e7");
         var d = Admission.admit(cfg, "GET", "/api/orders",
                 Map.of(RpeHeaders.CONTEXT, List.of(CTX.replace("ttl=287, bud=300", "ttl=99999, bud=99999")),
@@ -37,15 +38,15 @@ class AdmissionAndClientTest {
     }
 
     @Test
-    void expiredCancelledAndInvalidContextsAreRejectedBeforeTheApplication() { // R-D02, R-T04
+    void expiredOriginalsAreSignalledAndAdmitted() {
         var svc = Admission.Config.service();
         var expired = Admission.admit(svc, "GET", "/x", Map.of("x-rpe-context", List.of(CTX.replace("ttl=287", "ttl=0"))));
-        assertFalse(expired.admitted());
-        assertEquals(504, expired.status());
-        assertTrue(expired.result().terminal());
-        assertEquals(RpeResult.DEADLINE, expired.result().reason());
+        assertTrue(expired.admitted(), "an expired original request is never rejected");
+        assertEquals(CancelState.EXPIRED, expired.inbound().context().cancel());
+        assertTrue(expired.contextHeader().contains("cs=expired"), "the application sees the signal");
         var cancelled = Admission.admit(svc, "GET", "/x", Map.of(RpeHeaders.CONTEXT, List.of(CTX.replace("cs=none", "cs=cancel"))));
-        assertEquals(RpeResult.CANCELLED, cancelled.result().reason());
+        assertTrue(cancelled.admitted());
+        assertEquals(CancelState.CANCEL, cancelled.inbound().context().cancel());
         var invalid = Admission.admit(svc, "GET", "/x", Map.of(RpeHeaders.CONTEXT, List.of(CTX + ",")));
         assertEquals(400, invalid.status());
         var duplicate = Admission.admit(svc, "GET", "/x", Map.of(RpeHeaders.CONTEXT, List.of(CTX, CTX)));
@@ -54,17 +55,33 @@ class AdmissionAndClientTest {
     }
 
     @Test
-    void clientPropagatesAValidChildAndBoundsTheCallByTheDeadline() throws Exception {
+    void expiredRetriesAreRefused() {
+        var svc = Admission.Config.service();
+        for (String ctx : List.of(CTX.replace("ttl=287", "ttl=0"), CTX.replace("cs=none", "cs=expired"), CTX.replace("cs=none", "cs=cancel"))) {
+            var d = Admission.admit(svc, "GET", "/x", Map.of(RpeHeaders.CONTEXT, List.of(ctx), RpeHeaders.HOP, List.of("att=2")));
+            assertFalse(d.admitted(), ctx);
+            assertEquals(504, d.status());
+            assertTrue(d.result().terminal());
+            assertTrue(d.resultHeader().contains(", cs="), "the refusal carries the chain state");
+        }
+        var retry = Admission.admit(svc, "GET", "/x", Map.of(RpeHeaders.CONTEXT, List.of(CTX), RpeHeaders.HOP, List.of("att=2")));
+        assertTrue(retry.admitted(), "a retry with time left is admitted");
+    }
+
+    @Test
+    void clientPropagatesAValidChildAndNeverCutsACallOff() throws Exception {
         AtomicReference<String> seen = new AtomicReference<>();
+        AtomicReference<String> seenHop = new AtomicReference<>();
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/ok", ex -> {
             seen.set(ex.getRequestHeaders().getFirst(RpeHeaders.CONTEXT));
+            seenHop.set(ex.getRequestHeaders().getFirst(RpeHeaders.HOP));
             ex.sendResponseHeaders(204, -1);
             ex.close();
         });
         server.createContext("/slow", ex -> {
             try {
-                Thread.sleep(2000);
+                Thread.sleep(500);
             } catch (InterruptedException ignored) {
                 Thread.currentThread().interrupt();
             }
@@ -82,17 +99,22 @@ class AdmissionAndClientTest {
             assertTrue(ContextGuard.validateTransition(parent.context(), child, 0).isEmpty(), "propagated child passes the guard");
             assertEquals(1, child.retryBudget());
             assertTrue(child.ttlMillis() <= 287 - 5);
+            assertNull(seenHop.get(), "a first attempt carries no attempt number");
 
-            long start = System.nanoTime();
-            var e = assertThrows(RpeHttpClient.DeadlineExceededException.class,
-                    () -> client.send(HttpRequest.newBuilder(URI.create(base + "/slow")), parent, 0, HttpResponse.BodyHandlers.discarding()));
-            assertTrue(e.result().terminal());
-            assertTrue((System.nanoTime() - start) / 1_000_000 < 1500, "the call is bounded by the remaining deadline");
+            // a call slower than the time left still finishes, the library never cuts it off
+            assertEquals(204, client.send(HttpRequest.newBuilder(URI.create(base + "/slow")), parent, 0, HttpResponse.BodyHandlers.discarding()).statusCode());
 
             var expired = new Inbound(parent.context(), parent.hop(), System.nanoTime() - 1_000_000_000L);
-            assertThrows(RpeHttpClient.DeadlineExceededException.class,
-                    () -> client.send(HttpRequest.newBuilder(URI.create(base + "/ok")), expired, 0, HttpResponse.BodyHandlers.discarding()),
-                    "nothing is sent after the deadline");
+            assertEquals(204, client.send(HttpRequest.newBuilder(URI.create(base + "/ok")), expired, 0, HttpResponse.BodyHandlers.discarding()).statusCode(),
+                    "a late first attempt is still sent");
+            assertEquals(CancelState.EXPIRED, RpeContext.decode(seen.get()).cancel(), "and carries cs=expired");
+            var e = assertThrows(RpeHttpClient.DeadlineExceededException.class,
+                    () -> client.send(HttpRequest.newBuilder(URI.create(base + "/ok")), expired, 0, 2, HttpResponse.BodyHandlers.discarding()),
+                    "a retry of an expired chain is not sent");
+            assertTrue(e.result().terminal());
+            var fresh = Admission.admit(Admission.Config.service(), "POST", "/api/orders", Map.of(RpeHeaders.CONTEXT, List.of(CTX))).inbound();
+            client.send(HttpRequest.newBuilder(URI.create(base + "/ok")), fresh, 0, 2, HttpResponse.BodyHandlers.discarding());
+            assertEquals("att=2", seenHop.get(), "a retry is marked with its attempt number");
         } finally {
             server.stop(0);
         }

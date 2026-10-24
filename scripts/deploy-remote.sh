@@ -42,6 +42,7 @@ images:
   - {name: rpe/operator, newName: ${IMAGE_PREFIX}operator, newTag: "${IMAGE_TAG}"}
   - {name: rpe/hub, newName: ${IMAGE_PREFIX}hub, newTag: "${IMAGE_TAG}"}
   - {name: rpe/intelligence, newName: ${IMAGE_PREFIX}intelligence, newTag: "${IMAGE_TAG}"}
+  - {name: rpe/protocol-service, newName: ${IMAGE_PREFIX}protocol-service, newTag: "${IMAGE_TAG}"}
 patches:
   # the webhook injects this image into every application pod (env index 0 is SIDECAR_IMAGE)
   - target: {kind: Deployment, name: rpe-admission-webhook}
@@ -110,7 +111,7 @@ k apply -k "${GENERATED}/vps/demo"
 k apply -f "${ROOT}/deploy/k8s/e2e/client.yaml"
 k apply -f "${ROOT}/deploy/k8s/e2e/traffic.yaml"
 for d in $(k -n rpe-demo get deploy -o name); do k -n rpe-demo rollout status "${d}" --timeout="${ROLLOUT_TIMEOUT}"; done
-for d in rpe-prometheus rpe-tempo rpe-intelligence rpe-hub rpe-operator; do
+for d in rpe-prometheus rpe-tempo rpe-intelligence rpe-hub rpe-protocol rpe-operator; do
   k -n rpe-system rollout status "deploy/${d}" --timeout="${ROLLOUT_TIMEOUT}"
 done
 k -n rpe-e2e wait --for=condition=Ready pod/e2e-client --timeout=180s

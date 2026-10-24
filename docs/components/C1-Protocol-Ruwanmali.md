@@ -41,24 +41,33 @@ Example tasks:
 
 ## 2. Status (update after every phase)
 
-| Item | State (15 Oct 2026) |
+| Item | State (15 Oct 2026; PP1 update 20 Oct 2026) |
 |---|---|
+| **PP1 (20 Oct 2026, branch `feat/c1-protocol`)** | **About 70 % of C1, including the novelty, demonstrable in the Admin Panel.**
+- **Signal mode everywhere (R-D02, R-D04, R-D05, R-R02):** an expired original request is served and marked `cs=expired`, never rejected; only a retry of a cancelled or expired chain is refused (504, `term=?1`). `rpe-go` `Middleware`/`Transport` and `rpe-java` `Admission`/`RpeHttpClient` were changed from the old rejecting behaviour; `SignalMiddleware`/`SignalTransport` additionally refuse expired retries. Developer warning in the spec and the library docs.
+- **Spec v0.9:** `spec/RPE-v1.md`, RFC-style, every rule ID, status codes, versioning, privacy, the fan-out non-goal, the C2 backpressure sidecar profile (documented as implemented), retry execution in the proxy marked next phase.
+- **Retry safety (novelty):** retry gate R-R02 with a fixed reason order in both languages (`DecideRetry`, `DoWithRetry`, `WithAttempt`; `RetryGate`), 16 shared cases. Demo shop: per-request side-effect counters (`/admin/counters?rid=`) and a retry knob on order-svc (off by default). Admin Panel, Fault Injection → Experiments: plain retry charges the card **2×**, the RPE retry gate **1×**. The two removed demos are back in signal form ("Retryable", "Payment work abandoned"). e2e `37-retry-safety`.
+- **Trail v1 (novelty):** `X-RPE-Trail` verbose encoding, codec and response-side subtree merge in both languages (31 shared cases); recording by the `rpe-go` adapters (opt-in, registry-driven); `services/protocol-service` (Go) with the collector, topology rebuild, ground-truth comparison, deadline attribution and registry (A3.7). Admin Panel: **Topology** page and the per-hop deadline waterfall in the Request Inspector. partner-svc (an outside system without RPE, called by shipping-svc) shows as an unknown edge. e2e `38-trail-topology`.
+- **Interoperability in the panel:** a Java side of the protocol service (rpe-java in its own container); Protocol Tools → **Java vs Go** (any header decoded by both, differences highlighted) and **Conformance** (all 150 cases run live by both: 150/150 each).
+- Conformance kit: 150 cases (103 + 47).
+- **Automation (23 Oct 2026, branch `c1/automation`):** services register themselves in the trail registry (no hand-edited list for new services); the ground-truth call graph is read from the demo deployments; `make test-unit` checks that the committed conformance cases match the generator; `experiments/c1/rt01-rollout.sh` measures R-T01 during C3 rollouts (CSV); `scripts/demo-c1.sh` runs the C1 demos and prints what they show. |
+- **Server deployment (24 Oct 2026, branch `c1/vps-deploy`, on top of the C2 owner's `ci-cd-vps` pipeline):** the GitHub workflow also builds the protocol-service image and `scripts/deploy-remote.sh` deploys it (registry image, rollout wait), so the Topology page, trails and the Java-vs-Go tabs work on the shared k3s server. `legacy-svc` keeps the sidecar the C2 owner gave it; the unknown hop (R-P05) is now `partner-svc`, a new outside system without RPE that `shipping-svc` calls optionally.
 | Go reference library | **Exists** in `_research/old_shits/protocol/` (package `rpe`, about 1,000 LOC + 300 LOC tests). `go test -race` passes, 74.6% coverage. Has: request/response context, parsing with duplicate/missing/range checks, monotonic `Deadline` with an offset bound, `CancellationToken`, `LogicalCallState` (terminal / retry-blocked), `RetryLedger` with allocation receipts (budget conservation), `ValidateSameInvocationTransition` / `ValidateChildTransition`, root/child context generation, topology trail (interned uint16 service IDs, registry version, incomplete flag, max 16 records / 1,400 B), HTTP helpers |
 | Problems in the existing Go lib | Uses **~24 separate headers** (`Protocol-Version`, `Request-Id`, `Deadline`, …) instead of the single `X-RPE-Context`. Deadlines are absolute Unix ms (skew-sensitive). `SplitChildren` gives an arbitrary half of the pool. No fan-out mode, point of no return, `late` flag, child annotations, `rbu` or policy epoch |
-| Java library | **Built (16 Oct 2026)**: `libs/rpe-java` (Java 21, no runtime dependencies, package `dev.rpe.protocol`): `RpeContext` (decode/encode/validate/newRoot/child), `ContextGuard` (R-T01..R-T06), `Hop`, `RpeResult`, `BudgetSplit`, `Ids` (trace binding), `ProtocolException` (code + rule); `http.Admission` (framework-neutral inbound step: trust boundary, R-D02/R-T04 rejection) and `http.RpeHttpClient` (`java.net.http` adapter that propagates the child context and bounds the call by the remaining deadline). Tests: 103 conformance vectors + 5,000-input differential corpus + adapter tests over a real HTTP server. **Next:** RestTemplate/WebClient/Feign/OkHttp adapters (P1.5); C2 migrates the sidecar onto it |
+| Java library | **Built (16 Oct 2026)**: `libs/rpe-java` (Java 21, no runtime dependencies, package `dev.rpe.protocol`): `RpeContext` (decode/encode/validate/newRoot/child), `ContextGuard` (R-T01..R-T06), `Hop`, `RpeResult`, `BudgetSplit`, `Ids` (trace binding), `ProtocolException` (code + rule); `http.Admission` (framework-neutral inbound step: trust boundary; since 20 Oct 2026 signal mode: expired originals admitted with `cs=expired`, only expired retries refused) and `http.RpeHttpClient` (`java.net.http` adapter that propagates the child context and bounds the call by the remaining deadline). Tests: 103 conformance vectors + 5,000-input differential corpus + adapter tests over a real HTTP server. **Next:** RestTemplate/WebClient/Feign/OkHttp adapters (P1.5); C2 migrates the sidecar onto it |
 | **Built in the monorepo (15 Oct 2026)** | `libs/rpe-go`: legacy library seeded (module `github.com/J26-SE-336-Research/rpe/libs/rpe-go`) **plus the new header set**:
 - `sfv.go`: an RFC 8941 dictionary subset.
 - `xcontext.go`: `X-RPE-Context` decode/encode with unknown-member forwarding (R-V01); `Hop`; `Result`; `NewRoot`; `Child`; `ValidateContextTransition` R-T01..R-T06 with rule IDs on `ProtocolError.Rule`; W3C trace binding.
-- `httpmw.go`: `Middleware` (gateway trust boundary R-S01; expired/cancelled rejected before the app, R-D02/R-T04; hop header stripped; request context deadline for cooperative cancellation) and `Transport` (child derivation; propagated deadline enforced, so a call that outlives it becomes a terminal 504); `SplitBudget` (R-F05).
+- `httpmw.go`: `Middleware` (gateway trust boundary R-S01; expired/cancelled rejected before the app, R-D02/R-T04, **changed to signal mode on 20 Oct 2026**: originals are served with `cs=expired`, only expired retries are refused; hop header stripped; request context deadline for cooperative cancellation) and `Transport` (child derivation; propagated deadline enforced, so a call that outlives it becomes a terminal 504); `SplitBudget` (R-F05).
 
 `go test -race` passes, 77.9% coverage. The shared demo app uses these adapters, and e2e suites 30/35/40 verify them on Kubernetes.
 
 `Transport` keeps an existing same-trace `traceparent` (tracing client spans), so the OpenTelemetry trace tree stays intact.
 
 **Next:** the spec doc (P0.1/P1.1), framework adapters for `rpe-java`, the trail. |
-| Spec document | Only the scope notes in `RPE-M1-Scope-Ruwanmali.md` (same as `_research/old_shits/protocol/RPE-M1.md`). No RFC-style spec yet |
+| Spec document | **Draft v0.9 (20 Oct 2026):** `spec/RPE-v1.md`. v1.0 at the final submission |
 | Conformance kit | **Built (16 Oct 2026)**: `conformance-kit/vectors/*.json`, 103 cases: decode 46, encode 5, transition 15, child 6, split 7, result 10, hop 7, traceparent 7. Errors are compared by code and rule ID. There is a Go runner (`conformance-kit/go`), and `rpe-java` runs the same files. **Both pass 100%.** `cmd/genvectors` regenerates the vectors from the reference; any change is a spec change. `cmd/difffuzz` writes a deterministic mutation corpus (5,000 inputs, about 1,100 still valid) with Go verdicts, which `rpe-java` replays with 0 divergences. Both run in `make test-unit` |
-| Wire-format benchmark, topology rebuilder, protocol service | **Missing** |
+| Wire-format benchmark, topology rebuilder, protocol service | Protocol service and topology rebuilder **built (PP1)**. Wire-format benchmark: PP2 (E2) |
 | Integration | The demo services use `rpe-go` end to end, verified on Kubernetes. The new C2 sidecar strips `X-RPE-Hop` but does not parse the context yet; it migrates to `rpe-java` in C2 Phase 1. The admin panel's Protocol Tools and Request Inspector run on `rpe-go` |
 
 ## 3. Problem and research gap
@@ -269,16 +278,16 @@ One versioned, validated HTTP context that carries **deadline, retry budget, bac
 
 **Deadline and expiry:**
 - **R-D01** The receiver computes `local_expiry = receive_time_monotonic + ttl_in`. All later checks use the local monotonic clock.
-- **R-D02 Expired on arrival:** `ttl_in ≤ 0` → MUST reject before application logic: 504, `rsn=deadline`, `term=?1`.
-- **R-D03 Insufficient time (SHOULD):** if `ttl_remaining < est_cost(route) × α` (default α = 1.0, with `est_cost` = the route's p50 or p95 from configuration or C4), the receiver SHOULD reject: 504, `rsn=insufficient-time`, `term=?1`. C1 defines the rule; C2 implements it in its decision function.
+- **R-D02 Expired on arrival (signal mode, decided 17 Oct 2026):** `ttl_in ≤ 0` → MUST NOT reject. The receiving RPE component (sidecar, or the library without a sidecar) sets `cs=expired` in the context given to the application and to every child. **Only a retry** (`att ≥ 2`) of a cancelled or expired chain is refused before the application: 504, `rsn=deadline|cancelled`, `term=?1`, `cs`. *Warning for developers: nothing stops an expired original request unless the application reads the signal.*
+- **R-D03 Insufficient time (SHOULD, signal):** if `ttl_remaining < est_cost(route) × α` (default α = 1.0, with `est_cost` = the route's p50 or p95 from configuration or C4), the receiver SHOULD signal it (`rsn=insufficient-time`) so the application can shed optional work. C1 defines the rule; C2 implements it in its decision function. The same comparison is the retry gate's `insufficient-time` reason (R-R02).
 - **R-D04 Expired mid-flight:** the receiver MUST propagate `cs=expired` to the children it has already dispatched. Its own work follows the point-of-no-return rule.
-- **R-D05 Point of no return:** before work starts, reject freely. During read-only work, abandon freely. After the commit stage begins, MUST finish and return with `late=?1`. Routes declare `commitStage` in policy.
+- **R-D05 Point of no return:** RPE never abandons work. Before its commit stage an application MAY stop when it sees the signal; after the commit stage begins it MUST finish and SHOULD return `late=?1`. Routes declare `commitStage` in policy.
 - **R-D06 Grace threshold:** in absolute-deadline mode, or when a transit allowance is applied, a request is considered expired only if `ttl ≤ −grace`, where `grace` = the measured skew/transit bound (configurable, default 5 ms).
 - **R-D07 Sequential vs parallel:** each child in parallel mode gets `ttl_child = ttl_remaining − reserve_ms`. In sequential mode, each child gets the remaining time at dispatch, minus `reserve_ms`. `reserve_ms` is the parent's own post-processing allowance (policy, default 5% of `ttl`).
 
 **Retries:**
 - **R-R01** A retry is a new attempt with a fresh `iid`, `att+1`, and it consumes one unit from the parent's ledger.
-- **R-R02** A retry MUST NOT be sent if `term=?1` was received, if `cs≠none`, if the remaining ttl is less than backoff plus the estimated attempt time, if the operation is not replay-safe, or if the ledger is empty.
+- **R-R02 Retry gate** (built PP1, both languages, `retry-gate.json`). A retry MUST NOT be sent, checked in this order: `cs=expired` (reason `deadline`) or `cs=cancel` (`cancelled`); `term=?1` received (`terminal`); not replay-safe (`not-replay-safe`); remaining ttl ≤ 0 (`deadline`); remaining ttl < backoff + estimated attempt time (`insufficient-time`); budget empty (`budget`); the caller's attempt limit (`attempts`). A receiver refuses a retry that arrives expired or cancelled (R-D02). A refusal is terminal for the caller's caller too. *Retry execution in the C2 proxy (budget enforcement, backoff, jitter) is the next phase; the gate is used at library and application level now.*
 - **R-R03** The budget a child receives covers its whole subtree. The response reports `rbu` (budget used), so sequential fan-out can deduct it.
 
 **Cancellation:**
@@ -297,11 +306,11 @@ One versioned, validated HTTP context that carries **deadline, retry budget, bac
 - **R-B02** The notification message format and its rules are as in A3.1. The receiver MUST use only the observed source IP.
 
 **Trail:**
-- **R-P01** Each RPE hop appends one entry: `svcId`, `parentIdx`, `elapsedMicros` (−1 while active, finalised on the response path if the response-side trail is enabled), `decision`, `ttlConsumedMs`.
+- **R-P01** Each RPE hop appends one entry: `svcId`, `parentIdx` (1-based, 0 = root), `elapsedMicros` (−1 while active), `decision`, `ttlConsumedMs` (= `bud − ttl` on arrival). Request side: the path to the caller. Response side: the hop's finished subtree, merged by the caller under its own entry (built PP1, `trail.json`, `trail-merge.json`; spec §12).
 - **R-P02** The trail is bounded: at most K entries or B bytes. When it would exceed that, the encoding-specific policy applies (ring drop-oldest, sketch, and so on) and `inc=?1` is set.
 - **R-P03** Service names are interned to 2-byte IDs through the registry (`rv`). Names never appear on the wire.
 - **R-P04** The trail MUST be stripped at egress (the gateway's response to the external client).
-- **R-P05** If a hop doesn't speak RPE, the next RPE hop detects that `pid` doesn't match a known parent entry, records an **unknown edge** and sets `inc=?1`.
+- **R-P05** If a hop doesn't speak RPE, its caller receives no trail from it and records an **unknown edge** (decision `U`) with `inc=?1`; a hop that receives a context below the gateway without a trail also sets `inc=?1`. Calls behind the non-RPE hop are invisible, and `inc=?1` says so.
 - **Direction decision:** the request side carries entries, and the response side finalises elapsed times. Justify this choice in the spec (richer durations at small cost).
 
 **Versioning:**
@@ -504,7 +513,7 @@ These are saved as policies through C3's API, so they are real configuration.
 | Deadline Attribution | Waterfall per request: "inventory used 80 ms, payment 210 ms of 300 ms" (`/api/protocol/attribution/{rid}`) |
 | Fan-out | Toggle `partial`/`all` for loyalty vs fraud-check → result, per-child annotations, side-effect counters (shows the non-goal) |
 | Splitter | Enter ttl, rb, n and mode → allocations, then run it live and compare with what the children actually received |
-| Topology | Graph rebuilt from trails vs Tempo vs ground truth; encoding selector → bytes vs P/R; run the rare-path scenario → the trail sees it and sampled tracing misses it; legacy-svc shown as an unknown edge |
+| Topology | Graph rebuilt from trails vs Tempo vs ground truth; encoding selector → bytes vs P/R; run the rare-path scenario → the trail sees it and sampled tracing misses it; partner-svc (no RPE) shown as an unknown edge |
 | Clock Skew | Slider for the clock offset on one service → false rejections with grace off/on; drift curve |
 | Wire Format and Conformance | Benchmark table and charts against the budget lines; vector × implementation matrix; fuzzing counters |
 

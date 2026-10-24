@@ -117,3 +117,59 @@ func TestTraceparent(t *testing.T) {
 		}
 	}
 }
+
+func TestRetryGate(t *testing.T) {
+	s, err := Load[RetryCase](dir, "retry-gate.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range s.Cases {
+		if got := Retry(c.Input); got != c.Expect {
+			t.Errorf("%s: got %+v", c.Name, got)
+		}
+	}
+}
+
+func TestTrailDecode(t *testing.T) {
+	s, err := Load[TrailCase](dir, "trail.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range s.Cases {
+		f, canonical, fail := DecodeTrail(c.Input)
+		if !eqFail(fail, c.Error) || !reflect.DeepEqual(f, c.Expect) || canonical != c.Canonical {
+			t.Errorf("%s: got %+v %q %+v", c.Name, f, canonical, fail)
+		}
+	}
+}
+
+func TestTrailMerge(t *testing.T) {
+	s, err := Load[TrailMergeCase](dir, "trail-merge.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range s.Cases {
+		if got := MergeTrail(c.Base, c.Sub, c.Parent); got != c.Expect {
+			t.Errorf("%s: got %q", c.Name, got)
+		}
+	}
+}
+
+// TestRunAll checks the runner the protocol service uses: every file loads and every case passes.
+func TestRunAll(t *testing.T) {
+	total := 0
+	for _, f := range RunAll(dir) {
+		if f.Error != "" || len(f.Cases) == 0 {
+			t.Fatalf("%s: %s", f.File, f.Error)
+		}
+		for _, c := range f.Cases {
+			total++
+			if !c.Pass {
+				t.Errorf("%s / %s: %s", f.File, c.Name, c.Detail)
+			}
+		}
+	}
+	if total != 150 {
+		t.Errorf("want 150 cases, got %d", total)
+	}
+}

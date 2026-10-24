@@ -6,7 +6,7 @@ webhooks:
   - name: sidecar-injector.rpe.dev
     admissionReviewVersions: [v1]
     sideEffects: None
-    # Fail is deterministic for tests; the C3 webhook-safety experiment (E2) compares it with Ignore.
+    # Fail gives predictable results in tests. Experiment E2 (webhook safety) compares it with Ignore.
     failurePolicy: Fail
     reinvocationPolicy: Never
     timeoutSeconds: 5

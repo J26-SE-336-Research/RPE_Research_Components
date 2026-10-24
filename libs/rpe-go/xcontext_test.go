@@ -25,7 +25,7 @@ func TestDecodeEncodeRoundTrip(t *testing.T) {
 	}
 }
 
-func TestUnknownMembersAreForwarded(t *testing.T) { // R-V01
+func TestUnknownMembersAreForwarded(t *testing.T) {
 	c, err := DecodeContext(sampleCtx + `, zz="future", zy=7`)
 	if err != nil {
 		t.Fatal(err)
@@ -101,7 +101,7 @@ func TestChildAndGuard(t *testing.T) {
 	}
 }
 
-func TestSplitBudget(t *testing.T) { // R-F05
+func TestSplitBudget(t *testing.T) {
 	got := SplitBudget(SplitParallel, 7, 1, 4)
 	want := []int64{2, 2, 1, 1}
 	var sum int64
@@ -157,7 +157,7 @@ func TestMiddlewareGatewayAndPropagation(t *testing.T) {
 			w.WriteHeader(resp.StatusCode)
 		})))
 	defer gw.Close()
-	// a client-supplied context must be ignored at the gateway (trust boundary)
+	// the gateway must ignore a context sent by the client
 	req, _ := http.NewRequest("GET", gw.URL, nil)
 	req.Header.Set(HeaderContext, strings.Replace(sampleCtx, "ttl=287, bud=300", "ttl=99999, bud=99999", 1))
 	resp, err := http.DefaultClient.Do(req)
@@ -174,72 +174,112 @@ func TestMiddlewareGatewayAndPropagation(t *testing.T) {
 	}
 }
 
-func TestMiddlewareRejectsExpiredAndCancelled(t *testing.T) { // R-D02, R-T04
-	h := Middleware(MiddlewareConfig{}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Error("application must not run")
-	}))
-	for _, in := range []string{
-		strings.Replace(sampleCtx, "ttl=287", "ttl=0", 1),
-		strings.Replace(sampleCtx, "cs=none", "cs=expired", 1),
+func TestMiddlewareSignalsExpiryAndServesOriginals(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want CancelState
+	}{
+		{strings.Replace(sampleCtx, "ttl=287", "ttl=0", 1), CancelExpired}, // the library notices it and marks it
+		{strings.Replace(sampleCtx, "cs=none", "cs=expired", 1), CancelExpired},
+		{strings.Replace(sampleCtx, "cs=none", "cs=cancel", 1), CancelRequest},
 	} {
+		var got CancelState
+		served := false
+		h := Middleware(MiddlewareConfig{}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			served, got = true, Cancellation(r.Context())
+			if c, _ := DecodeContext(r.Header.Get(HeaderContext)); c.Cancel != tc.want {
+				t.Errorf("the application must see cs=%s, got %s", tc.want, c.Cancel)
+			}
+		}))
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest("GET", "/", nil)
-		req.Header.Set(HeaderContext, in)
+		req.Header.Set(HeaderContext, tc.in)
 		h.ServeHTTP(rec, req)
-		if rec.Code != http.StatusGatewayTimeout {
-			t.Fatalf("want 504, got %d", rec.Code)
-		}
-		res, ok, err := ParseResult(rec.Header())
-		if err != nil || !ok || !res.Terminal {
-			t.Fatalf("expected terminal result, got %+v %v", res, err)
+		if !served || rec.Code != http.StatusOK || got != tc.want {
+			t.Fatalf("an original request is served with the signal: served=%v code=%d cs=%s", served, rec.Code, got)
 		}
 	}
 }
 
-func TestTransportEnforcesPropagatedDeadline(t *testing.T) {
-	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		select {
-		case <-time.After(2 * time.Second):
-		case <-r.Context().Done():
+func TestMiddlewareRefusesExpiredRetries(t *testing.T) {
+	h := Middleware(MiddlewareConfig{}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("an expired retry must not reach the application")
+	}))
+	for _, in := range []string{
+		strings.Replace(sampleCtx, "ttl=287", "ttl=0", 1),
+		strings.Replace(sampleCtx, "cs=none", "cs=expired", 1),
+		strings.Replace(sampleCtx, "cs=none", "cs=cancel", 1),
+	} {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("GET", "/", nil)
+		req.Header.Set(HeaderContext, in)
+		req.Header.Set(HeaderHop, "att=2")
+		h.ServeHTTP(rec, req)
+		res, ok, err := ParseResult(rec.Header())
+		if rec.Code != http.StatusGatewayTimeout || err != nil || !ok || !res.Terminal || resultCancelState(rec.Header()) == CancelNone {
+			t.Fatalf("want terminal 504 with cs, got %d %+v %v", rec.Code, res, err)
 		}
+	}
+	// a retry with time left is served
+	served := false
+	ok := Middleware(MiddlewareConfig{}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { served = true }))
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Header.Set(HeaderContext, sampleCtx)
+	req.Header.Set(HeaderHop, "att=2")
+	ok.ServeHTTP(httptest.NewRecorder(), req)
+	if !served {
+		t.Fatal("a retry with time left must be served")
+	}
+}
+
+func TestTransportNeverCutsASlowCallOff(t *testing.T) {
+	var seen Context
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen, _ = DecodeContext(r.Header.Get(HeaderContext))
+		time.Sleep(300 * time.Millisecond)
+		w.WriteHeader(204)
 	}))
 	defer slow.Close()
 	client := &http.Client{Transport: &Transport{}}
 	gw := httptest.NewServer(Middleware(MiddlewareConfig{Gateway: true,
-		RouteBudget: func(r *http.Request) (string, time.Duration) { return "GET /x", 150 * time.Millisecond }},
+		RouteBudget: func(r *http.Request) (string, time.Duration) { return "GET /x", 100 * time.Millisecond }},
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			time.Sleep(150 * time.Millisecond) // the chain is late before the call
 			req, _ := http.NewRequestWithContext(r.Context(), "GET", slow.URL, nil)
 			resp, err := client.Do(req)
 			if err != nil {
-				t.Errorf("transport must convert the deadline into a result, got %v", err)
+				t.Errorf("a late first attempt is still sent: %v", err)
 				return
 			}
-			res, _, _ := ParseResult(resp.Header)
 			resp.Body.Close()
-			if resp.StatusCode != http.StatusGatewayTimeout || !res.Terminal {
-				t.Errorf("want terminal 504, got %d %+v", resp.StatusCode, res)
-			}
 			w.WriteHeader(resp.StatusCode)
 		})))
 	defer gw.Close()
-	start := time.Now()
 	resp, err := http.Get(gw.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
 	resp.Body.Close()
-	if took := time.Since(start); took > time.Second {
-		t.Fatalf("deadline not enforced: took %v", took)
+	if resp.StatusCode != 204 || seen.Cancel != CancelExpired || seen.TTLMillis > 0 {
+		t.Fatalf("the late call completes and carries the signal: %d %+v", resp.StatusCode, seen)
 	}
 }
 
-func TestTransportRefusesAfterDeadline(t *testing.T) {
+func TestTransportRefusesExpiredRetries(t *testing.T) {
 	c, _ := DecodeContext(sampleCtx)
-	ctx := WithInbound(context.Background(), Inbound{Ctx: c, Received: time.Now().Add(-time.Second)})
-	req, _ := http.NewRequestWithContext(ctx, "GET", "http://127.0.0.1:1/never", nil)
+	expired := WithInbound(context.Background(), Inbound{Ctx: c, Received: time.Now().Add(-time.Second)})
+	req, _ := http.NewRequestWithContext(WithAttempt(expired, 2), "GET", "http://127.0.0.1:1/never", nil)
 	resp, err := (&Transport{}).RoundTrip(req)
 	if err != nil || resp.StatusCode != http.StatusGatewayTimeout {
 		t.Fatalf("want local 504, got %v %v", resp, err)
+	}
+	if res, _, _ := ParseResult(resp.Header); !res.Terminal || res.Reason != ReasonDeadline {
+		t.Fatalf("want a terminal deadline result, got %+v", res)
+	}
+	// the first attempt of the same late chain still goes out, it only fails because nothing is listening
+	req, _ = http.NewRequestWithContext(expired, "GET", "http://127.0.0.1:1/never", nil)
+	if _, err := (&Transport{}).RoundTrip(req); err == nil || errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("the first attempt must be sent, got %v", err)
 	}
 }
 

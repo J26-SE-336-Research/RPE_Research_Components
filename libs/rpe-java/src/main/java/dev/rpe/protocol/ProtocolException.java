@@ -1,8 +1,8 @@
 package dev.rpe.protocol;
 
 /**
- * A protocol violation: an error code, the header concerned and, for rule violations, the spec rule identifier
- * (for example {@code R-T02}).
+ * A protocol error with its code, the header it is about and, if a spec rule was broken, that rule
+ * (like {@code R-T02}).
  */
 public final class ProtocolException extends IllegalArgumentException {
     private final ErrorCode code;
@@ -40,6 +40,6 @@ public final class ProtocolException extends IllegalArgumentException {
     public ErrorCode code() { return code; }
     public String header() { return header; }
     public String detail() { return detail; }
-    /** Spec rule identifier, or null when the error is not tied to a rule. */
+    /** The spec rule, or null if the error isn't about a rule. */
     public String rule() { return rule; }
 }

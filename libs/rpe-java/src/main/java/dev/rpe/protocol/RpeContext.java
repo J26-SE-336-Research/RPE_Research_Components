@@ -7,20 +7,20 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * The end-to-end {@code X-RPE-Context} (spec §2.1). Immutable; deadlines are relative ({@code ttl}) so that clocks
- * never need to be synchronised (R-D01).
+ * The {@code X-RPE-Context} header. It can't be changed once built. The deadline is sent as time left
+ * ({@code ttl}), so the machines' clocks don't have to agree.
  *
  * @param version      protocol version ({@code v})
  * @param rid          request id, 32 lowercase hex, equal to the W3C trace-id
- * @param iid          invocation id of this attempt, 16 lowercase hex
- * @param pid          parent invocation id ({@link RpeHeaders#ROOT_PARENT_ID} at the gateway)
- * @param ttlMillis    remaining deadline when the message was sent
- * @param budgetMillis original end-to-end budget (immutable)
- * @param retryBudget  retry budget remaining for this subtree
- * @param cancel       cancellation state
- * @param policyEpoch  policy epoch the request is pinned to ("" when none; immutable)
- * @param route        route key "METHOD /template" (immutable)
- * @param unknown      members this implementation does not understand, forwarded unchanged (R-V01)
+ * @param iid          id of this call or attempt, 16 lowercase hex
+ * @param pid          id of the parent call, {@link RpeHeaders#ROOT_PARENT_ID} at the gateway
+ * @param ttlMillis    time left when the message was sent
+ * @param budgetMillis the full budget from the gateway, never changes
+ * @param retryBudget  retries left for this part of the chain
+ * @param cancel       cancel state
+ * @param policyEpoch  policy epoch the request sticks to, "" if none
+ * @param route        route key like "GET /api/orders"
+ * @param unknown      members we don't understand, passed on as they are
  */
 public record RpeContext(long version, String rid, String iid, String pid, long ttlMillis, long budgetMillis,
         long retryBudget, CancelState cancel, String policyEpoch, String route, Map<String, String> unknown) {
@@ -31,7 +31,7 @@ public record RpeContext(long version, String rid, String iid, String pid, long 
         unknown = unknown == null ? Map.of() : Collections.unmodifiableMap(new LinkedHashMap<>(unknown));
     }
 
-    /** Parses and validates a serialized {@code X-RPE-Context} value. */
+    /** Parses and checks an {@code X-RPE-Context} value. */
     public static RpeContext decode(String raw) {
         if (raw.getBytes(StandardCharsets.UTF_8).length > MAX_HEADER_VALUE_BYTES) {
             throw new ProtocolException(ErrorCode.CONTEXT_TOO_LARGE, CONTEXT, "value exceeds 256 bytes");
@@ -65,7 +65,7 @@ public record RpeContext(long version, String rid, String iid, String pid, long 
         return c;
     }
 
-    /** Checks required members, version support (R-V02) and that ttl never exceeds the budget (R-T02). */
+    /** Checks the required members, the version, and that ttl is not bigger than the budget. */
     public void validate() {
         if (version == 0 || rid.isEmpty() || iid.isEmpty() || pid.isEmpty() || budgetMillis == 0 || route.isEmpty()) {
             throw new ProtocolException(ErrorCode.MISSING_HEADER, CONTEXT, "v, rid, iid, pid, bud and rt are required");
@@ -78,7 +78,7 @@ public record RpeContext(long version, String rid, String iid, String pid, long 
         }
     }
 
-    /** Canonical serialization: known members in a fixed order, then unknown members sorted by key. */
+    /** Writes the header value: known members in a fixed order, then the unknown ones sorted by key. */
     public String encode() {
         Sfv.Writer w = new Sfv.Writer()
                 .integer("v", version).string("rid", rid).string("iid", iid).string("pid", pid)
@@ -91,8 +91,8 @@ public record RpeContext(long version, String rid, String iid, String pid, long 
     }
 
     /**
-     * Creates the root context at the gateway trust boundary (R-S01). {@code traceId} binds rid to an existing W3C
-     * trace-id; empty creates a fresh one.
+     * Creates the first context at the gateway. {@code traceId} can be an existing W3C trace-id to use as rid, if it
+     * is empty a new one is made.
      */
     public static RpeContext newRoot(String route, long budgetMillis, long retryBudget, String epoch, String traceId) {
         String rid = traceId == null || traceId.isEmpty() ? Ids.random(16) : traceId;
@@ -103,8 +103,8 @@ public record RpeContext(long version, String rid, String iid, String pid, long 
     }
 
     /**
-     * Derives the context of an outbound call: a fresh iid, pid set to this iid, ttl reduced by the locally measured
-     * elapsed time and the post-processing reserve (R-T02, R-D07), and the retry-budget grant (R-T03).
+     * Makes the context for an outbound call: a new iid, pid set to our iid, ttl minus the time spent here and the
+     * reserve, and the retry budget given to this child.
      */
     public RpeContext child(long elapsedMillis, long reserveMillis, long grant) {
         if (grant < 0 || grant > retryBudget) {

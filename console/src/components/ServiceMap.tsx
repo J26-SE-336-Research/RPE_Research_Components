@@ -9,6 +9,7 @@ const POS: Record<string, [number, number]> = {
   "legacy-svc": [470, 290],
   "shipping-svc": [712, 290],
   "fraud-check-svc": [712, 8],
+  "partner-svc": [954, 290],
 };
 const W = 196;
 const H = 60;
@@ -23,7 +24,7 @@ export function ServiceMap({ services, edges, onSelect }: { services: ServiceNod
   const byName = Object.fromEntries(services.map((s) => [s.name, s]));
   const dot = { green: "var(--green)", amber: "var(--amber)", red: "var(--red)", neutral: "var(--muted)" } as const;
   return (
-    <svg className="map" viewBox="0 0 916 358" width="100%" style={{ maxWidth: 916, display: "block", margin: "0 auto" }} role="img" aria-label="Service map">
+    <svg className="map" viewBox="0 0 1158 358" width="100%" style={{ maxWidth: 1158, display: "block", margin: "0 auto" }} role="img" aria-label="Service map">
       <defs>
         <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
           <path d="M0 0L10 5L0 10z" fill="var(--border-strong)" />
