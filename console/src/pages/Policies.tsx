@@ -28,9 +28,9 @@ function specSummary(p: PolicyRow): string {
 }
 
 /**
- * Undo: an admin deliberately delivers an earlier approved version again (for example when an approved
- * recommendation turned out badly). It is not part of the normal flow, where every approved change is delivered
- * automatically. The admin who reverts is recorded as the requester of the rollout.
+ * Undo: an admin delivers an earlier approved version again, for example when an approved recommendation turned out
+ * badly. It is not part of the normal flow, where every approved change is delivered automatically. The admin who
+ * reverts is recorded as the requester of the rollout.
  */
 function RevertButton({ p, current, onDone }: { p: PolicyRow; current?: PolicyRow; onDone: (msg: string) => void }) {
   const [confirming, setConfirming] = useState(false);

@@ -9,17 +9,16 @@ import (
 	"strings"
 )
 
-// Joint policies (the C3 novelty, per-request-consistent rollout): one approved decision that changes settings of
-// several services, for example a longer chain deadline at the gateway together with a lower rate at payment-svc.
-// It is one policy version with one epoch. The stored spec holds the parts:
+// A joint policy is one approved decision that changes settings on several services, for example a longer chain
+// deadline at the gateway and a lower rate at payment-svc. It has one version and one epoch, and the stored spec
+// lists the parts:
 //
 //	{"parts": [{"scope": {"service": "gateway", "route": "GET /api/orders"}, "spec": {...}},
 //	           {"scope": {"service": "payment-svc"}, "spec": {...}}]}
 //
-// Each target proxy receives only the spec of the part for its own service (and its content hash is the hash of
-// that part), so a proxy never holds settings of another service. Because every part carries the same epoch, the
-// gateway stamps one version into every new request, and a proxy can tell a request of the old version from one of
-// the new version.
+// A sidecar only receives the part for its own service, and the hash it reports is the hash of that part. Since all
+// parts share the epoch, the gateway stamps the same version on every new request and the other sidecars can tell
+// old requests from new ones.
 
 // Part is the share of a joint policy one service enforces.
 type Part struct {
@@ -50,8 +49,8 @@ func (p Policy) services() []string {
 	return out
 }
 
-// forService is the policy as one service sees it: same id, version and epoch, with the scope and spec of the part
-// for that service. ok is false when no part is scoped to the service.
+// forService is the policy as one service sees it: same id, version and epoch, but only that service's part.
+// ok is false when the policy has no part for the service.
 func (p Policy) forService(service string) (Policy, bool) {
 	for _, part := range p.parts() {
 		if part.Scope.Service == service {
@@ -83,9 +82,8 @@ func jointSpec(parts []Part) json.RawMessage {
 	return b
 }
 
-// withPart returns the parts with the part for part.Scope.Service replaced (or added at the end). A change to one
-// service of a joint policy (for example one control changed in the Admin Panel or by Component 4) keeps the other
-// parts, so the new version is still delivered as one decision.
+// withPart replaces the part of part.Scope.Service, or adds it at the end. A change to one service keeps the other
+// parts, so the new version is still one decision.
 func withPart(parts []Part, part Part) []Part {
 	out := make([]Part, 0, len(parts)+1)
 	replaced := false
@@ -103,10 +101,9 @@ func withPart(parts []Part, part Part) []Part {
 	return out
 }
 
-// mergeParts returns the parts of the previous version with the changed parts applied: a joint decision names only
-// the services it changes, and the services it does not name keep their part. Otherwise a part would drop out of the
-// policy: its service would keep enforcing the previous version, count every request of the new version as a
-// mixed-policy request and no longer be covered by drift repair.
+// mergeParts applies the changed parts on top of the previous version's parts. A joint decision only names the
+// services it changes; the rest keep their part. Without this a service would drop out of the policy, stay on the old
+// version, count every new request as mixed and no longer be checked by drift repair.
 func mergeParts(previous, changed []Part) []Part {
 	out := previous
 	for _, part := range changed {
@@ -142,9 +139,9 @@ func versionOf(epoch string) int {
 	return n
 }
 
-// Kinds of a part's change. A tightening makes a limit stricter (a shorter deadline, a lower rate, a lower retry
-// ratio); every other change loosens or leaves the limits alone. A part whose content is the same as in the previous
-// version is unchanged (for example the gateway's part when only a service's rate of the joint policy changes).
+// Kinds of change for a part. Tightening means a stricter limit (shorter deadline, lower rate, lower retry ratio).
+// Anything else loosens. A part with the same content as in the previous version is unchanged, for example the
+// gateway's part when only a service's rate changes.
 const (
 	changeLoosen    = "loosen"
 	changeTighten   = "tighten"
@@ -236,11 +233,10 @@ func classify(prev, next json.RawMessage) (string, []string) {
 	return kind, changes
 }
 
-// planJoint orders the activation of a joint policy against its previous version (prev is nil for the first
-// version): loosening parts first, tightening parts second. Between the two steps the Operator waits until no request
-// stamped with the previous version is in flight, so that no request of the old version meets a tightened limit (for
-// example a request that still carries the old, short deadline never waits in a queue that is now released at the
-// lower rate).
+// planJoint decides the order for a joint policy compared with its previous version (prev is nil for the first
+// one): loosening parts go first, tightening parts second. Between the two steps the Operator waits until no request
+// stamped with the old version is still running. That way a request with the old, short deadline never ends up in a
+// queue that has already been slowed down.
 func planJoint(p Policy, prev *Policy) []PartPlan {
 	before := map[string]json.RawMessage{}
 	if prev != nil {
@@ -270,12 +266,11 @@ func planParts(p Policy, specs map[string]json.RawMessage) []PartPlan {
 	return plan
 }
 
-// governing returns, for each service of joint policy p, the spec that service enforces before p: its part of the
-// previous version prev, or else its part of another active policy (active is ordered by approval, so the last one is
-// the one the service's proxy activated last). The second case is the first joint version over separate policies, for
-// example a joint card whose policy is the gateway's while payment-svc still has its own rate policy: payment's change
-// must be compared with that policy, not counted as a new setting. takenOver lists those other policies when every
-// service they govern is a part of p, so p replaces them completely.
+// governing returns what each service of policy p enforces before p: its part of the previous version, or else its
+// part of another active policy (active is ordered by approval, so the last one wins). The second case is the first
+// joint version over separate policies, for example a joint policy under the gateway's id while payment-svc still has
+// its own rate policy. Payment's change has to be compared with that policy, not treated as a new setting.
+// takenOver lists the other policies whose services are all parts of p, because p replaces them completely.
 func governing(p Policy, prev *Policy, active []Policy) (before map[string]json.RawMessage, takenOver []Policy) {
 	before = map[string]json.RawMessage{}
 	if prev != nil {
