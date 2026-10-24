@@ -442,3 +442,24 @@ func TestIntelPracticeCardsAreForwardedToC4(t *testing.T) {
 		t.Fatalf("practice clear token = %q, want the control token", token)
 	}
 }
+
+func TestBackpressureTestRates(t *testing.T) {
+	current := map[string]float64{"gateway": 100, "payment-svc": 87.5, "order-svc": 120, "inventory-svc": 100, "loyalty-svc": 64.2}
+	got := backpressureTestRates(current, 40)
+	want := map[string]float64{"gateway": 300, "payment-svc": 40, "order-svc": 100, "inventory-svc": 100, "loyalty-svc": 100}
+	if len(got) != len(want) {
+		t.Fatalf("rates = %v, want %v", got, want)
+	}
+	for service, rate := range want {
+		if got[service] != rate {
+			t.Errorf("%s: rate %g, want %g", service, got[service], rate)
+		}
+	}
+	if _, ok := backpressureTestRates(map[string]float64{"order-svc": 90}, 40)["payment-svc"]; ok {
+		t.Error("a service without a known current rate must not get a test rate")
+	}
+	order := strings.Join(backpressureRateOrder(got), ",")
+	if order != "gateway,inventory-svc,loyalty-svc,order-svc,payment-svc" {
+		t.Errorf("order = %s: the gateway first, the services by name, payment-svc last", order)
+	}
+}

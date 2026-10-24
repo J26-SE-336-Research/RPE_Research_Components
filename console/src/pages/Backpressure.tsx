@@ -105,7 +105,7 @@ function Experiment() {
   return (
     <Panel
       title="Experiment: overload payment-svc"
-      subtitle="Lowers payment-svc's rate with a normal C3 rate-limit policy, sends many chain requests at once, then delivers the previous rate again. The proxies' own backpressure handling does the rest."
+      subtitle="Sets every service to 100 requests/s, the gateway to 300 requests/s and payment-svc to the low rate (C3 rate-limit policies), sends many chain requests at once, then delivers every previous rate again. The proxies' own backpressure handling does the rest."
     >
       <Alert>{runs.error ?? start.error}</Alert>
       {cfg && (

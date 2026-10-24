@@ -3,11 +3,13 @@ package main
 // The backpressure demo (C2): it makes payment-svc's inbound leaky bucket the bottleneck and lets the sidecars react.
 //   1. the sidecars are set to the chosen backpressure mode: "full" (pressure signals and adaptive concurrency, the
 //      default) or "basic" (only the inbound leaky bucket and the circuit breaker), for the comparison;
-//   2. payment-svc's rate is lowered through a normal C3 rate-limit policy (delivered two-phase, like any approved
-//      change), so the sidecar's own mechanism is not touched;
+//   2. every sidecar gets the same starting point: the gateway 300 requests/s, payment-svc the chosen low rate and
+//      every other service 100 requests/s, each through a normal C3 rate-limit policy (delivered two-phase, like any
+//      approved change), so the sidecar's own mechanism is not touched. The rate each sidecar enforced before the
+//      run is read from its own metrics first;
 //   3. many chain requests are sent at once while the sidecars' counters are sampled;
-//   4. the previous rate is delivered again, the run watches the recovery, and every sidecar is set back to "full"
-//      (always, also when the run fails).
+//   4. payment's previous rate is delivered again and the run watches the recovery; then every other changed rate is
+//      delivered again and every sidecar is set back to "full" (always, also when the run fails).
 // Each run records what happened during the load, measured by the sidecars themselves, so runs in the two modes can
 // be compared side by side.
 
@@ -16,6 +18,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"sort"
 	"strings"
@@ -26,7 +29,13 @@ import (
 const (
 	backpressureService = "payment-svc"
 	backpressureCaller  = "order-svc"
+	backpressureGateway = "gateway"
 	maxBackpressureRuns = 20
+	// the rates every run starts from, so runs are comparable whatever rates the sidecars had before
+	gatewayTestRate = 300.0
+	otherTestRate   = 100.0
+	// restoring the previous rates after a run: one two-phase rollout per changed service
+	restoreLimit = 3 * time.Minute
 	// after a failed request the load waits like a client honouring Retry-After, so a fast failure does not loop
 	failureBackoff = 200 * time.Millisecond
 	// after the load period, requests already sent are waited for up to this long
@@ -82,8 +91,10 @@ type backpressureResults struct {
 type backpressureRun struct {
 	ID          string               `json:"id"`
 	Config      backpressureConfig   `json:"config"`
-	BaseRate    int                  `json:"baseRate"` // payment's rate before the run, delivered again at the end
-	State       string               `json:"state"`    // running | done | failed
+	BaseRate    int                  `json:"baseRate"`  // payment's rate before the run, delivered again at the end
+	BaseRates   map[string]float64   `json:"baseRates"` // every sidecar's rate before the run, delivered again at the end
+	TestRates   map[string]float64   `json:"testRates"` // the rate each sidecar gets for the run
+	State       string               `json:"state"`     // running | done | failed
 	Stage       string               `json:"stage"`
 	Error       string               `json:"error,omitempty"`
 	RequestedBy string               `json:"requestedBy"`
@@ -154,11 +165,36 @@ func (h *hub) runBackpressure(run *backpressureRun) {
 	c := run.Config
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(c.LoadSeconds+c.RecoverySeconds)*time.Second+drainLimit+5*time.Minute)
 	defer cancel()
+	// the services whose rate the run changed, with the rate they had before; payment is restored before the
+	// recovery watch, every other one when the run ends
+	changed := map[string]float64{}
+	paymentRestored := false
 	defer func() {
 		// every sidecar goes back to the full mechanism, whatever happened during the run
 		restore, done := context.WithTimeout(context.Background(), 30*time.Second)
 		defer done()
 		_ = h.setBackpressureMode(restore, "full")
+		// and every changed rate back to what it was before the run
+		rates, doneRates := context.WithTimeout(context.Background(), restoreLimit)
+		defer doneRates()
+		var failed []string
+		for _, service := range backpressureRateOrder(changed) {
+			if service == backpressureService && paymentRestored {
+				continue
+			}
+			h.updateBackpressure(run, func(r *backpressureRun) {
+				r.Stage = fmt.Sprintf("restoring %s's rate → %g requests/s", service, changed[service])
+			})
+			if err := h.deliverRate(rates, run.RequestedBy, service, changed[service]); err != nil {
+				failed = append(failed, fmt.Sprintf("%s (%v)", service, err))
+			}
+		}
+		if len(failed) > 0 {
+			h.updateBackpressure(run, func(r *backpressureRun) {
+				r.Error = strings.TrimPrefix(r.Error+"; ", "; ") + "the rate could not be restored on: " + strings.Join(failed, ", ")
+				r.State, r.Stage = "failed", "failed"
+			})
+		}
 		h.updateBackpressure(run, func(r *backpressureRun) {
 			now := time.Now().UTC()
 			r.FinishedAt = &now
@@ -176,16 +212,29 @@ func (h *hub) runBackpressure(run *backpressureRun) {
 	}
 	now := func() *time.Time { t := time.Now().UTC(); return &t }
 
-	// payment's current rate is what the run delivers again at the end (the sidecar default when none is set)
-	base := 100
-	if _, _, spec := h.effectivePolicy(ctx, backpressureService); spec != nil {
-		if lb, ok := spec["leakyBucket"].(map[string]any); ok {
-			if v, ok := lb["ratePerSec"].(float64); ok && v >= 1 {
-				base = int(v)
-			}
+	// the rate every sidecar enforces now (its own metric: env default, an earlier policy or C4), delivered again at
+	// the end; payment falls back to its current policy, then to the sidecar default
+	current := map[string]float64{}
+	for service, b := range h.backpressureSnapshot(ctx) {
+		if b.InboundRatePerSec > 0 {
+			current[service] = b.InboundRatePerSec
 		}
 	}
-	h.updateBackpressure(run, func(r *backpressureRun) { r.BaseRate = base })
+	if _, ok := current[backpressureService]; !ok {
+		base := 100.0
+		if _, _, spec := h.effectivePolicy(ctx, backpressureService); spec != nil {
+			if lb, ok := spec["leakyBucket"].(map[string]any); ok {
+				if v, ok := lb["ratePerSec"].(float64); ok && v >= 1 {
+					base = v
+				}
+			}
+		}
+		current[backpressureService] = base
+	}
+	test := backpressureTestRates(current, c.LowRate)
+	h.updateBackpressure(run, func(r *backpressureRun) {
+		r.BaseRate, r.BaseRates, r.TestRates = int(math.Round(current[backpressureService])), current, test
+	})
 
 	// 1. the backpressure mode on every sidecar
 	stage(fmt.Sprintf("setting every sidecar to the %q backpressure mode", c.Mode))
@@ -194,11 +243,18 @@ func (h *hub) runBackpressure(run *backpressureRun) {
 		return
 	}
 
-	// 2. lower payment's rate (a normal C3 rate-limit policy)
-	stage(fmt.Sprintf("lowering %s's rate %d → %d requests/s (C3 rate-limit policy, two-phase)", backpressureService, base, c.LowRate))
-	if err := h.deliverRate(ctx, run.RequestedBy, c.LowRate); err != nil {
-		fail(err)
-		return
+	// 2. the same starting rates on every sidecar (normal C3 rate-limit policies)
+	for _, service := range backpressureRateOrder(test) {
+		if current[service] == test[service] {
+			continue
+		}
+		stage(fmt.Sprintf("setting %s's rate %g → %g requests/s (C3 rate-limit policy, two-phase)", service, current[service], test[service]))
+		// recorded first: a delivery that fails halfway may still have reached some sidecars
+		changed[service] = current[service]
+		if err := h.deliverRate(ctx, run.RequestedBy, service, test[service]); err != nil {
+			fail(fmt.Errorf("%s: %w", service, err))
+			return
+		}
 	}
 
 	// 3. overload: many chain requests at once, while the sidecars are sampled
@@ -214,12 +270,16 @@ func (h *hub) runBackpressure(run *backpressureRun) {
 	res.SignalsSent = after.sum(func(b Backpressure) float64 { return b.NotificationsSent }) - before.sum(func(b Backpressure) float64 { return b.NotificationsSent })
 	h.updateBackpressure(run, func(r *backpressureRun) { r.Results = &res })
 
-	// 4. deliver the previous rate again and keep watching the recovery
-	stage(fmt.Sprintf("restoring %s's rate %d → %d requests/s", backpressureService, c.LowRate, base))
-	if err := h.deliverRate(ctx, run.RequestedBy, base); err != nil {
-		fail(fmt.Errorf("the rate could not be restored: %w", err))
-		return
+	// 4. deliver payment's previous rate again and keep watching the recovery (the other services are restored when
+	// the run ends)
+	if previous, ok := changed[backpressureService]; ok {
+		stage(fmt.Sprintf("restoring %s's rate %d → %g requests/s", backpressureService, c.LowRate, previous))
+		if err := h.deliverRate(ctx, run.RequestedBy, backpressureService, previous); err != nil {
+			fail(fmt.Errorf("the rate could not be restored: %w", err))
+			return
+		}
 	}
+	paymentRestored = true
 	h.updateBackpressure(run, func(r *backpressureRun) { r.RestoredAt = now() })
 	if c.Mode == "basic" {
 		stage("switching every sidecar back to the full backpressure mode")
@@ -436,19 +496,60 @@ func (h *hub) backpressureLoad(ctx context.Context, run *backpressureRun, c back
 	return res
 }
 
-// deliverRate delivers payment's rate as a new version of its current policy (its other settings are kept) and
-// waits until the rollout is complete.
-func (h *hub) deliverRate(ctx context.Context, approver string, rate int) error {
-	in := policyInput{Control: controlRateLimit, Service: backpressureService, RatePerSec: rate}
-	id, route, spec := h.effectivePolicy(ctx, backpressureService)
+// backpressureTestRates is the rate each sidecar gets for a run: the gateway 300 requests/s, payment-svc the chosen
+// low rate, every other service 100 requests/s. Only services with a known current rate are included.
+func backpressureTestRates(current map[string]float64, lowRate int) map[string]float64 {
+	out := make(map[string]float64, len(current))
+	for service := range current {
+		switch service {
+		case backpressureGateway:
+			out[service] = gatewayTestRate
+		case backpressureService:
+			out[service] = float64(lowRate)
+		default:
+			out[service] = otherTestRate
+		}
+	}
+	return out
+}
+
+// backpressureRateOrder is the order rates are delivered in: the gateway first, then the services by name,
+// payment-svc last (it is the one the experiment overloads).
+func backpressureRateOrder(rates map[string]float64) []string {
+	var order []string
+	for service := range rates {
+		if service != backpressureGateway && service != backpressureService {
+			order = append(order, service)
+		}
+	}
+	sort.Strings(order)
+	if _, ok := rates[backpressureGateway]; ok {
+		order = append([]string{backpressureGateway}, order...)
+	}
+	if _, ok := rates[backpressureService]; ok {
+		order = append(order, backpressureService)
+	}
+	return order
+}
+
+// deliverRate delivers a service's leaky-bucket rate as a new version of its current policy (its other settings,
+// such as the gateway's route deadlines, are kept) and waits until the rollout is complete. The rate is written as
+// is, so a fractional rate set earlier by C4 is restored exactly.
+func (h *hub) deliverRate(ctx context.Context, approver, service string, rate float64) error {
+	id, route, spec := h.effectivePolicy(ctx, service)
 	if spec == nil {
 		spec = map[string]any{}
 	}
-	route = applyControl(spec, route, in)
-	if id == "" {
-		id = backpressureService + "-resilience"
+	bucket, ok := spec["leakyBucket"].(map[string]any)
+	if !ok {
+		bucket = map[string]any{}
+		spec["leakyBucket"] = bucket
 	}
-	body := map[string]any{"policyId": id, "scope": map[string]string{"service": backpressureService, "route": route}, "spec": spec,
+	bucket["ratePerSec"] = rate
+	if id == "" {
+		id = service + "-resilience"
+	}
+	body := map[string]any{"policyId": id, "scope": map[string]string{"service": service, "route": route}, "spec": spec,
 		"approval": map[string]string{"approvedBy": approver, "decision": "approved"}}
 	out, code, b, err := h.publish(ctx, approver, body, "two-phase", 0, "")
 	switch {
