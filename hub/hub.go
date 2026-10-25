@@ -290,9 +290,58 @@ func (h *hub) runChain(ctx context.Context, method, path string) chainResult {
 }
 
 func (h *hub) chain(w http.ResponseWriter, r *http.Request) {
-	var in struct{ Method, Path string }
+	var in struct {
+		Method, Path string
+		// optional: slow one service down for this request only, so the chain deadline can be exceeded
+		DelayMs      int    `json:"delayMs"`
+		DelayService string `json:"delayService"`
+	}
 	_ = decode(r, &in)
+	if in.DelayMs > 0 {
+		if in.DelayService == "" {
+			in.DelayService = "payment-svc"
+		}
+		if !knownService(in.DelayService) {
+			writeErr(w, 400, "unknown delay service")
+			return
+		}
+		if in.DelayMs > 10000 {
+			writeErr(w, 400, "delayMs must be at most 10000")
+			return
+		}
+		restore, err := h.addDelay(r.Context(), in.DelayService, in.DelayMs)
+		if err != nil {
+			writeErr(w, 502, err.Error())
+			return
+		}
+		defer restore()
+	}
 	writeJSON(w, 200, h.runChain(r.Context(), strings.ToUpper(in.Method), in.Path))
+}
+
+// addDelay adds latencyMs to a service's current faults (other faults are kept) and returns a function that puts
+// the previous faults back. The demo app replaces its whole fault set on every POST, hence the read first.
+func (h *hub) addDelay(ctx context.Context, service string, delayMs int) (func(), error) {
+	_, _, b, _, err := h.call(ctx, http.MethodGet, svcURL(service, "/admin/faults"), nil)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", service, err)
+	}
+	previous := map[string]any{}
+	_ = json.Unmarshal(b, &previous)
+	delayed := map[string]any{}
+	for k, v := range previous {
+		delayed[k] = v
+	}
+	delayed["latencyMs"] = delayMs
+	if code, _, b, _, err := h.call(ctx, http.MethodPost, svcURL(service, "/admin/faults"), delayed); err != nil || code != http.StatusOK {
+		return nil, fmt.Errorf("could not delay %s: %s", service, nonEmpty(strings.TrimSpace(string(b)), fmt.Sprint(err)))
+	}
+	return func() {
+		// the request context may already be gone: restore with a context of its own
+		restore, done := context.WithTimeout(context.Background(), 10*time.Second)
+		defer done()
+		_, _, _, _, _ = h.call(restore, http.MethodPost, svcURL(service, "/admin/faults"), previous)
+	}, nil
 }
 
 // ---------- Scenario Lab ----------

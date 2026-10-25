@@ -34,9 +34,12 @@ function useAttribution(rid?: string) {
 export function InspectorPage() {
   const [method, setMethod] = useState<"GET" | "POST">("GET");
   const [path, setPath] = useState("/api/orders");
+  // optional delay for this request only, so the chain deadline can be exceeded (deadline and cancellation tests)
+  const [delayMs, setDelayMs] = useState(0);
+  const [delayService, setDelayService] = useState("payment-svc");
   const [history, setHistory] = useState<{ at: Date; method: string; path: string; r: ChainResult }[]>([]);
   const send = useAction(async () => {
-    const r = await api<ChainResult>("POST", "/chain", { method, path });
+    const r = await api<ChainResult>("POST", "/chain", { method, path, delayMs, delayService });
     setHistory((h) => [{ at: new Date(), method, path, r }, ...h].slice(0, 10));
     return r;
   });
@@ -63,10 +66,31 @@ export function InspectorPage() {
             </select>
             <span className="muted mono">gateway.rpe-demo</span>
             <input className="grow mono" value={path} onChange={(e) => setPath(e.target.value)} aria-label="Request path" />
+            <span className="muted">Delay</span>
+            <input
+              type="number"
+              min={0}
+              max={10000}
+              step={100}
+              style={{ width: 100 }}
+              value={delayMs}
+              onChange={(e) => setDelayMs(Math.max(0, Number(e.target.value)))}
+              aria-label="Delay in milliseconds"
+            />
+            <span className="muted">ms on</span>
+            <select value={delayService} onChange={(e) => setDelayService(e.target.value)} aria-label="Service to delay">
+              {["payment-svc", "inventory-svc", "loyalty-svc", "order-svc", "shipping-svc"].map((s) => (
+                <option key={s}>{s}</option>
+              ))}
+            </select>
             <Button variant="primary" type="submit" busy={send.busy}>
               Send request
             </Button>
           </form>
+          <p className="muted" style={{ margin: "8px 0 0" }}>
+            A delay longer than the route's deadline makes the chain run late, so you can watch the sidecars mark it{" "}
+            <span className="mono">cs=expired</span> and pass the signal on. The delay applies to this request only and is removed afterwards.
+          </p>
         </Panel>
         <Alert>{send.error}</Alert>
 
