@@ -163,6 +163,7 @@ export function RolloutsPage() {
       <Alert>{error}</Alert>
       <div className="stack">
         <LatestDeliveries data={data} />
+        <ConsistencyDemo />
         <div className="kpis">
           <Kpi label="In progress" value={data ? running : "—"} />
           <Kpi label="Completed" value={data?.filter((r) => r.status.phase === "Complete").length ?? "—"} />
@@ -212,7 +213,6 @@ export function RolloutsPage() {
             <Empty>No rollouts yet. They start automatically when a recommendation is approved.</Empty>
           )}
         </Panel>
-        <ConsistencyDemo />
       </div>
 
       {sel && (
