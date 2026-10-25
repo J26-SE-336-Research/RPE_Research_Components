@@ -4,6 +4,10 @@
 # intelligence layer (clears its learned baselines and open recommendations; the audit trail is recreated empty).
 # Approved policies are append-only by design, so a reset recreates the store rather than deleting rows.
 source "$(dirname "$0")/lib.sh"
+log "Stopping the Operator and the intelligence layer (nothing may write while the stores are replaced:"
+log "otherwise the old Operator re-fills the new Redis from the old PostgreSQL and C4 keeps delivering)"
+k -n rpe-system scale deploy/rpe-operator deploy/rpe-intelligence --replicas=0 >/dev/null
+k -n rpe-system wait --for=delete pod -l 'app in (rpe-operator,rpe-intelligence)' --timeout=120s >/dev/null 2>&1 || true
 log "Deleting RPE custom resources"
 k -n rpe-system delete rperollouts --all --ignore-not-found >/dev/null
 k -n rpe-system delete rpepolicies --all --ignore-not-found >/dev/null
@@ -18,7 +22,7 @@ for m in "${ROOT}"/k8s/policy-store/migrations/*.sql; do
   done
 done
 log "Restarting the Operator, the intelligence layer and the demo services"
-k -n rpe-system rollout restart deploy/rpe-operator deploy/rpe-intelligence >/dev/null
+k -n rpe-system scale deploy/rpe-operator deploy/rpe-intelligence --replicas=1 >/dev/null
 k -n rpe-demo rollout restart deploy >/dev/null
 k -n rpe-system rollout status deploy/rpe-operator --timeout=120s >/dev/null
 k -n rpe-system rollout status deploy/rpe-intelligence --timeout=300s >/dev/null

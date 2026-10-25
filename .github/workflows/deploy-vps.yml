@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
     inputs:
       run_e2e:
-        description: Run the e2e smoke suites (10, 60, 90) after deploying
+        description: Run the e2e smoke suite (10, webhook injection) after deploying
         type: boolean
         default: true
 
@@ -96,7 +96,8 @@ jobs:
       - name: e2e smoke suites
         if: github.event_name == 'push' || inputs.run_e2e
         run: |
-          # 00 expects two nodes and 20 builds ad-hoc pods from local images, so the smoke set is 10, 60 and 90
-          for s in 10 60 90; do
+          # only suite 10 (read-only checks). 00 expects two nodes, 20 builds pods from local images, and 60/90 insert
+          # policies (e2e-rollout-<timestamp>) that C4 then keeps reusing for payment-svc on the shared cluster
+          for s in 10; do
             KCTX="$(kubectl config current-context)" bash tests/e2e/${s}-*.sh
           done
