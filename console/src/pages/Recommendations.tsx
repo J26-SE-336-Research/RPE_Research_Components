@@ -665,6 +665,26 @@ function HealthTable({ assessments }: { assessments: Assessment[] }) {
   );
 }
 
+/** One short line for an audit detail; the full text stays in the database and shows on hover. */
+function shortDetail(detail?: string) {
+  if (!detail) return "";
+  const text = detail.trim();
+  if (text.startsWith("{")) {
+    try {
+      const d = JSON.parse(text);
+      if (typeof d.guard === "string") return d.guard;
+      if (d.decisionCase || d.holdReason) {
+        const what = d.holdReason ? String(d.holdReason).toLowerCase().replace(/_/g, " ") : String(d.decisionCase);
+        return d.proposedMs ? `${what}: ${d.currentMs} → ${d.proposedMs} ms` : what;
+      }
+      for (const key of ["reason", "detail", "rule"]) if (typeof d[key] === "string") return d[key];
+    } catch {
+      // not JSON: shortened below
+    }
+  }
+  return text.length > 140 ? text.slice(0, 137) + "…" : text;
+}
+
 function History() {
   const audit = useData<{ persistent: boolean; entries: AuditEntry[] }>("/intel/audit?limit=200", 10000);
   const entries = audit.data?.entries ?? [];
@@ -704,9 +724,9 @@ function History() {
                     {value(e.currentValue, e.unit)} → {value(e.proposedValue, e.unit)}
                   </td>
                   <td>{e.actor ?? (e.kind === "proposed" ? "intelligence engine" : "—")}</td>
-                  <td className="muted" style={{ fontSize: 14 }}>
+                  <td className="muted" style={{ fontSize: 14 }} title={e.detail}>
                     {e.policyVersion ? `${e.policyVersion} · ` : ""}
-                    {e.detail}
+                    {shortDetail(e.detail)}
                   </td>
                 </tr>
               ))}

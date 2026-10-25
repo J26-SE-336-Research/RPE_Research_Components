@@ -1106,8 +1106,18 @@ public class AdaptiveEngine {
                 workflow.withdraw(chain, Action.CHAIN_DEADLINE, source, "Conditions no longer support the change (" + decision.holdReason() + ")");
             }
         }
+        // While the decision only waits for a rate change on this chain, a waiting card stays for the reviewer: the same
+        // value and evidence are kept fresh, exactly as between counted windows. With a card already waiting, the hold
+        // shows as PENDING_PROPOSAL, so the waiting rate change is checked directly.
+        boolean waitingForRate = counted && pendingRate
+                && ("PENDING_RATE_PROPOSAL".equals(decision.holdReason()) || "PENDING_PROPOSAL".equals(decision.holdReason()));
+        if (waitingForRate && pending.isPresent() && pending.get().proposal().id().equals(v.lastProposalId) && v.lastProposedMs != null
+                && pending.get().decision() == Decision.PENDING_APPROVAL && eligible && windowBudget == current) {
+            changes.add(offer(chain, Action.CHAIN_DEADLINE, source, policy, current, v.lastProposedMs, "milliseconds", end,
+                    v.lastMeasurements, v.lastRule, v.lastProposalEvidence));
+        }
         // A counted window that no longer proposes the same value stops the refresh: an outdated proposal then goes stale.
-        if (counted && !decision.proposes()) v.lastProposedMs = null;
+        if (counted && !decision.proposes() && !waitingForRate) v.lastProposedMs = null;
         boolean stillPending = workflow.pending(chain, Action.CHAIN_DEADLINE, source).isPresent();
         if (v.state != ChainDeadlineState.PAUSED && v.state != ChainDeadlineState.SETTLING) {
             v.state = stillPending ? ChainDeadlineState.PROPOSED : model.ready() ? ChainDeadlineState.READY : ChainDeadlineState.LEARNING;
