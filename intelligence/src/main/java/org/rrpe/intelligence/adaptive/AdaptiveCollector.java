@@ -54,7 +54,9 @@ public class AdaptiveCollector {
         }
         guards = List.copyOf(guardResults);
         try {
-            chainMeasurements = tempo.collect(end, health);
+            // Requests that match no configured route (health checks, unknown paths) are labelled "/_unmatched" by the
+            // gateway sidecar. That is not a real route, so it gets no deadline recommendation.
+            chainMeasurements = tempo.collect(end, health).stream().filter(m -> !m.window().chain().endsWith("/_unmatched")).toList();
             for (var measurement : chainMeasurements) {
                 var chain = measurement.window();
                 if (chain.complete() && measurement.currentDeadlineMs() != null
